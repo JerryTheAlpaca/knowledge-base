@@ -2,9 +2,9 @@
 
 - BEGIN IMMEDIATE 领取到期任务；随机 lease_token、120s 租约；完成只允许当前租约提交。
 - 启动恢复：过期 running 租约回到 queued。
-- extract：字幕文件上传或 B 站链接走 M4 适配器；有正文/分享文字 → 生成
-  normalized.md + segments.json 并发布新 Bundle，随后入 enrich；
-  其余只有链接或附件 → needs_input，绝不伪造正文。
+- extract：字幕文件上传或 B 站链接走字幕适配器，普通网页/公众号链接走
+  正文适配器（M4）；有正文 → 生成 normalized.md + segments.json 并发布
+  新 Bundle，随后入 enrich；其余只有链接或附件 → needs_input，绝不伪造正文。
 - enrich：由 workers/enrich.py 执行（预算预留、模型调用、校验、发布成品 Bundle）。
 """
 from __future__ import annotations
@@ -22,8 +22,10 @@ from sqlalchemy.orm import Session
 from ..config import get_settings
 from ..db import make_engine, make_session_factory
 from ..domain import pipeline
+from ..domain.platforms import guess_platform
 from ..extractors import bilibili as bili
 from ..extractors import subtitles as subfmt
+from ..extractors import webpages as webpage
 from ..models import (
     BundleRevision,
     Capture,
@@ -131,9 +133,11 @@ def run_extract(db: Session, store: ObjectStore, job: Job, item: Item) -> None:
     # 2) 上传的字幕文件直接规范化进入加工，不重新访问来源网站（A19）
     if _extract_from_subtitle_uploads(db, store, job, item, source):
         return
-    # 3) 用户正文；B 站分享文字只有标题+链接，不能当正文（docs/04 §5）
+    # 3) 用户正文优先（docs/02 §5.1）；B 站/网页分享文字只是标题+链接+摘要，
+    #    不能当正文（docs/04 §5），交给对应适配器处理
     is_bili = _is_bilibili_capture(payload, meta)
-    body = user_text or ("" if is_bili else share_text)
+    web_target = _webpage_target(payload)
+    body = user_text or ("" if (is_bili or web_target) else share_text)
     if body:
         _extract_plain_text(
             db, store, job, item, source, body=body,
@@ -144,7 +148,16 @@ def run_extract(db: Session, store: ObjectStore, job: Job, item: Item) -> None:
     if is_bili:
         _extract_bilibili(db, store, job, item, source, payload)
         return
-    # 5) 其余只有链接/图片/音频：M4 其他适配器提供前不做伪造提取
+    # 5) 普通网页/公众号链接：正文适配器（docs/02 §5.1）
+    if web_target:
+        _extract_webpage(db, store, job, item, source, payload)
+        return
+    # 6) 其余只有分享文字/图片/音频：M4 其他适配器提供前不做伪造提取
+    if share_text:
+        _extract_plain_text(
+            db, store, job, item, source, body=share_text, origin="user_submission"
+        )
+        return
     item.pipeline_state = "needs_input"
     item.state_detail = "缺少正文：等待来源适配器（M4）或用户补充材料"
     job.state = "succeeded"
@@ -376,10 +389,77 @@ def _extract_bilibili(db: Session, store: ObjectStore, job: Job, item: Item,
     )
 
 
+def _webpage_target(payload: dict) -> str | None:
+    """普通网页/公众号适配目标：非 B 站、非小红书的 HTTP(S) 链接。
+
+    小红书有登录墙与 OCR 专项路径（docs/02 §5.1、§5.5），在专用适配器
+    提供前不按普通网页处理；B 站由字幕适配器负责。
+    """
+    url = (payload.get("original_url") or "").strip() or webpage.extract_first_url(payload.get("share_text"))
+    if not url:
+        return None
+    platform = guess_platform(url)
+    if platform in ("bilibili", "xiaohongshu"):
+        return None
+    return url
+
+
+def _extract_webpage(db: Session, store: ObjectStore, job: Job, item: Item,
+                     source: SourceRevision, payload: dict) -> None:
+    """普通网页/公众号正文适配器路径（docs/02 §5.1）。
+
+    network_error 上抛走任务级有限退避；blocked/empty_content 进入补充
+    材料（用户可粘贴正文或补截图），不伪造全文。
+    """
+    target = _webpage_target(payload) or ""
+    try:
+        ext = webpage.extract(target, share_text=payload.get("share_text"))
+    except webpage.WebpageError as exc:
+        if exc.status == "network_error":
+            raise  # 有限退避重试，由 run_once 顶层落到任务表
+        _needs_input(db, job, item, exc.message, exc.status)
+        return
+
+    slug = webpage.page_slug(target)
+    html_file = pipeline.register_file(
+        db, store, user_id=item.user_id, item_id=item.id,
+        data=ext.raw_html, relative_path=f"originals/webpage/{slug}/page.html",
+        role="source_material", mime=ext.raw_mime or "text/html",
+    )
+    extra_files = [html_file]
+    for i, img in enumerate(ext.images, start=1):
+        extra_files.append(pipeline.register_file(
+            db, store, user_id=item.user_id, item_id=item.id,
+            data=img.data, relative_path=f"originals/webpage/{slug}/img-{i:03d}.{img.ext}",
+            role="source_material", mime=img.mime,
+        ))
+
+    warnings = list(ext.warnings) + ["已从网页正文生成规范文字稿；AI 加工待执行。"]
+    _publish_segments_revision(
+        db, store, job, item, source,
+        segments=ext.segments, warnings=warnings, extra_files=extra_files,
+        meta_updates={
+            "platform": ext.platform,
+            "title": ext.title,
+            "author": ext.author,
+            "published_at": ext.published_at,
+            "canonical_url": ext.canonical_url,
+            "coverage": ext.coverage,
+            "original_media_retained": True,  # 原始 HTML 响应已留存（不等于完整镜像）
+            "source_locator": {"type": "webpage", "final_url": ext.canonical_url},
+            "extractor": {"name": "webpage_article", "version": webpage.EXTRACTOR_VERSION,
+                          "discovery_status": "available"},
+            "images_archived": len(ext.images),
+        },
+        missing_materials=ext.missing_materials,
+    )
+
+
 def _publish_segments_revision(db: Session, store: ObjectStore, job: Job, item: Item,
                                source: SourceRevision, *, segments: list[dict],
                                warnings: list[str], extra_files: list,
-                               meta_updates: dict) -> None:
+                               meta_updates: dict,
+                               missing_materials: list[str] | None = None) -> None:
     """适配器产出了新材料/新规范正文 → 新增不可变来源版本并发布，随后入 enrich。
 
     旧版本不修改（docs/02 §6.1）；enrich 按 item.source_revision 校验片段（A13）。
@@ -387,7 +467,7 @@ def _publish_segments_revision(db: Session, store: ObjectStore, job: Job, item: 
     new_revision = source.revision + 1
     meta2 = dict(source.metadata_json)
     meta2.update(meta_updates)
-    meta2["missing_materials"] = []
+    meta2["missing_materials"] = missing_materials if missing_materials is not None else []
     source2 = SourceRevision(
         item_id=item.id, user_id=item.user_id, revision=new_revision,
         content_hash=pipeline.sha256_hex(
@@ -399,7 +479,11 @@ def _publish_segments_revision(db: Session, store: ObjectStore, job: Job, item: 
     db.flush()
     item.source_revision = new_revision
 
-    files = _bundle_files(db, item) + list(extra_files)
+    # extra_files 是本次最新登记（可能覆盖同 path 旧版本），按 path 去重合并
+    merged = {f.relative_path: f for f in _bundle_files(db, item)}
+    for f in extra_files:
+        merged[f.relative_path] = f
+    files = list(merged.values())
     files.append(pipeline.register_file(
         db, store, user_id=item.user_id, item_id=item.id,
         data=subfmt.segments_to_normalized_md(segments).encode("utf-8"),

@@ -201,8 +201,8 @@ def test_worker_text_flow(client, user_a, session_factory):
         "/v1/captures",
         json={
             "client_capture_id": "cccccccc-2222-3333-4444-555555555555",
-            "input_kind": "share",
-            "share_text": "第一段：可靠保存。\n第二段：AI 加工不丢材料。",
+            "input_kind": "text",
+            "text": "第一段：可靠保存。\n第二段：AI 加工不丢材料。",
             "original_url": "https://example.com/article/1",
         },
         headers={**auth(token), "Idempotency-Key": "cap-worker"},
@@ -235,7 +235,15 @@ def test_worker_text_flow(client, user_a, session_factory):
     assert seg_doc["segments"][0]["segment_id"] == "s0001"
 
 
-def test_worker_url_only_needs_input(client, user_a, session_factory):
+def test_worker_url_only_needs_input(client, user_a, session_factory, monkeypatch):
+    """只有链接且页面不可达：不伪造正文，进入待补充（M4 适配器失败降级路径）。"""
+    from kbserver.extractors import webpages
+    from kbserver.security.safe_fetch import SafeFetchError
+
+    def _blocked(*args, **kwargs):
+        raise SafeFetchError("SOURCE_BLOCKED", "页面无法访问")
+    monkeypatch.setattr(webpages, "safe_fetch", _blocked)
+
     token = user_a["phone"]["token"]
     c = client.post(
         "/v1/captures",

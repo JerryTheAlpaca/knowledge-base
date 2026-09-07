@@ -133,6 +133,15 @@ def create_operation(
     return op
 
 
+def operation_price_snapshot(db: Session, op: ProviderOperation) -> dict:
+    """从 reserve 账目读价格快照（操作行本身不存价格，docs/02 §14.2）。"""
+    row = db.query(UsageLedger).filter(
+        UsageLedger.operation_id == op.id,
+        UsageLedger.event_type == "reserve",
+    ).first()
+    return dict((row.price_snapshot_json if row else None) or {})
+
+
 def settle_operation(
     db: Session,
     op: ProviderOperation,

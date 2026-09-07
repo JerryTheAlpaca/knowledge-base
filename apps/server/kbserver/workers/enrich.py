@@ -208,8 +208,9 @@ def prepare(session_factory, job_id: str, lease_token: str) -> EnrichPlan | None
             return None
         if op is not None and op.state == "reserved":
             # 上次预留后未发出即中断：退款并重新规划
-            budget.refund_operation(db, op, currency=(op.price_snapshot_json or {}).get("currency") or "CNY",
-                                    price_snapshot=op.price_snapshot_json or {})
+            snapshot = budget.operation_price_snapshot(db, op)
+            budget.refund_operation(db, op, currency=snapshot.get("currency") or "CNY",
+                                    price_snapshot=snapshot)
             db.flush()
 
         capture = db.get(Capture, item.capture_id)
