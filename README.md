@@ -9,7 +9,17 @@
 - [开发任务与验收清单](docs/03-开发任务与验收清单.md)：实施顺序、交付物和可执行验收场景。
 - [B 站字幕获取专项设计](docs/04-B站字幕获取专项设计.md)：字幕轨探测、分 P/cid、登录限制、原始字幕留存和验证命令。
 
-建议先读方案评审，再按开发设计文档实施。应用代码已按《开发任务与验收清单》的里程碑顺序开始建设：M1「可靠接收」的服务端（FastAPI + Worker + SQLite，含幂等 Capture、对象存储、投递清单与回执）已实现并通过集成测试，位于 `apps/server/`；M2「云端加工」已实现服务端闭环（凭据加密托管 API、OpenAI-compatible LLM 适配器、预算账本、AI 输出 Schema 与证据校验、长文本分块、成品 Bundle 发布），接入真实模型 Key 后即可在电脑关机时完成加工。M3 本地入库、M4 主要来源适配仍在开发中。接口契约见 `contracts/openapi.json`。
+建议先读方案评审，再按开发设计文档实施。应用代码已按《开发任务与验收清单》的里程碑顺序开始建设：M1「可靠接收」的服务端（FastAPI + Worker + SQLite，含幂等 Capture、对象存储、投递清单与回执）已实现并通过集成测试，位于 `apps/server/`；M2「云端加工」已实现服务端闭环（凭据加密托管 API、OpenAI-compatible LLM 适配器、预算账本、AI 输出 Schema 与证据校验、长文本分块、成品 Bundle 发布），接入真实模型 Key 后即可在电脑关机时完成加工；M3「本地入库」的 Obsidian 插件已实现（配对、增量事件、清单校验、原子落盘、编辑保护、回执与恢复，位于 `apps/obsidian-plugin/`，构建安装方式见下），真机验收待做；M4 主要来源适配仍在开发中。Worker 每 6 小时执行一次保留期清理（过期上传、到期 Bundle、孤儿文件、过期事件与幂等摘要）。接口契约见 `contracts/openapi.json`。
+
+## Obsidian 插件构建与安装（M3）
+
+```bash
+cd apps/obsidian-plugin
+npm install          # 或使用 npmmirror 源
+npm run build        # tsc 类型检查 + esbuild 产出 main.js
+```
+
+把 `main.js`、`manifest.json` 复制到 Vault 的 `.obsidian/plugins/knowledge-inbox/` 目录，在 Obsidian 设置中启用第三方插件后开启「Knowledge Inbox」。首次使用：填服务器地址 → 在服务器 CLI 生成一次性桌面配对码 → 在插件设置中配对（服务 Token 存入 Obsidian SecretStorage，旧版本降级存本机数据并提示）。
 
 已确认条件：电脑关机时也要完成 AI 加工；服务器 2 核 2GB，可升级至 2 核 4GB；每天约 5–10 条，B 站视频通常约 20 分钟。
 

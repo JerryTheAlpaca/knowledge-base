@@ -45,6 +45,7 @@ class Settings:
     job_lease_seconds: int = int(os.environ.get("JOB_LEASE_SECONDS", "120"))
     job_max_lifetime_days: int = int(os.environ.get("JOB_MAX_LIFETIME_DAYS", "7"))
     worker_poll_seconds: float = float(os.environ.get("WORKER_POLL_SECONDS", "2"))
+    cleanup_sweep_seconds: int = int(os.environ.get("CLEANUP_SWEEP_SECONDS", str(6 * 3600)))
 
     # 模型供应商（docs/02 §9.3：模型配置默认只允许经批准的 HTTPS origin）
     # 环境变量 PROVIDER_ALLOWED_ORIGINS：逗号分隔 host 列表；"*" 表示放行任意 HTTPS host（自部署自担风险）

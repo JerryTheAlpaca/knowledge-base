@@ -103,6 +103,15 @@ class ObjectStore:
     def object_exists(self, storage_key: str) -> bool:
         return self.object_path(storage_key).exists()
 
+    def delete_object(self, storage_key: str) -> bool:
+        """删除不可变对象；只接受存储 key，不接受任意路径。返回是否真的删除了文件。"""
+        path = self.object_path(storage_key)
+        try:
+            path.unlink()
+            return True
+        except FileNotFoundError:
+            return False
+
 
 class PayloadTooLarge(Exception):
     pass

@@ -1,0 +1,24 @@
+{
+  "name": "knowledge-inbox-obsidian",
+  "version": "0.1.0",
+  "description": "知识摄入系统本地入库：配对、增量下载、校验落盘、编辑保护与回执。",
+  "main": "main.js",
+  "scripts": {
+    "typecheck": "tsc --noEmit --skipLibCheck",
+    "dev": "node esbuild.config.mjs",
+    "build": "tsc --noEmit --skipLibCheck && node esbuild.config.mjs production"
+  },
+  "keywords": [
+    "obsidian",
+    "knowledge-inbox"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "builtin-modules": "^4.0.0",
+    "esbuild": "^0.25.0",
+    "obsidian": "^1.8.7",
+    "tslib": "^2.8.1",
+    "typescript": "^5.8.0"
+  }
+}

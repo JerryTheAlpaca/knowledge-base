@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import json
 import secrets
 import time
 from datetime import timedelta
@@ -19,9 +20,13 @@ from ..config import get_settings
 from ..db import make_engine, make_session_factory
 from ..domain import pipeline
 from ..models import (
+    BundleRevision,
     Capture,
+    Event,
+    IdempotencyRecord,
     Item,
     Job,
+    Receipt,
     SourceRevision,
     StoredFile,
     Upload,
@@ -190,6 +195,68 @@ def cleanup_expired_uploads(db: Session, store: ObjectStore) -> int:
     return cleaned
 
 
+def retention_sweep(session_factory, store: ObjectStore) -> dict[str, int]:
+    """保留期清理（docs/02 §14.3）：到期 Bundle、孤儿文件、过期事件与幂等摘要。
+
+    文件登记与 Bundle 清单在同一事务提交，因此"已提交但不被任何存续清单引用"
+    的 StoredFile 即孤儿；运行中任务产生的文件也必然随其 Bundle 一起提交，不会被误删。
+    """
+    settings = get_settings()
+    now = utcnow()
+    stats = {"expired_uploads": 0, "expired_bundles": 0, "orphan_files": 0, "events": 0, "idempotency": 0}
+    with session_factory() as db:
+        # 未引用上传（24h 过期，docs/02 §14.3）
+        stats["expired_uploads"] = cleanup_expired_uploads(db, store)
+
+        # 到期 Bundle：未回执超过未回执保留期，或已回执超过回执后保留期
+        acked_cutoff = now - timedelta(days=settings.acked_bundle_retention_days)
+        for bundle in db.query(BundleRevision).filter(
+            BundleRevision.expires_at.isnot(None), BundleRevision.expires_at < now
+        ).all():
+            receipt = db.query(Receipt).filter(
+                Receipt.user_id == bundle.user_id,
+                Receipt.item_id == bundle.item_id,
+                Receipt.bundle_revision == bundle.revision,
+            ).one_or_none()
+            if receipt is not None and receipt.received_at >= acked_cutoff:
+                continue  # 已回执且未超过回执后保留期
+            store.delete_object(bundle.manifest_key)
+            db.delete(bundle)
+            stats["expired_bundles"] += 1
+        db.commit()
+
+        # 孤儿文件：读取所有存续清单，收集仍被引用的对象
+        referenced: set[str] = set()
+        for bundle in db.query(BundleRevision).all():
+            try:
+                manifest = json.loads(store.read_object(bundle.manifest_key))
+            except Exception:
+                continue  # 清单缺失按过期处理，不阻塞其他清理
+            for entry in manifest.get("files", []):
+                sf = db.query(StoredFile).filter(
+                    StoredFile.user_id == bundle.user_id,
+                    StoredFile.file_id == entry.get("file_id"),
+                ).one_or_none()
+                if sf is not None:
+                    referenced.add(sf.storage_key)
+        for f in db.query(StoredFile).all():
+            if f.storage_key not in referenced:
+                store.delete_object(f.storage_key)
+                db.delete(f)
+                stats["orphan_files"] += 1
+        db.commit()
+
+        ev_cutoff = now - timedelta(days=settings.event_retention_days)
+        stats["events"] = db.query(Event).filter(
+            Event.created_at < ev_cutoff
+        ).delete(synchronize_session=False)
+        stats["idempotency"] = db.query(IdempotencyRecord).filter(
+            IdempotencyRecord.expires_at < now
+        ).delete(synchronize_session=False)
+        db.commit()
+    return stats
+
+
 def run_once(session_factory) -> bool:
     job = claim_job(session_factory)
     if job is None:
@@ -248,8 +315,18 @@ def main() -> None:
     if recovered:
         print(f"[worker] 恢复过期租约 {recovered} 个任务")
     print("[worker] 已启动，轮询任务队列…")
+    store = ObjectStore()
+    last_sweep = 0.0
     while True:
         try:
+            if time.time() - last_sweep >= settings.cleanup_sweep_seconds:
+                try:
+                    stats = retention_sweep(session_factory, store)
+                    if any(stats.values()):
+                        print(f"[worker] 保留期清理：{stats}")
+                except Exception as exc:  # noqa: BLE001 —— 清理失败不阻塞任务处理
+                    print(f"[worker] 清理异常：{type(exc).__name__}: {exc}")
+                last_sweep = time.time()
             worked = run_once(session_factory)
             if not worked:
                 time.sleep(settings.worker_poll_seconds)
