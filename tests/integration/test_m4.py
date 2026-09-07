@@ -275,6 +275,26 @@ def test_bilibili_no_track_needs_input(client, user_a, session_factory, bili_net
     assert "字幕轨" in (it.get("state_detail") or "")
 
 
+def test_bilibili_view_tracks_login_required(client, user_a, session_factory, bili_net):
+    """2026-09-07 实测行为：view API 列出轨道但匿名取不到内容 → 明确要求登录，不称“无字幕”。"""
+    view = _view_doc([{"page": 1, "cid": 111, "part": "P1", "duration": 300}])
+    view["data"]["subtitle"] = {"allow_submit": False, "list": [
+        {"id": 42553898841407491, "lan": "zh-CN", "lan_doc": "中文（中国）", "ai_type": 0, "subtitle_url": ""},
+        {"id": 35979932100722693, "lan": "en-US", "lan_doc": "English(US)", "ai_type": 0, "subtitle_url": ""},
+    ]}
+    bili_net(FakeBiliNet(view=view))  # player 仍为空轨
+    c = _capture_url(client, user_a["phone"]["token"], "m4login",
+                     url=f"https://www.bilibili.com/video/{BV}/")
+    item_id = c.json()["item_id"]
+    _drain(session_factory)
+
+    it = _get_item(client, user_a["desktop"]["token"], item_id)
+    assert it["pipeline_state"] == "needs_input"
+    detail = it.get("state_detail") or ""
+    assert "2 条字幕轨" in detail and "登录" in detail
+    assert "中文（中国）" in detail
+
+
 def test_bilibili_part_out_of_range(client, user_a, session_factory, bili_net):
     bili_net(FakeBiliNet())
     c = _capture_url(client, user_a["phone"]["token"], "m4p99",

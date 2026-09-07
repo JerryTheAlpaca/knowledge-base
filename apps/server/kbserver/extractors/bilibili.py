@@ -6,10 +6,13 @@
 
 实现依据（2026-09-07 匿名实测）：
 - GET https://api.bilibili.com/x/web-interface/view?bvid=…  匿名可用，
-  data.pages[] 携带 page/cid/duration/part。
-- GET https://api.bilibili.com/x/player/v2?bvid=…&cid=…  匿名可用，
-  data.subtitle.subtitles[] 携带 id/lan/lan_doc/ai_type/subtitle_url；
-  自动生成字幕通常匿名不可见（实测热门/知识区样本均返回空列表）。
+  data.pages[] 携带 page/cid/duration/part；data.subtitle.list 匿名可见
+  （轨道 id/语言/ai_type），但 subtitle_url 为空。
+- GET https://api.bilibili.com/x/player/v2?bvid=…&cid=…  匿名可用但
+  data.subtitle.subtitles[] 恒为空列表（实测含 WBI 签名路径、热门/知识区/
+  相关视频共 80+ 样本）；即字幕内容需登录态才能取得。
+- 因此：player 无轨而 view 列出轨道 → 判定 login_required（有轨但匿名取
+  不到内容）；两者皆空 → no_track。绝不声称有轨视频“无字幕”（A18）。
 
 规则：
 - 站点内部接口封装在本模块内，不是本项目的稳定 API（docs/02 §5.6）。
@@ -223,6 +226,22 @@ def resolve_video_part(ref: VideoRef, settings_max_bytes: int) -> dict:
 
     video_id = data.get("bvid") or ref.bvid or (f"av{ref.aid}" if ref.aid else "")
     page_num = int(chosen.get("page") or 1)
+
+    # view API 的字幕轨清单匿名可见（subtitle_url 为空）：用于区分
+    # “确实无轨”与“有轨但需要登录”（A18，2026-09-07 实测）
+    view_tracks: list[dict] = []
+    for t in (data.get("subtitle") or {}).get("list") or []:
+        if not isinstance(t, dict):
+            continue
+        view_tracks.append({
+            "track_id": str(t.get("id") or ""),
+            "language": t.get("lan"),
+            "label": t.get("lan_doc") or t.get("lan"),
+            "is_auto_generated": (True if t.get("ai_type") == 1 else False if t.get("ai_type") == 0 else None),
+            "is_translation": None,
+            "kind": "caption",
+        })
+
     return {
         "canonical_url": f"https://www.bilibili.com/video/{video_id}/" + (f"?p={page_num}" if page_num != 1 else ""),
         "title": data.get("title"),
@@ -234,6 +253,7 @@ def resolve_video_part(ref: VideoRef, settings_max_bytes: int) -> dict:
         "cid": str(chosen.get("cid")),
         "page_duration_s": float(chosen.get("duration") or 0) or None,
         "part_note": part_note,
+        "view_subtitle_tracks": view_tracks,
     }
 
 
@@ -345,8 +365,22 @@ def extract(url: str, *, share_text: str | None = None) -> BilibiliExtraction:
     pairs = discover_tracks(ref, page, limit)
 
     if not pairs:
-        # 匿名请求拿不到轨道：可能是无字幕，也可能是自动字幕需要登录。
-        # 如实提示，不声称“字幕不存在”（docs/04 §5、A18）。
+        # player 匿名无轨：先看 view API 是否列出了字幕轨（2026-09-07 实测：
+        # 有轨视频匿名也拿不到 subtitle_url/player 列表）。
+        view_tracks = page.get("view_subtitle_tracks") or []
+        if view_tracks:
+            langs = "、".join(
+                dict.fromkeys(
+                    (t.get("label") or t.get("language") or "?") for t in view_tracks[:6]
+                )
+            )
+            raise BilibiliError(
+                "login_required",
+                f"视频存在 {len(view_tracks)} 条字幕轨（{langs}"
+                f"{'…' if len(view_tracks) > 6 else ''}），但匿名访问无法取得字幕内容。"
+                "请在你登录的浏览器中导出该轨字幕上传，或粘贴摘录。",
+            )
+        # view 也没有轨道：可能是无字幕，也可能是仅自动字幕。如实提示（docs/04 §5）。
         raise BilibiliError(
             "no_track",
             "匿名访问未取得字幕轨：视频可能没有独立字幕，或自动字幕需要登录。"
