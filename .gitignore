@@ -12,7 +12,7 @@ cookies/
 
 # Local runtime data, databases, and generated uploads
 data/
-storage/
+/storage/
 uploads/
 *.db
 *.sqlite
