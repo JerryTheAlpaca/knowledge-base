@@ -2,16 +2,19 @@
 
 - BEGIN IMMEDIATE 领取到期任务；随机 lease_token、120s 租约；完成只允许当前租约提交。
 - 启动恢复：过期 running 租约回到 queued。
-- extract：有正文/分享文字 → 生成 normalized.md + segments.json 并发布新 Bundle，随后入 enrich；
-  只有链接或附件 → needs_input（来源适配器在 M4 提供），绝不伪造正文。
+- extract：字幕文件上传或 B 站链接走 M4 适配器；有正文/分享文字 → 生成
+  normalized.md + segments.json 并发布新 Bundle，随后入 enrich；
+  其余只有链接或附件 → needs_input，绝不伪造正文。
 - enrich：由 workers/enrich.py 执行（预算预留、模型调用、校验、发布成品 Bundle）。
 """
 from __future__ import annotations
 
 import json
+import re
 import secrets
 import time
 from datetime import timedelta
+from urllib.parse import urlparse
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -19,6 +22,8 @@ from sqlalchemy.orm import Session
 from ..config import get_settings
 from ..db import make_engine, make_session_factory
 from ..domain import pipeline
+from ..extractors import bilibili as bili
+from ..extractors import subtitles as subfmt
 from ..models import (
     BundleRevision,
     Capture,
@@ -112,19 +117,40 @@ def run_extract(db: Session, store: ObjectStore, job: Job, item: Item) -> None:
     source = _latest_source(db, item)
     meta = source.metadata_json
 
-    text = (payload.get("text") or payload.get("share_text") or "").strip()
+    user_text = (payload.get("text") or "").strip()
+    share_text = (payload.get("share_text") or "").strip()
     supplement = (meta.get("supplement_text") or "").strip()
-    body = text or supplement
 
-    if not body:
-        # 只有链接/图片/音频：M4 之前不做伪造提取
-        item.pipeline_state = "needs_input"
-        item.state_detail = "缺少正文：等待来源适配器（M4）或用户补充材料"
-        job.state = "succeeded"
-        pipeline.emit_event(db, item.user_id, item_id=item.id, bundle_revision=item.bundle_revision,
-                            event_type="item_needs_input", payload={"reason": item.state_detail})
+    # 1) 用户后续补充的正文优先（补充流程语义不变）
+    if supplement:
+        _extract_plain_text(db, store, job, item, source, body=supplement, origin="user_supplement")
         return
+    # 2) 上传的字幕文件直接规范化进入加工，不重新访问来源网站（A19）
+    if _extract_from_subtitle_uploads(db, store, job, item, source):
+        return
+    # 3) 用户正文；B 站分享文字只有标题+链接，不能当正文（docs/04 §5）
+    is_bili = _is_bilibili_capture(payload, meta)
+    body = user_text or ("" if is_bili else share_text)
+    if body:
+        _extract_plain_text(
+            db, store, job, item, source, body=body,
+            origin="user_submission" if (user_text or share_text) else "user_supplement",
+        )
+        return
+    # 4) B 站链接：字幕适配器（docs/04）
+    if is_bili:
+        _extract_bilibili(db, store, job, item, source, payload)
+        return
+    # 5) 其余只有链接/图片/音频：M4 其他适配器提供前不做伪造提取
+    item.pipeline_state = "needs_input"
+    item.state_detail = "缺少正文：等待来源适配器（M4）或用户补充材料"
+    job.state = "succeeded"
+    pipeline.emit_event(db, item.user_id, item_id=item.id, bundle_revision=item.bundle_revision,
+                        event_type="item_needs_input", payload={"reason": item.state_detail})
 
+
+def _extract_plain_text(db: Session, store: ObjectStore, job: Job, item: Item,
+                        source: SourceRevision, *, body: str, origin: str) -> None:
     # normalized.md：带块 ID 的规范文字稿（docs/02 §6.4、§12.1）
     paragraphs = [p.strip() for p in body.split("\n") if p.strip()]
     lines = []
@@ -137,7 +163,7 @@ def run_extract(db: Session, store: ObjectStore, job: Job, item: Item) -> None:
             "text": p,
             "artifact_file_id": None,  # 发布后回填由清单定位
             "locator": {"type": "paragraph", "index": i},
-            "origin": "user_submission" if text else "user_supplement",
+            "origin": origin,
             "confidence": None,
         })
     normalized_md = "".join(lines)
@@ -165,6 +191,194 @@ def run_extract(db: Session, store: ObjectStore, job: Job, item: Item) -> None:
 
     pipeline.enqueue_stage(
         db, user_id=item.user_id, item_id=item.id, source_revision=source.revision, stage="enrich"
+    )
+
+
+def _is_bilibili_capture(payload: dict, meta: dict) -> bool:
+    if meta.get("platform") == "bilibili":
+        return True
+    candidates = [payload.get("original_url"), bili.extract_first_url(payload.get("share_text"))]
+    for url in candidates:
+        if not url:
+            continue
+        try:
+            host = (urlparse(url).hostname or "").lower()
+        except ValueError:
+            continue
+        if host == "bilibili.com" or host.endswith(".bilibili.com") or host.endswith("b23.tv"):
+            return True
+    return False
+
+
+def _needs_input(db: Session, job: Job, item: Item, detail: str, reason: str) -> None:
+    item.pipeline_state = "needs_input"
+    item.state_detail = detail[:200]
+    job.state = "succeeded"
+    pipeline.emit_event(db, item.user_id, item_id=item.id, bundle_revision=item.bundle_revision,
+                        event_type="item_needs_input", payload={"reason": reason, "detail": detail[:200]})
+
+
+def _extract_from_subtitle_uploads(db: Session, store: ObjectStore, job: Job,
+                                   item: Item, source: SourceRevision) -> bool:
+    """上传的 SRT/VTT/字幕 JSON 直接规范化进入加工；无平台访问也能完成（A19）。
+
+    返回 True 表示本路径已处理（发布或 needs_input）；False 表示没有可用的
+    字幕文件，交回其他路径处理。解析不了的 .json 附件不当字幕。
+    """
+    rows = (
+        db.query(StoredFile)
+        .filter(
+            StoredFile.item_id == item.id,
+            StoredFile.user_id == item.user_id,
+            StoredFile.relative_path.like("uploads/%"),
+        )
+        .order_by(StoredFile.created_at.asc(), StoredFile.id.asc())
+        .all()
+    )
+    store_reader = ObjectStore()
+    segments: list[dict] = []
+    warnings: list[str] = []
+    subtitle_paths: list[str] = []
+    for f in rows:
+        name = f.relative_path.rsplit("/", 1)[-1].lower()
+        if not name.endswith((".srt", ".vtt", ".json")):
+            continue
+        try:
+            data = store_reader.read_object(f.storage_key)
+            records, kind = subfmt.parse_any(data, filename=name, mime=f.mime or "")
+        except Exception:
+            continue  # 不是可解析的字幕文件，留给其他路径
+        source_kind = "platform_subtitle" if kind == "platform_subtitle_json" else "tool_exported_srt"
+        segs, warns = subfmt.normalize_records(records, source=source_kind)
+        warnings.extend(warns)
+        segments.extend(segs)
+        subtitle_paths.append(f.relative_path)
+    if not subtitle_paths:
+        return False
+    if not segments:
+        _needs_input(db, job, item, "上传的字幕文件没有可用片段；请检查文件内容。", "empty_subtitle")
+        return True
+
+    for i, seg in enumerate(segments, start=1):
+        seg["segment_id"] = f"s{i:04d}"
+    warnings.append("已从上传字幕生成规范文字稿；AI 加工待执行。")
+    _publish_segments_revision(
+        db, store, job, item, source,
+        segments=segments, warnings=warnings, extra_files=[],
+        meta_updates={
+            "coverage": "full_text",
+            "original_media_retained": True,
+            "extractor": {"name": "subtitle_upload", "version": "subtitle_upload-1.0.0",
+                          "discovery_status": "available"},
+            "subtitle_sources": subtitle_paths,
+        },
+    )
+    return True
+
+
+def _extract_bilibili(db: Session, store: ObjectStore, job: Job, item: Item,
+                      source: SourceRevision, payload: dict) -> None:
+    """B 站字幕适配器路径（docs/04）。
+
+    network_error/blocked 上抛走任务级有限退避；其余状态进入补充材料，
+    不伪造全文，不启动 ASR。
+    """
+    try:
+        ext = bili.extract(payload.get("original_url"), share_text=payload.get("share_text"))
+    except bili.BilibiliError as exc:
+        if exc.status in ("network_error", "blocked"):
+            raise  # 有限退避重试，由 run_once 顶层落到任务表
+        _needs_input(db, job, item, exc.message, exc.status)
+        return
+
+    if not ext.segments:
+        _needs_input(db, job, item, "字幕轨存在但没有可用片段；请补充字幕文件或粘贴摘录。", "empty_subtitle")
+        return
+
+    video_id = ext.video.bvid or f"av{ext.video.aid}"
+    track_id = re.sub(r"[^A-Za-z0-9_-]", "_", (ext.track or {}).get("track_id") or "track")
+    original_path = f"originals/bilibili/{video_id}/P{ext.part}/{track_id}.{ext.raw_suffix}"
+    original_file = pipeline.register_file(
+        db, store, user_id=item.user_id, item_id=item.id,
+        data=ext.raw_subtitle, relative_path=original_path,
+        role="source_material", mime="application/json",
+    )
+    srt_file = pipeline.register_file(
+        db, store, user_id=item.user_id, item_id=item.id,
+        data=subfmt.segments_to_srt(ext.segments).encode("utf-8"),
+        relative_path="transcript.srt", role="source_material", mime="application/x-subrip",
+    )
+    warnings = list(ext.warnings) + ["已从 B 站字幕生成规范文字稿；AI 加工待执行。"]
+    _publish_segments_revision(
+        db, store, job, item, source,
+        segments=ext.segments, warnings=warnings, extra_files=[original_file, srt_file],
+        meta_updates={
+            "platform": "bilibili",
+            "title": ext.title,
+            "author": ext.author,
+            "published_at": ext.published_at,
+            "canonical_url": ext.canonical_url,
+            "coverage": ext.coverage,
+            "original_media_retained": True,
+            "source_locator": {
+                "type": "bilibili_video",
+                "bvid": ext.video.bvid,
+                "aid": ext.video.aid,
+                "cid": ext.cid,
+                "part": ext.part,
+                "pages_count": ext.pages_count,
+            },
+            "subtitle_tracks": ext.tracks,
+            "extractor": {"name": "bilibili_subtitles", "version": bili.EXTRACTOR_VERSION,
+                          "discovery_status": "available"},
+        },
+    )
+
+
+def _publish_segments_revision(db: Session, store: ObjectStore, job: Job, item: Item,
+                               source: SourceRevision, *, segments: list[dict],
+                               warnings: list[str], extra_files: list,
+                               meta_updates: dict) -> None:
+    """适配器产出了新材料/新规范正文 → 新增不可变来源版本并发布，随后入 enrich。
+
+    旧版本不修改（docs/02 §6.1）；enrich 按 item.source_revision 校验片段（A13）。
+    """
+    new_revision = source.revision + 1
+    meta2 = dict(source.metadata_json)
+    meta2.update(meta_updates)
+    meta2["missing_materials"] = []
+    source2 = SourceRevision(
+        item_id=item.id, user_id=item.user_id, revision=new_revision,
+        content_hash=pipeline.sha256_hex(
+            pipeline.canonical_json({"segments": segments, "meta_updates": meta_updates})
+        ),
+        metadata_json=meta2, artifacts_json={},
+    )
+    db.add(source2)
+    db.flush()
+    item.source_revision = new_revision
+
+    files = _bundle_files(db, item) + list(extra_files)
+    files.append(pipeline.register_file(
+        db, store, user_id=item.user_id, item_id=item.id,
+        data=subfmt.segments_to_normalized_md(segments).encode("utf-8"),
+        relative_path="normalized.md", role="source_material", mime="text/markdown",
+    ))
+    files.append(pipeline.register_file(
+        db, store, user_id=item.user_id, item_id=item.id,
+        data=pipeline.canonical_json({"source_revision": new_revision, "segments": segments}),
+        relative_path="segments.json", role="source_material", mime="application/json",
+    ))
+    db.flush()
+
+    pipeline.publish_bundle(
+        db, store, item=item, source=source2, files=files,
+        processing_state="original_only", pipeline_state="enriching",
+        warnings=warnings,
+    )
+    job.state = "succeeded"
+    pipeline.enqueue_stage(
+        db, user_id=item.user_id, item_id=item.id, source_revision=new_revision, stage="enrich"
     )
 
 

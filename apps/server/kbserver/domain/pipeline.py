@@ -338,8 +338,9 @@ def create_capture(db: Session, store: ObjectStore, *, user_id: str, payload: di
     db.add(item)
     db.flush()
 
+    hint = payload.get("source_hint")
     meta = {
-        "platform": payload.get("source_hint") or guess_platform(payload.get("original_url") or ""),
+        "platform": hint if hint and hint != "unknown" else guess_platform(payload.get("original_url") or ""),
         "title": None,
         "author": None,
         "original_url": payload.get("original_url"),

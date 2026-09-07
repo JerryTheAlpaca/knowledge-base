@@ -73,8 +73,13 @@ class FetchResult:
     truncated: bool = False
 
 
-def safe_fetch(url: str, *, max_bytes: int | None = None, timeout: float = 20.0, mime_prefixes: tuple[str, ...] | None = None) -> FetchResult:
-    """同步受限 GET。内容完整读入前先检查大小；超限抛错，不发布截断结果。"""
+def safe_fetch(url: str, *, max_bytes: int | None = None, timeout: float = 20.0,
+               mime_prefixes: tuple[str, ...] | None = None,
+               headers: dict[str, str] | None = None) -> FetchResult:
+    """同步受限 GET。内容完整读入前先检查大小；超限抛错，不发布截断结果。
+
+    headers 仅允许覆盖 User-Agent/Referer 等请求头，安全校验（DNS/IP/重定向/大小）不受影响。
+    """
     settings = get_settings()
     limit = max_bytes or settings.html_download_limit
     _check_url_allowed(url)
@@ -84,7 +89,7 @@ def safe_fetch(url: str, *, max_bytes: int | None = None, timeout: float = 20.0,
         transport=transport,
         timeout=httpx.Timeout(timeout, connect=10.0),
         follow_redirects=False,
-        headers={"User-Agent": "KnowledgeInbox/0.1 (+restricted-fetcher)"},
+        headers={"User-Agent": "KnowledgeInbox/0.1 (+restricted-fetcher)", **(headers or {})},
     ) as client:
         current = url
         for _ in range(MAX_REDIRECTS + 1):
