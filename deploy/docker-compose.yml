@@ -1,0 +1,72 @@
+# 单机部署结构（docs/02 §15.1）：api + worker（同代码镜像的独立任务入口）+ 反向代理占位。
+# 数据库与对象卷挂载到当前主机磁盘，不放容器可写层；不向 API 暴露 Docker socket。
+services:
+  api:
+    build:
+      context: ../apps/server
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: sqlite:////data/db/app.db
+      OBJECTS_DIR: /data/objects
+      TMP_DIR: /data/tmp
+      DELETIONS_DIR: /data/deletions
+      MASTER_KEY_FILE: /run/secrets/master_key
+      MASTER_KEY_VERSION: "1"
+      SESSION_SECRET_FILE: /run/secrets/session_secret
+    volumes:
+      - db-data:/data/db
+      - object-data:/data/objects
+      - tmp-data:/data/tmp
+      - deletion-data:/data/deletions
+    secrets:
+      - master_key
+      - session_secret
+    # 首版无域名/HTTPS，先直接暴露 8000；接入 Caddy 后改为仅绑定 127.0.0.1
+    ports:
+      - "8000:8000"
+    # 初始内存上限 256MiB（docs/02 §14.1）；2GB 主机预留系统与 SQLite 页面缓存
+    mem_limit: 256m
+
+  worker:
+    build:
+      context: ../apps/server
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    command: ["python", "-m", "kbserver.workers.worker"]
+    environment:
+      DATABASE_URL: sqlite:////data/db/app.db
+      OBJECTS_DIR: /data/objects
+      TMP_DIR: /data/tmp
+      DELETIONS_DIR: /data/deletions
+      MASTER_KEY_FILE: /run/secrets/master_key
+      MASTER_KEY_VERSION: "1"
+      WORKER_POLL_SECONDS: "2"
+    volumes:
+      - db-data:/data/db
+      - object-data:/data/objects
+      - tmp-data:/data/tmp
+      - deletion-data:/data/deletions
+    secrets:
+      - master_key
+      - session_secret
+    # Worker 内存上限 640MiB
+    mem_limit: 640m
+
+  # 首版反代占位：生产环境使用 Caddy/Nginx 终止 HTTPS 并挂载静态 Web 收件箱。
+  # proxy:
+  #   image: caddy:2
+  #   ports: ["443:443", "80:80"]
+  #   depends_on: [api]
+
+volumes:
+  db-data:
+  object-data:
+  tmp-data:
+  deletion-data:
+
+secrets:
+  master_key:
+    file: ./secrets/master_key
+  session_secret:
+    file: ./secrets/session_secret

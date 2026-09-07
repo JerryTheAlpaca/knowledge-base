@@ -1,0 +1,357 @@
+"""领域流水线：Capture 接收、来源版本、Bundle 发布（docs/02 §6、§7.4、§8.1）。
+
+关键顺序（§7.4）：文件先写对象存储并校验摘要，再在数据库短事务中写引用；
+发布事件与更新 Item 当前版本在同一事务内。
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import re
+from datetime import timedelta
+
+from sqlalchemy.orm import Session
+
+from ..config import get_settings
+from ..models import (
+    BundleRevision,
+    Capture,
+    Event,
+    Item,
+    Job,
+    SourceRevision,
+    StoredFile,
+    Upload,
+    new_id,
+    utcnow,
+)
+from ..storage.objects import ObjectStore
+from .platforms import guess_platform
+
+RECIPE_VERSION = "source-light-v1"
+SCHEMA_VERSION = "1.0"
+
+
+def canonical_json(data) -> bytes:
+    return json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def sha256_hex(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _file_id(prefix: str, item_id: str, path: str) -> str:
+    return f"{prefix}-{hashlib.sha256(f'{item_id}|{path}'.encode()).hexdigest()[:12]}"
+
+
+# ---- 事件 ----
+
+def emit_event(db: Session, user_id: str, *, item_id: str | None, bundle_revision: int | None,
+               event_type: str, payload: dict | None = None) -> None:
+    db.add(
+        Event(
+            user_id=user_id,
+            item_id=item_id,
+            bundle_revision=bundle_revision,
+            event_type=event_type,
+            payload_json=payload or {},
+        )
+    )
+
+
+# ---- Manifest ----
+
+def build_manifest(
+    *,
+    item: Item,
+    source: SourceRevision,
+    bundle_revision: int,
+    files: list[StoredFile],
+    processing_state: str,
+    warnings: list[str] | None = None,
+) -> dict:
+    meta = source.metadata_json
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "item_id": item.id,
+        "source_revision": source.revision,
+        "bundle_revision": bundle_revision,
+        "created_at": utcnow().isoformat(),
+        "source": {
+            "platform": meta.get("platform", "unknown"),
+            "title": meta.get("title"),
+            "author": meta.get("author"),
+            "original_url": meta.get("original_url"),
+            "canonical_url": meta.get("canonical_url"),
+            "published_at": meta.get("published_at"),
+            "captured_at": meta.get("captured_at"),
+            "source_locator": meta.get("source_locator", {}),
+            "coverage": meta.get("coverage", "metadata_only"),
+            "content_scope": meta.get("content_scope", "unknown"),
+            "original_media_retained": bool(meta.get("original_media_retained", False)),
+        },
+        "processing": {
+            "state": processing_state,
+            "recipe_version": RECIPE_VERSION,
+            "result_file_id": meta.get("result_file_id"),
+            "source_revision": source.revision,
+        },
+        "files": [
+            {
+                "file_id": f.file_id,
+                "relative_path": f.relative_path,
+                "role": f.role,
+                "mime": f.mime,
+                "bytes": f.bytes,
+                "sha256": f.sha256,
+            }
+            for f in files
+        ],
+        "missing_materials": meta.get("missing_materials", []),
+        "warnings": warnings or [],
+        "expires_at": (utcnow() + timedelta(days=get_settings().unacked_bundle_retention_days)).isoformat(),
+    }
+
+
+def register_file(db: Session, store: ObjectStore, *, user_id: str, item_id: str,
+                  data: bytes, relative_path: str, role: str, mime: str,
+                  sha256: str | None = None) -> StoredFile:
+    """把一个文件写入对象存储并在库中登记；file_id 由内容+路径派生，重试幂等。"""
+    sha, key, size = store.put_bytes(data)
+    file_id = _file_id(role, item_id, relative_path)
+    existing = db.get(StoredFile, file_id)
+    if existing and existing.user_id == user_id and existing.sha256 == sha:
+        return existing
+    f = StoredFile(
+        file_id=file_id,
+        user_id=user_id,
+        item_id=item_id,
+        role=role,
+        relative_path=relative_path,
+        mime=mime,
+        bytes=size,
+        sha256=sha,
+        storage_key=key,
+    )
+    db.add(f)
+    db.flush()
+    return f
+
+
+def upload_to_file(upload: Upload, *, user_id: str, item_id: str) -> StoredFile:
+    """已上传文件引用为 Bundle 文件；复用 upload 的对象。"""
+    return StoredFile(
+        file_id=f"upload-{upload.id[:12]}-{item_id[:8]}",
+        user_id=user_id,
+        item_id=item_id,
+        role="original_submission",
+        relative_path=f"uploads/{upload.id}/{upload.filename or 'attachment.bin'}",
+        mime=upload.mime,
+        bytes=upload.bytes,
+        sha256=upload.sha256,
+        storage_key=upload.storage_key,
+    )
+
+
+def ensure_upload_file(db: Session, upload: Upload, *, user_id: str, item_id: str) -> StoredFile:
+    """把上传文件登记为条目文件；同条目同上传幂等复用已有登记。"""
+    from sqlalchemy import select
+
+    existing = db.scalar(
+        select(StoredFile).where(
+            StoredFile.user_id == user_id,
+            StoredFile.file_id == f"upload-{upload.id[:12]}-{item_id[:8]}",
+        )
+    )
+    if existing is not None:
+        return existing
+    f = upload_to_file(upload, user_id=user_id, item_id=item_id)
+    db.add(f)
+    db.flush()
+    return f
+
+
+def publish_bundle(
+    db: Session,
+    store: ObjectStore,
+    *,
+    item: Item,
+    source: SourceRevision,
+    files: list[StoredFile],
+    processing_state: str,
+    warnings: list[str] | None = None,
+    pipeline_state: str | None = None,
+) -> BundleRevision:
+    """发布一个不可变 Bundle：manifest 先写对象存储，再在库中登记引用并推进 Item 当前版本。"""
+    item.bundle_revision = getattr(item, "bundle_revision", 0) or 0
+    revision = (item.bundle_revision or 0) + 1
+    manifest = build_manifest(
+        item=item, source=source, bundle_revision=revision, files=files,
+        processing_state=processing_state, warnings=warnings,
+    )
+    manifest_bytes = canonical_json(manifest)
+    sha, key, _ = store.put_bytes(manifest_bytes)
+
+    bundle = BundleRevision(
+        item_id=item.id,
+        user_id=item.user_id,
+        revision=revision,
+        source_revision=source.revision,
+        manifest_key=key,
+        manifest_sha256=sha,
+        processing_state=processing_state,
+        expires_at=utcnow() + timedelta(days=get_settings().unacked_bundle_retention_days),
+    )
+    db.add(bundle)
+
+    item.bundle_revision = revision
+    item.pipeline_state = pipeline_state or processing_state
+
+    emit_event(
+        db, item.user_id,
+        item_id=item.id, bundle_revision=revision,
+        event_type="bundle_published",
+        payload={"bundle_revision": revision, "processing_state": processing_state,
+                 "source_revision": source.revision},
+    )
+    return bundle
+
+
+# ---- Capture 接收 ----
+
+ALLOWED_INPUT_KINDS = {"url", "text", "share", "images", "audio", "conversation", "workflow", "file"}
+ALLOWED_ARCHIVE_POLICIES = {"source_materials", "minimal"}
+
+
+def validate_capture_payload(payload: dict, uploads_index: dict[str, Upload]) -> None:
+    """写请求严格校验（docs/02 §10.2）。拒绝未知字段由 Pydantic 层负责，这里校验语义。"""
+    from .errors import ApiError
+
+    if payload.get("schema_version") != "1.0":
+        raise ApiError("VERSION_UNSUPPORTED", "schema_version 仅支持 1.0")
+    kind = payload.get("input_kind")
+    if kind not in ALLOWED_INPUT_KINDS:
+        raise ApiError("SCHEMA_INVALID", f"input_kind 非法：{kind}")
+    settings = get_settings()
+
+    url = payload.get("original_url")
+    text = payload.get("text") or ""
+    share = payload.get("share_text") or ""
+    upload_ids = payload.get("upload_ids") or []
+
+    if url:
+        if len(url) > 8192:
+            raise ApiError("SCHEMA_INVALID", "original_url 超过 8192 字符")
+        if not re.match(r"^https?://", url):
+            raise ApiError("SCHEMA_INVALID", "original_url 必须是 HTTP(S) 链接")
+    if len(text) + len(share) > 1024 * 1024:
+        raise ApiError("SCHEMA_INVALID", "text/share_text 合计超过 1MiB，请使用文件上传")
+    note = payload.get("user_note") or ""
+    if len(note) > 10000:
+        raise ApiError("SCHEMA_INVALID", "user_note 超过 10000 字符")
+    if not (url or text or share or upload_ids):
+        raise ApiError("SCHEMA_INVALID", "至少需要 URL、文字或已上传文件之一")
+    if len(upload_ids) > settings.max_attachments_per_capture:
+        raise ApiError("PAYLOAD_TOO_LARGE", f"每条采集最多 {settings.max_attachments_per_capture} 个附件")
+
+    for uid in upload_ids:
+        up = uploads_index.get(uid)
+        if up is None:
+            raise ApiError("SCHEMA_INVALID", f"upload_id 不存在或未完成：{uid}")
+
+    if payload.get("archive_policy") not in ALLOWED_ARCHIVE_POLICIES:
+        raise ApiError("SCHEMA_INVALID", "archive_policy 非法")
+
+
+def create_capture(db: Session, store: ObjectStore, *, user_id: str, payload: dict,
+                   uploads: dict[str, Upload]) -> tuple[Capture, Item]:
+    """接收一条采集：原始输入 + 初始来源版本 + 原始材料 Bundle + 首个任务，同一提交边界。"""
+    settings = get_settings()
+
+    total_bytes = sum(u.bytes for u in uploads.values())
+    if total_bytes > settings.max_capture_total_bytes:
+        from .errors import ApiError
+        raise ApiError("PAYLOAD_TOO_LARGE", "附件总计超过单条采集上限")
+
+    now = utcnow()
+    capture = Capture(
+        user_id=user_id,
+        client_capture_id=payload["client_capture_id"],
+        request_hash=hashlib.sha256(canonical_json(payload)).hexdigest(),
+        input_json=payload,
+        received_at=now,
+    )
+    db.add(capture)
+    db.flush()
+
+    item = Item(user_id=user_id, capture_id=capture.id, pipeline_state="queued")
+    db.add(item)
+    db.flush()
+
+    meta = {
+        "platform": payload.get("source_hint") or guess_platform(payload.get("original_url") or ""),
+        "title": None,
+        "author": None,
+        "original_url": payload.get("original_url"),
+        "canonical_url": None,
+        "published_at": None,
+        "captured_at": payload.get("captured_at"),
+        "source_locator": {},
+        "coverage": "full_text" if (payload.get("text") or payload.get("share_text")) else ("metadata_only" if payload.get("original_url") else "metadata_only"),
+        "content_scope": payload.get("content_scope") or "unknown",
+        "original_media_retained": False,
+        "missing_materials": _initial_missing(payload),
+        "user_note": payload.get("user_note"),
+        "result_file_id": None,
+    }
+    source = SourceRevision(
+        item_id=item.id, user_id=user_id, revision=1,
+        content_hash=hashlib.sha256(canonical_json(payload)).hexdigest(),
+        metadata_json=meta, artifacts_json={},
+    )
+    db.add(source)
+    db.flush()
+
+    files: list[StoredFile] = []
+    capture_bytes = canonical_json({"capture": payload, "received_at": now.isoformat()})
+    files.append(
+        register_file(
+            db, store, user_id=user_id, item_id=item.id,
+            data=capture_bytes, relative_path="capture.json",
+            role="original_submission", mime="application/json",
+        )
+    )
+    for uid in payload.get("upload_ids") or []:
+        up = uploads.get(uid)
+        if up:
+            files.append(ensure_upload_file(db, up, user_id=user_id, item_id=item.id))
+
+    db.flush()
+    publish_bundle(
+        db, store, item=item, source=source, files=files,
+        processing_state="original_only", pipeline_state="queued",
+        warnings=["已保存原始材料；AI 加工尚未开始。"],
+    )
+
+    job = Job(
+        user_id=user_id, item_id=item.id, source_revision=1,
+        stage="extract", recipe_hash=hashlib.sha256(RECIPE_VERSION.encode()).hexdigest()[:16],
+        state="queued",
+    )
+    db.add(job)
+
+    emit_event(db, user_id, item_id=item.id, bundle_revision=1, event_type="capture_received",
+               payload={"item_id": item.id})
+    return capture, item
+
+
+def _initial_missing(payload: dict) -> list[str]:
+    missing: list[str] = []
+    kind = payload.get("input_kind")
+    if kind == "url" and not (payload.get("text") or payload.get("share_text")):
+        missing.append("main_content")
+    if kind == "images":
+        missing.append("ocr_text")
+    if kind == "audio":
+        missing.append("transcript")
+    return missing

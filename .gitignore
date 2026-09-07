@@ -1,0 +1,38 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+credentials/
+cookies/
+
+# Local runtime data, databases, and generated uploads
+data/
+storage/
+uploads/
+*.db
+*.sqlite
+*.sqlite3
+
+# Private captured material and personal Obsidian vaults
+captures/
+vault/
+private/
+
+# Editor, dependency, build, and test artifacts
+.obsidian/workspace*.json
+.obsidian/cache
+node_modules/
+dist/
+build/
+coverage/
+.pytest_cache/
+__pycache__/
+*.py[cod]
+
+# Agent workspace data
+.workbuddy/
