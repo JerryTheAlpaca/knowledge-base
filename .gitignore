@@ -19,9 +19,9 @@ uploads/
 *.sqlite3
 
 # Private captured material and personal Obsidian vaults
-captures/
-vault/
-private/
+/captures/
+/vault/
+/private/
 
 # Editor, dependency, build, and test artifacts
 .obsidian/workspace*.json
