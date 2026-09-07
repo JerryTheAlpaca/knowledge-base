@@ -46,6 +46,27 @@ class Settings:
     job_max_lifetime_days: int = int(os.environ.get("JOB_MAX_LIFETIME_DAYS", "7"))
     worker_poll_seconds: float = float(os.environ.get("WORKER_POLL_SECONDS", "2"))
 
+    # 模型供应商（docs/02 §9.3：模型配置默认只允许经批准的 HTTPS origin）
+    # 环境变量 PROVIDER_ALLOWED_ORIGINS：逗号分隔 host 列表；"*" 表示放行任意 HTTPS host（自部署自担风险）
+    provider_allowed_origins: tuple[str, ...] = tuple(
+        s.strip()
+        for s in os.environ.get("PROVIDER_ALLOWED_ORIGINS", "").split(",")
+        if s.strip()
+    ) or (
+        "api.openai.com",
+        "api.deepseek.com",
+        "api.moonshot.cn",
+        "open.bigmodel.cn",
+        "dashscope.aliyuncs.com",
+        "api.siliconflow.cn",
+        "openrouter.ai",
+        "api.mistral.ai",
+        "api.groq.com",
+        "api.together.xyz",
+        "api.anthropic.com",
+        "api.x.ai",
+    )
+
     def ensure_dirs(self) -> None:
         for d in (self.objects_dir, self.tmp_dir, self.deletions_dir, self.database_url_path()):
             d.mkdir(parents=True, exist_ok=True)

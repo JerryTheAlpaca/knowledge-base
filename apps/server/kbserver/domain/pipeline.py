@@ -40,8 +40,9 @@ def sha256_hex(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _file_id(prefix: str, item_id: str, path: str) -> str:
-    return f"{prefix}-{hashlib.sha256(f'{item_id}|{path}'.encode()).hexdigest()[:12]}"
+def _file_id(prefix: str, item_id: str, path: str, sha: str) -> str:
+    # 内容感知：同路径不同内容（如补充材料后重提取）得到不同 file_id，不再撞唯一约束
+    return f"{prefix}-{hashlib.sha256(f'{item_id}|{path}'.encode()).hexdigest()[:8]}-{sha[:12]}"
 
 
 # ---- 事件 ----
@@ -69,6 +70,7 @@ def build_manifest(
     files: list[StoredFile],
     processing_state: str,
     warnings: list[str] | None = None,
+    result_file_id: str | None = None,
 ) -> dict:
     meta = source.metadata_json
     return {
@@ -93,7 +95,7 @@ def build_manifest(
         "processing": {
             "state": processing_state,
             "recipe_version": RECIPE_VERSION,
-            "result_file_id": meta.get("result_file_id"),
+            "result_file_id": result_file_id if result_file_id is not None else meta.get("result_file_id"),
             "source_revision": source.revision,
         },
         "files": [
@@ -116,11 +118,19 @@ def build_manifest(
 def register_file(db: Session, store: ObjectStore, *, user_id: str, item_id: str,
                   data: bytes, relative_path: str, role: str, mime: str,
                   sha256: str | None = None) -> StoredFile:
-    """把一个文件写入对象存储并在库中登记；file_id 由内容+路径派生，重试幂等。"""
+    """把一个文件写入对象存储并在库中登记；file_id 由内容+路径派生，重试幂等。
+
+    按 (user_id, file_id) 唯一约束查询已有登记（file_id 不是主键，不能按主键 get）。
+    """
+    from sqlalchemy import select
+
     sha, key, size = store.put_bytes(data)
-    file_id = _file_id(role, item_id, relative_path)
-    existing = db.get(StoredFile, file_id)
-    if existing and existing.user_id == user_id and existing.sha256 == sha:
+    sha = sha256 or sha
+    file_id = _file_id(role, item_id, relative_path, sha)
+    existing = db.scalar(
+        select(StoredFile).where(StoredFile.user_id == user_id, StoredFile.file_id == file_id)
+    )
+    if existing is not None and existing.sha256 == sha:
         return existing
     f = StoredFile(
         file_id=file_id,
@@ -171,6 +181,14 @@ def ensure_upload_file(db: Session, upload: Upload, *, user_id: str, item_id: st
     return f
 
 
+def latest_files_per_path(rows: list[StoredFile]) -> list[StoredFile]:
+    """同 relative_path 多版本（内容寻址 file_id）时只保留最新登记。"""
+    latest: dict[str, StoredFile] = {}
+    for f in sorted(rows, key=lambda r: (r.created_at, r.id)):
+        latest[f.relative_path] = f
+    return list(latest.values())
+
+
 def publish_bundle(
     db: Session,
     store: ObjectStore,
@@ -181,6 +199,7 @@ def publish_bundle(
     processing_state: str,
     warnings: list[str] | None = None,
     pipeline_state: str | None = None,
+    result_file_id: str | None = None,
 ) -> BundleRevision:
     """发布一个不可变 Bundle：manifest 先写对象存储，再在库中登记引用并推进 Item 当前版本。"""
     item.bundle_revision = getattr(item, "bundle_revision", 0) or 0
@@ -188,6 +207,7 @@ def publish_bundle(
     manifest = build_manifest(
         item=item, source=source, bundle_revision=revision, files=files,
         processing_state=processing_state, warnings=warnings,
+        result_file_id=result_file_id,
     )
     manifest_bytes = canonical_json(manifest)
     sha, key, _ = store.put_bytes(manifest_bytes)
@@ -215,6 +235,36 @@ def publish_bundle(
                  "source_revision": source.revision},
     )
     return bundle
+
+
+def enqueue_stage(db: Session, *, user_id: str, item_id: str, source_revision: int, stage: str,
+                  reset_attempt: bool = False) -> Job:
+    """幂等入队：jobs 有 UNIQUE(user,item,revision,stage,recipe_hash)，
+    重复入队（重新加工、凭据更新后重排队）复位已有行而不是插入新行。"""
+    recipe_hash = hashlib.sha256(RECIPE_VERSION.encode()).hexdigest()[:16]
+    job = db.query(Job).filter(
+        Job.user_id == user_id,
+        Job.item_id == item_id,
+        Job.source_revision == source_revision,
+        Job.stage == stage,
+        Job.recipe_hash == recipe_hash,
+    ).one_or_none()
+    if job is not None:
+        if job.state != "running":
+            job.state = "queued"
+            job.not_before = utcnow()
+            job.lease_token = None
+            job.lease_until = None
+            if reset_attempt:
+                job.attempt = 0
+        return job
+    job = Job(
+        user_id=user_id, item_id=item_id, source_revision=source_revision,
+        stage=stage, recipe_hash=recipe_hash, state="queued",
+    )
+    db.add(job)
+    db.flush()
+    return job
 
 
 # ---- Capture 接收 ----
@@ -333,12 +383,7 @@ def create_capture(db: Session, store: ObjectStore, *, user_id: str, payload: di
         warnings=["已保存原始材料；AI 加工尚未开始。"],
     )
 
-    job = Job(
-        user_id=user_id, item_id=item.id, source_revision=1,
-        stage="extract", recipe_hash=hashlib.sha256(RECIPE_VERSION.encode()).hexdigest()[:16],
-        state="queued",
-    )
-    db.add(job)
+    enqueue_stage(db, user_id=user_id, item_id=item.id, source_revision=1, stage="extract")
 
     emit_event(db, user_id, item_id=item.id, bundle_revision=1, event_type="capture_received",
                payload={"item_id": item.id})

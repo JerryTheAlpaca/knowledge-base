@@ -2,18 +2,15 @@
 
 - BEGIN IMMEDIATE 领取到期任务；随机 lease_token、120s 租约；完成只允许当前租约提交。
 - 启动恢复：过期 running 租约回到 queued。
-- M1 语义：
-  - extract：有正文/分享文字 → 生成 normalized.md + segments.json 并发布新 Bundle，随后入 enrich；
-    只有链接或附件 → needs_input（来源适配器在 M4 提供），绝不伪造正文。
-  - enrich：用户未配置模型凭据 → waiting_key（材料保留）；已配置 → 等待 M2 模型适配器，有限退避。
+- extract：有正文/分享文字 → 生成 normalized.md + segments.json 并发布新 Bundle，随后入 enrich；
+  只有链接或附件 → needs_input（来源适配器在 M4 提供），绝不伪造正文。
+- enrich：由 workers/enrich.py 执行（预算预留、模型调用、校验、发布成品 Bundle）。
 """
 from __future__ import annotations
 
-import hashlib
 import secrets
 import time
 from datetime import timedelta
-from pathlib import Path
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -23,7 +20,6 @@ from ..db import make_engine, make_session_factory
 from ..domain import pipeline
 from ..models import (
     Capture,
-    Credential,
     Item,
     Job,
     SourceRevision,
@@ -32,6 +28,7 @@ from ..models import (
     utcnow,
 )
 from ..storage.objects import ObjectStore
+from . import enrich as enrich_stage
 
 
 def claim_job(session_factory) -> Job | None:
@@ -100,7 +97,8 @@ def _latest_source(db: Session, item: Item) -> SourceRevision:
 
 
 def _bundle_files(db: Session, item: Item) -> list[StoredFile]:
-    return list(db.query(StoredFile).filter(StoredFile.item_id == item.id, StoredFile.user_id == item.user_id))
+    rows = list(db.query(StoredFile).filter(StoredFile.item_id == item.id, StoredFile.user_id == item.user_id))
+    return pipeline.latest_files_per_path(rows)
 
 
 def run_extract(db: Session, store: ObjectStore, job: Job, item: Item) -> None:
@@ -160,28 +158,9 @@ def run_extract(db: Session, store: ObjectStore, job: Job, item: Item) -> None:
     )
     job.state = "succeeded"
 
-    db.add(Job(
-        user_id=item.user_id, item_id=item.id, source_revision=source.revision,
-        stage="enrich", recipe_hash=hashlib.sha256(pipeline.RECIPE_VERSION.encode()).hexdigest()[:16],
-        state="queued",
-    ))
-
-
-def run_enrich(db: Session, job: Job, item: Item) -> None:
-    credential = (
-        db.query(Credential)
-        .filter(Credential.user_id == item.user_id, Credential.revoked_at.is_(None))
-        .one_or_none()
+    pipeline.enqueue_stage(
+        db, user_id=item.user_id, item_id=item.id, source_revision=source.revision, stage="enrich"
     )
-    if credential is None:
-        item.pipeline_state = "waiting_key"
-        item.state_detail = "未配置模型凭据：请在设置中配置后自动继续；原始材料已保存。"
-        job.state = "succeeded"
-        pipeline.emit_event(db, item.user_id, item_id=item.id, bundle_revision=item.bundle_revision,
-                            event_type="item_waiting_key")
-        return
-    # M2：模型适配器与预算预留尚未实现；有限退避，不丢材料
-    retry_or_fail(db, job, "模型适配器将在 M2 提供；材料与任务已保留")
 
 
 def recover_expired_leases(session_factory) -> int:
@@ -217,6 +196,16 @@ def run_once(session_factory) -> bool:
         return False
     job_id = job.id
     lease_token = job.lease_token
+    if job.stage == "enrich":
+        try:
+            enrich_stage.execute(session_factory, job_id, lease_token)
+        except Exception as exc:  # noqa: BLE001 —— enrich 未分类异常按可重试处理
+            with session_factory() as db2:
+                job2 = db2.get(Job, job_id)
+                if job2 is not None and job2.lease_token == lease_token and job2.state == "running":
+                    retry_or_fail(db2, job2, f"{type(exc).__name__}: {exc}")
+                    db2.commit()
+        return True
     store = ObjectStore()
     with session_factory() as db:
         try:
@@ -235,11 +224,6 @@ def run_once(session_factory) -> bool:
                 item.pipeline_state = "extracting"
                 db.commit()
                 run_extract(db, store, job, item)
-                db.commit()
-            elif job.stage == "enrich":
-                item.pipeline_state = "enriching"
-                db.commit()
-                run_enrich(db, job, item)
                 db.commit()
         except Exception as exc:  # noqa: BLE001 —— Worker 顶层边界，必须把失败落到任务表
             db.rollback()

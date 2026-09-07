@@ -257,10 +257,11 @@ class ProviderOperation(Base, TimestampMixin):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
-    job_id: Mapped[str] = mapped_column(ForeignKey("jobs.id"), index=True)
+    job_id: Mapped[str | None] = mapped_column(ForeignKey("jobs.id"), index=True, nullable=True)  # 连接测试等无任务调用为空
+    profile_id: Mapped[str | None] = mapped_column(ForeignKey("provider_profiles.id"), nullable=True)
     request_fingerprint: Mapped[str] = mapped_column(String(64))
     provider_task_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
-    state: Mapped[str] = mapped_column(String(30), default="reserved")  # reserved|succeeded|failed|unknown_outcome
+    state: Mapped[str] = mapped_column(String(30), default="reserved")  # reserved|sent|succeeded|failed|unknown_outcome
     reserved_cost: Mapped[int] = mapped_column(Integer, default=0)  # 整数微单位
     actual_usage_json: Mapped[dict] = mapped_column(JSON, default=dict)
 

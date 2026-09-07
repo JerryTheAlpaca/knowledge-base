@@ -190,11 +190,7 @@ def supplement(
         processing_state="original_only", pipeline_state="queued",
         warnings=["用户补充了材料，等待重新处理。"],
     )
-    db.add(Job(
-        user_id=user.id, item_id=item.id, source_revision=new_revision,
-        stage="extract", recipe_hash=pipeline.sha256_hex(pipeline.RECIPE_VERSION.encode())[:16],
-        state="queued",
-    ))
+    pipeline.enqueue_stage(db, user_id=user.id, item_id=item.id, source_revision=new_revision, stage="extract")
     db.commit()
     db.refresh(item)
     return _item_out(item, new_source)
@@ -212,11 +208,10 @@ def reprocess(
     item = _require_item(db, user.id, item_id)
     source = _latest_source(db, item)
     stage = "extract" if item.pipeline_state in {"needs_input", "failed"} else "enrich"
-    db.add(Job(
-        user_id=user.id, item_id=item.id, source_revision=item.source_revision,
-        stage=stage, recipe_hash=pipeline.sha256_hex(pipeline.RECIPE_VERSION.encode())[:16],
-        state="queued",
-    ))
+    pipeline.enqueue_stage(
+        db, user_id=user.id, item_id=item.id, source_revision=item.source_revision,
+        stage=stage, reset_attempt=True,
+    )
     item.pipeline_state = "queued"
     item.state_detail = body.reason or "用户请求重新加工"
     db.commit()

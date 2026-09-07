@@ -4,7 +4,8 @@ from __future__ import annotations
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from .api import routes_captures, routes_devices, routes_health, routes_items, routes_pairing, routes_sync, routes_uploads
+from .api import (routes_captures, routes_devices, routes_health, routes_items,
+                  routes_pairing, routes_profiles, routes_sync, routes_uploads)
 from .domain.errors import ApiError, status_for
 from .models import new_id
 
@@ -39,6 +40,7 @@ def create_app() -> FastAPI:
     app.include_router(routes_items.router)
     app.include_router(routes_sync.router)
     app.include_router(routes_devices.router)
+    app.include_router(routes_profiles.router)
     return app
 
 
