@@ -27,16 +27,19 @@ from ..extractors import subtitles as subfmt
 from ..models import (
     BundleRevision,
     Capture,
+    Credential,
     Event,
     IdempotencyRecord,
     Item,
     Job,
+    ProviderProfile,
     Receipt,
     SourceRevision,
     StoredFile,
     Upload,
     utcnow,
 )
+from ..security import credentials as cred_crypto
 from ..storage.objects import ObjectStore
 from . import enrich as enrich_stage
 
@@ -276,15 +279,52 @@ def _extract_from_subtitle_uploads(db: Session, store: ObjectStore, job: Job,
     return True
 
 
+def _user_sessdata(db: Session, user_id: str) -> tuple[str | None, str | None]:
+    """读取用户托管的 B 站登录态最小凭据（docs/04 §5）。
+
+    返回 (sessdata, 错误信息)。没有托管 → (None, None)；
+    解密失败 → (None, 错误提示)，由调用方进入 needs_input。
+    明文只在本函数内解密并传给提取器，不写日志、不落库。
+    """
+    row = (
+        db.query(ProviderProfile, Credential)
+        .join(Credential, Credential.profile_id == ProviderProfile.id)
+        .filter(
+            ProviderProfile.user_id == user_id,
+            ProviderProfile.kind == "bilibili_session",
+            Credential.revoked_at.is_(None),
+        )
+        .order_by(Credential.created_at.desc())
+        .first()
+    )
+    if row is None:
+        return None, None
+    profile, cred = row
+    try:
+        value = cred_crypto.decrypt_secret(
+            cred.encrypted_secret, cred.encrypted_dek, cred.nonces_json,
+            get_settings().load_master_key(),
+            user_id=user_id, profile_id=profile.id, credential_version=cred.version,
+        )
+    except Exception as exc:
+        return None, f"B 站登录凭据解密失败（{type(exc).__name__}）；请重新提交 SESSDATA。"
+    return value, None
+
+
 def _extract_bilibili(db: Session, store: ObjectStore, job: Job, item: Item,
                       source: SourceRevision, payload: dict) -> None:
     """B 站字幕适配器路径（docs/04）。
 
-    network_error/blocked 上抛走任务级有限退避；其余状态进入补充材料，
-    不伪造全文，不启动 ASR。
+    用户托管了登录态（SESSDATA）则以登录态探测；network_error/blocked 上抛
+    走任务级有限退避；其余状态进入补充材料，不伪造全文，不启动 ASR。
     """
+    sessdata, sess_err = _user_sessdata(db, item.user_id)
+    if sess_err:
+        _needs_input(db, job, item, sess_err, "login_required")
+        return
     try:
-        ext = bili.extract(payload.get("original_url"), share_text=payload.get("share_text"))
+        ext = bili.extract(payload.get("original_url"), share_text=payload.get("share_text"),
+                           sessdata=sessdata)
     except bili.BilibiliError as exc:
         if exc.status in ("network_error", "blocked"):
             raise  # 有限退避重试，由 run_once 顶层落到任务表
@@ -330,7 +370,8 @@ def _extract_bilibili(db: Session, store: ObjectStore, job: Job, item: Item,
             },
             "subtitle_tracks": ext.tracks,
             "extractor": {"name": "bilibili_subtitles", "version": bili.EXTRACTOR_VERSION,
-                          "discovery_status": "available"},
+                          "discovery_status": "available",
+                          "login_state_used": ext.login_state_used},
         },
     )
 

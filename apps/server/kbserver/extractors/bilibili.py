@@ -84,6 +84,7 @@ class BilibiliExtraction:
     part_note: str | None
     tracks: list[dict] = field(default_factory=list)   # 可用轨元数据，不含临时下载地址
     track: dict | None = None                          # 所选轨
+    login_state_used: bool = False
     raw_subtitle: bytes = b""
     raw_suffix: str = "json"
     segments: list[dict] = field(default_factory=list)
@@ -95,18 +96,24 @@ class BilibiliExtraction:
         return "full_text" if self.segments else "metadata_only"
 
 
-def _browser_headers() -> dict[str, str]:
-    return {
+def _browser_headers(sessdata: str | None = None) -> dict[str, str]:
+    headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
             "(KHTML, like Gecko) Chrome/126.0 Safari/537.36"
         ),
         "Referer": "https://www.bilibili.com/",
     }
+    if sessdata:
+        # 最小凭据：仅 SESSDATA（2026-09-07 实测优于整串 Cookie，见 docs/04 §5）
+        headers["Cookie"] = f"SESSDATA={sessdata}"
+    return headers
 
 
-def _fetch_json(url: str, *, max_bytes: int, timeout: float = 15.0) -> dict:
-    result = safe_fetch(url, max_bytes=max_bytes, timeout=timeout, headers=_browser_headers())
+def _fetch_json(url: str, *, max_bytes: int, timeout: float = 15.0,
+                sessdata: str | None = None) -> dict:
+    result = safe_fetch(url, max_bytes=max_bytes, timeout=timeout,
+                        headers=_browser_headers(sessdata))
     try:
         doc = json.loads(result.content.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -237,7 +244,7 @@ def resolve_video_part(ref: VideoRef, settings_max_bytes: int) -> dict:
             "track_id": str(t.get("id") or ""),
             "language": t.get("lan"),
             "label": t.get("lan_doc") or t.get("lan"),
-            "is_auto_generated": (True if t.get("ai_type") == 1 else False if t.get("ai_type") == 0 else None),
+            "is_auto_generated": _auto_flag(t),
             "is_translation": None,
             "kind": "caption",
         })
@@ -257,17 +264,39 @@ def resolve_video_part(ref: VideoRef, settings_max_bytes: int) -> dict:
     }
 
 
-def discover_tracks(ref: VideoRef, page: dict, settings_max_bytes: int) -> list[tuple[dict, str]]:
+def _auto_flag(t: dict) -> bool | None:
+    """自动字幕判定：lan 以 ai- 开头是平台明确标记（ai_type 字段并不区分）。"""
+    lan = (t.get("language") or "").lower()
+    if lan.startswith("ai-"):
+        return True
+    ai_type = t.get("ai_type")
+    if ai_type == 1:
+        return True
+    if ai_type == 0:
+        return False
+    return None
+
+
+def discover_tracks(ref: VideoRef, page: dict, settings_max_bytes: int,
+                    sessdata: str | None = None) -> list[tuple[dict, str]]:
     """探测字幕轨，转换为内部契约（docs/04 §4.3）。
 
     返回 [(track_meta, download_url)]；临时下载地址只用于本次下载，
-    不写入 track_meta，不作为永久材料地址保存。
+    不写入 track_meta，不作为永久材料地址保存。带登录态时仅附最小凭据
+    Cookie（SESSDATA），不携带其他 Cookie 字段。
     """
     if ref.bvid:
         player_url = f"https://api.bilibili.com/x/player/v2?bvid={ref.bvid}&cid={page['cid']}"
     else:
         player_url = f"https://api.bilibili.com/x/player/v2?aid={ref.aid}&cid={page['cid']}"
-    data = _api(_fetch_json(player_url, max_bytes=settings_max_bytes))
+    try:
+        data = _api(_fetch_json(player_url, max_bytes=settings_max_bytes, sessdata=sessdata))
+    except BilibiliError as exc:
+        if sessdata and exc.status == "login_required":
+            raise BilibiliError(
+                "login_required", "B 站登录凭据已失效或无权限：请在设置中更新 B 站登录态。"
+            ) from exc
+        raise
 
     subtitle_section = data.get("subtitle") or {}
     raw_tracks = subtitle_section.get("subtitles") or []
@@ -279,15 +308,14 @@ def discover_tracks(ref: VideoRef, page: dict, settings_max_bytes: int) -> list[
             continue
         url = t.get("subtitle_url") or ""
         if not url:
-            continue
+            continue  # 无地址的轨（如翻译投稿轨）不参与选择
         if url.startswith("//"):
             url = "https:" + url
-        ai_type = t.get("ai_type")
         track = {
             "track_id": str(t.get("id") or t.get("lan") or len(pairs) + 1),
             "language": t.get("lan"),
             "label": t.get("lan_doc") or t.get("lan"),
-            "is_auto_generated": (True if ai_type == 1 else False if ai_type == 0 else None),
+            "is_auto_generated": _auto_flag(t),
             "is_translation": None,
             "kind": "caption",
         }
@@ -313,13 +341,6 @@ def choose_track(pairs: list[tuple[dict, str]]) -> tuple[dict, str]:
     return sorted(pairs, key=sort_key)[0]
 
 
-def download_track(url: str, settings_max_bytes: int) -> bytes:
-    """下载原始字幕文件（受限下载器负责重定向与大小限制）。"""
-    result = safe_fetch(url, max_bytes=settings_max_bytes, timeout=15.0,
-                        headers=_browser_headers())
-    return result.content
-
-
 class _SubtitleBodyInvalid(Exception):
     """下载内容不是字幕 JSON（地址过期/需登录/风控页）。"""
 
@@ -328,10 +349,13 @@ class _SubtitleBodyInvalid(Exception):
         self.raw = raw
 
 
-def _download_and_parse(url: str, settings_max_bytes: int) -> tuple[bytes, list[dict]]:
+def _download_and_parse(url: str, settings_max_bytes: int,
+                        sessdata: str | None = None) -> tuple[bytes, list[dict]]:
     """下载并解析字幕 JSON；登录页/风控页不当作字幕保存（docs/04 §4.5）。"""
     try:
-        raw = download_track(url, settings_max_bytes)
+        result = safe_fetch(url, max_bytes=settings_max_bytes, timeout=15.0,
+                            headers=_browser_headers(sessdata))
+        raw = result.content
     except SafeFetchError as exc:
         if exc.code == "NETWORK_ERROR":
             raise BilibiliError("network_error", f"字幕下载失败：{exc}") from exc
@@ -345,10 +369,13 @@ def _download_and_parse(url: str, settings_max_bytes: int) -> tuple[bytes, list[
 
 # ---- 总入口 ----
 
-def extract(url: str, *, share_text: str | None = None) -> BilibiliExtraction:
+def extract(url: str, *, share_text: str | None = None,
+            sessdata: str | None = None) -> BilibiliExtraction:
     """提取一条用户指定视频/分 P 的字幕；失败抛 BilibiliError。
 
-    只处理用户选择的这一个视频/分 P，不抓合集、播放列表或作者主页。
+    sessdata 为该用户托管的 B 站登录态最小凭据；提供时以登录态探测 player
+    接口并下载字幕。只处理用户选择的这一个视频/分 P，不抓合集、播放列表
+    或作者主页。
     """
     from ..config import get_settings
 
@@ -362,10 +389,10 @@ def extract(url: str, *, share_text: str | None = None) -> BilibiliExtraction:
     ref = resolve_share_url(target)
     page = resolve_video_part(ref, limit)
     time.sleep(_REQUEST_GAP_S)
-    pairs = discover_tracks(ref, page, limit)
+    pairs = discover_tracks(ref, page, limit, sessdata=sessdata)
 
     if not pairs:
-        # player 匿名无轨：先看 view API 是否列出了字幕轨（2026-09-07 实测：
+        # player 无可下载轨：先看 view API 是否列出了字幕轨（2026-09-07 实测：
         # 有轨视频匿名也拿不到 subtitle_url/player 列表）。
         view_tracks = page.get("view_subtitle_tracks") or []
         if view_tracks:
@@ -374,34 +401,47 @@ def extract(url: str, *, share_text: str | None = None) -> BilibiliExtraction:
                     (t.get("label") or t.get("language") or "?") for t in view_tracks[:6]
                 )
             )
+            if sessdata:
+                raise BilibiliError(
+                    "login_required",
+                    f"视频存在 {len(view_tracks)} 条字幕轨（{langs}"
+                    f"{'…' if len(view_tracks) > 6 else ''}），但当前登录态未取得可下载字幕"
+                    "（可能只有翻译投稿轨或凭据已失效）。请核对 B 站登录态或补充字幕文件。",
+                )
             raise BilibiliError(
                 "login_required",
                 f"视频存在 {len(view_tracks)} 条字幕轨（{langs}"
                 f"{'…' if len(view_tracks) > 6 else ''}），但匿名访问无法取得字幕内容。"
-                "请在你登录的浏览器中导出该轨字幕上传，或粘贴摘录。",
+                "可在设置中托管 B 站登录态自动获取，或补充字幕文件/粘贴摘录。",
             )
         # view 也没有轨道：可能是无字幕，也可能是仅自动字幕。如实提示（docs/04 §5）。
+        if sessdata:
+            raise BilibiliError(
+                "no_track",
+                "登录态下仍未取得字幕轨：视频可能没有独立字幕。"
+                "若你在浏览器中能看到可开关字幕，请补充字幕文件或粘贴摘录。",
+            )
         raise BilibiliError(
             "no_track",
             "匿名访问未取得字幕轨：视频可能没有独立字幕，或自动字幕需要登录。"
-            "若你在浏览器中能看到可开关字幕，请补充字幕文件或粘贴摘录。",
+            "可在设置中托管 B 站登录态自动获取，或补充字幕文件/粘贴摘录。",
         )
 
     track, track_url = choose_track(pairs)
     time.sleep(_REQUEST_GAP_S)
     try:
-        raw, records = _download_and_parse(track_url, limit)
+        raw, records = _download_and_parse(track_url, limit, sessdata=sessdata)
     except _SubtitleBodyInvalid:
         # 地址过期或返回异常：重新探测一次同一视频/分 P（docs/04 §4.5），不循环重试
         time.sleep(_REQUEST_GAP_S)
-        pairs2 = discover_tracks(ref, page, limit)
+        pairs2 = discover_tracks(ref, page, limit, sessdata=sessdata)
         retry_pair = next((p for p in pairs2 if p[0]["track_id"] == track["track_id"]), None)
         if retry_pair is None:
             raise BilibiliError(
                 "no_track", "字幕地址过期且重新探测未找到所选轨道；请稍后重试或补充字幕文件。"
             )
         try:
-            raw, records = _download_and_parse(retry_pair[1], limit)
+            raw, records = _download_and_parse(retry_pair[1], limit, sessdata=sessdata)
         except (_SubtitleBodyInvalid, BilibiliError) as exc:
             raise BilibiliError(
                 "blocked", "字幕地址重新探测后仍无法取得有效字幕 JSON；原始材料不受影响。"
@@ -427,6 +467,7 @@ def extract(url: str, *, share_text: str | None = None) -> BilibiliExtraction:
         part_note=page.get("part_note"),
         tracks=[t for t, _u in pairs],
         track=track,
+        login_state_used=bool(sessdata),
         raw_subtitle=raw,
         raw_suffix="json",
         segments=segments,

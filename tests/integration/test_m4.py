@@ -135,7 +135,8 @@ TRACK_AI = {
 class FakeBiliNet:
     """按 URL 前缀路由的假 safe_fetch；记录调用以便断言。"""
 
-    def __init__(self, *, view=None, players=None, subtitle=None, redirects=None, fail_urls=()):
+    def __init__(self, *, view=None, players=None, subtitle=None, redirects=None, fail_urls=(),
+                 require_cookie=False, cookie_value=None):
         # players: {"cid值": player_doc}; redirects: {"短链": "最终URL"}
         self.view = view or _view_doc([{"page": 1, "cid": 111, "part": "P1", "duration": 300}])
         self.players = players or {"111": _player_doc([])}
@@ -143,6 +144,10 @@ class FakeBiliNet:
         self.redirects = redirects or {}
         self.fail_urls = set(fail_urls)
         self.calls: list[str] = []
+        # require_cookie=True 时，player 仅在 Cookie 头匹配 cookie_value 时返回轨道
+        self.require_cookie = require_cookie
+        self.cookie_value = cookie_value
+        self.cookie_headers_seen: list = []
 
     def __call__(self, url, *, max_bytes=None, timeout=20.0, mime_prefixes=None, headers=None):
         self.calls.append(url)
@@ -156,7 +161,15 @@ class FakeBiliNet:
                                content=json.dumps(self.view).encode("utf-8"))
         if "player/v2" in url:
             cid = url.split("cid=")[-1]
-            doc = self.players.get(cid, _player_doc([]))
+            if self.require_cookie:
+                cookie = (headers or {}).get("Cookie")
+                self.cookie_headers_seen.append(cookie)
+                if cookie != self.cookie_value:
+                    doc = {"code": 0, "data": {"subtitle": {"allow_submit": False, "subtitles": []}}}
+                else:
+                    doc = self.players.get(cid, _player_doc([]))
+            else:
+                doc = self.players.get(cid, _player_doc([]))
             return FetchResult(url=url, status_code=200, mime="application/json",
                                content=json.dumps(doc).encode("utf-8"))
         if "aisubtitle" in url or url.endswith(".json"):
@@ -390,3 +403,109 @@ def test_bilibili_network_error_retries_not_needs_input(client, user_a, session_
     it = _get_item(client, user_a["desktop"]["token"], item_id)
     assert it["pipeline_state"] in ("extracting", "retry_wait", "queued")
     assert it["pipeline_state"] != "needs_input"
+
+
+# ---- B 站登录态托管 ----
+
+def test_extract_sessdata_parsing():
+    """SESSDATA 提取：裸值 / 前缀 / 完整 Cookie；非法输入拒绝。"""
+    from kbserver.api.routes_bilibili import _extract_sessdata
+
+    assert _extract_sessdata("abcDEF12345678901234%2C") == "abcDEF12345678901234%2C"
+    assert _extract_sessdata("SESSDATA=abcDEF12345678901234%2C") == "abcDEF12345678901234%2C"
+    assert _extract_sessdata("buvid3=x; SESSDATA=abcDEF12345678901234%2C; bili_jct=y") == "abcDEF12345678901234%2C"
+    import pytest
+
+    for bad in ("", "太短", "a=b=c", "x; y", "有 空格的值不是sessdata!"):
+        with pytest.raises(Exception):
+            _extract_sessdata(bad)
+
+
+def test_bilibili_session_api_lifecycle(client, user_a):
+    """SESSDATA 只进不出：明文永不回读；轮换产生新版本；可撤销。"""
+    token = user_a["desktop"]["token"]
+
+    r0 = client.get("/v1/bilibili-session", headers=auth(token))
+    assert r0.status_code == 200 and r0.json()["configured"] is False
+
+    # 裸值
+    p1 = client.put("/v1/bilibili-session", json={"secret": "fake-sessdata-value-1234567890"},
+                    headers=auth(token))
+    assert p1.status_code == 200
+    out = p1.json()
+    assert out["configured"] is True and out["credential_version"] == 1
+    assert "fake-sessdata" not in json.dumps(out)  # 明文不回读
+
+    # 完整 Cookie 粘贴：只提取 SESSDATA，轮换为 v2
+    p2 = client.put("/v1/bilibili-session", json={
+        "secret": "buvid3=xyz; SESSDATA=fake-sessdata-rotated-9876543210; bili_jct=abc",
+    }, headers=auth(token))
+    assert p2.status_code == 200 and p2.json()["credential_version"] == 2
+    assert "fake-sessdata-rotated" not in json.dumps(p2.json())
+
+    # 非法输入
+    bad = client.put("/v1/bilibili-session", json={"secret": "短"}, headers=auth(token))
+    assert bad.status_code == 422
+    bad2 = client.put("/v1/bilibili-session", json={"secret": "not a sessdata value with spaces"},
+                      headers=auth(token))
+    assert bad2.status_code == 422
+
+    # profiles 列表中可见（kind=bilibili_session），仍不回读明文
+    listed = client.get("/v1/provider-profiles", headers=auth(token)).json()
+    kinds = [p["kind"] for p in listed]
+    assert "bilibili_session" in kinds
+
+    # 撤销
+    d = client.delete("/v1/bilibili-session", headers=auth(token))
+    assert d.status_code == 200
+    r1 = client.get("/v1/bilibili-session", headers=auth(token))
+    assert r1.json()["configured"] is False
+
+
+def test_bilibili_extract_with_login_state(client, user_a, session_factory, bili_net):
+    """托管登录态后，player 需要登录的视频自动取得字幕；请求带最小凭据 Cookie。"""
+    net = bili_net(FakeBiliNet(
+        players={"111": _player_doc([TRACK_MANUAL])},
+        require_cookie=True,
+        cookie_value="SESSDATA=fake-sessdata-value-123456",
+    ))
+    token = user_a["desktop"]["token"]
+
+    # 未托管登录态：先降级为 needs_input
+    c = _capture_url(client, user_a["phone"]["token"], "m4login1",
+                     url=f"https://www.bilibili.com/video/{BV}/")
+    item_id = c.json()["item_id"]
+    _drain(session_factory)
+    assert _get_item(client, token, item_id)["pipeline_state"] == "needs_input"
+
+    # 托管登录态 → needs_input 条目自动重新提取 → 成功
+    put = client.put("/v1/bilibili-session", json={"secret": "fake-sessdata-value-123456"},
+                     headers=auth(token))
+    assert put.status_code == 200
+    assert put.json()["requeued_items"] >= 1
+    _drain(session_factory)
+
+    it = _get_item(client, token, item_id)
+    assert it["source_revision"] == 2
+    assert it["pipeline_state"] == "waiting_key"
+    # 托管后的 player 调用带最小凭据 Cookie（托管前的匿名调用 Cookie 为空）
+    assert net.cookie_headers_seen
+    assert any(h == "SESSDATA=fake-sessdata-value-123456" for h in net.cookie_headers_seen)
+    assert all(h in (None, "SESSDATA=fake-sessdata-value-123456") for h in net.cookie_headers_seen)
+
+
+def test_bilibili_session_invalid_needs_input(client, user_a, session_factory, bili_net):
+    """登录凭据失效（-101）：明确提示更新登录态，而不是冒充匿名失败。"""
+    # view 正常（真实场景 view 匿名可用），player 对该 cid 返回 -101
+    dead_players = {"111": {"code": -101, "message": "账号未登录"}}
+    bili_net(FakeBiliNet(players=dead_players))
+    client.put("/v1/bilibili-session", json={"secret": "fake-sessdata-value-123456"},
+               headers=auth(user_a["desktop"]["token"]))
+    c = _capture_url(client, user_a["phone"]["token"], "m4dead",
+                     url=f"https://www.bilibili.com/video/{BV}/")
+    item_id = c.json()["item_id"]
+    _drain(session_factory)
+
+    it = _get_item(client, user_a["desktop"]["token"], item_id)
+    assert it["pipeline_state"] == "needs_input"
+    assert "失效" in (it.get("state_detail") or "")
