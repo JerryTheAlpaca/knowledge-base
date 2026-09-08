@@ -62,6 +62,7 @@ export class SyncEngine {
   private running = false;
   private epochConflict = false;
   private lastError: string | null = null;
+  private suppressedCount = 0;
 
   constructor(private deps: EngineDeps) {
     this.deps.fs = deps.fs;
@@ -75,11 +76,18 @@ export class SyncEngine {
       lastRunAt: null,
       lastError: this.lastError,
       epochConflict: this.epochConflict,
+      suppressedCount: this.suppressedCount,
     };
   }
 
   resetEpochConflict(): void {
     this.epochConflict = false;
+  }
+
+  private async refreshSuppressedCount(): Promise<void> {
+    const s = this.deps.settings();
+    const suppression = new Suppression(this.deps.fs, `${s.systemFolder}/KnowledgeInbox/suppression.json`);
+    this.suppressedCount = (await suppression.list()).length;
   }
 
   /** 单实例任务锁；重复触发直接跳过（docs/02 §13.3）。 */
@@ -92,7 +100,7 @@ export class SyncEngine {
     try {
       const client = this.deps.getClient();
       if (!client) {
-        this.deps.onStatus({ running: false, cursor: 0, pendingCount: 0, lastRunAt: Date.now(), lastError: "尚未配对", epochConflict: false });
+        this.deps.onStatus({ running: false, cursor: 0, pendingCount: 0, lastRunAt: Date.now(), lastError: "尚未配对", epochConflict: false, suppressedCount: this.suppressedCount });
         return;
       }
       const state = await this.deps.loadState();
@@ -101,9 +109,11 @@ export class SyncEngine {
       state.lastRunAt = Date.now();
       await this.deps.saveState(state);
       this.lastError = processError;
+      await this.refreshSuppressedCount();
       this.deps.onStatus({
         running: false, cursor: state.cursor, pendingCount,
         lastRunAt: state.lastRunAt, lastError: processError, epochConflict: this.epochConflict,
+        suppressedCount: this.suppressedCount,
       });
     } catch (err) {
       this.lastError = err instanceof Error ? err.message : String(err);
@@ -113,6 +123,7 @@ export class SyncEngine {
         running: false, cursor: state.cursor,
         pendingCount: Object.keys(state.pending).length,
         lastRunAt: Date.now(), lastError: this.lastError, epochConflict: this.epochConflict,
+        suppressedCount: this.suppressedCount,
       });
     } finally {
       this.running = false;
@@ -171,6 +182,18 @@ export class SyncEngine {
         delete state.pending[entry.item_id];
         changed = true;
       } catch (err) {
+        if (err instanceof ApiError && err.code === "GONE") {
+          // 条目已在服务器删除/过期（A21）：放弃待办并记录状态，不无限退避重试；
+          // 本地已入库的内容绝不因此删除。
+          const s = this.deps.settings();
+          const suppression = new Suppression(this.deps.fs, `${s.systemFolder}/KnowledgeInbox/suppression.json`);
+          await suppression.suppress(entry.item_id, "条目已在服务器删除或过期（GONE）");
+          delete state.pending[entry.item_id];
+          changed = true;
+          this.deps.log(`条目 ${entry.item_id} 已在服务器删除（GONE），放弃同步并保留本地内容`);
+          await this.deps.saveState(state);
+          continue;
+        }
         entry.attempts += 1;
         entry.next_try_at = Date.now() + backoffMs(entry.attempts);
         entry.last_error = err instanceof Error ? err.message : String(err);
@@ -360,6 +383,13 @@ export class SyncEngine {
     await commits.put(record);
   }
 
+  /** 重建 00 Inbox 索引（公开：恢复命令删除 commit 后调用，避免索引残留死条目）。 */
+  async rebuildIndex(): Promise<void> {
+    const s = this.deps.settings();
+    const commits = new CommitStore(this.deps.fs, `${s.systemFolder}/KnowledgeInbox/commits`);
+    await this.rebuildInboxIndex(s, commits);
+  }
+
   private async rebuildInboxIndex(s: KbSettings, commits: CommitStore): Promise<void> {
     const records = await commits.all();
     const entries = [] as Array<{ notePath: string; title: string; status: string; capturedAt: string | null }>;
@@ -386,7 +416,7 @@ export class SyncEngine {
       } catch (err) {
         if (err instanceof EpochConflictError) {
           this.epochConflict = true;
-          this.deps.onStatus({ running: false, cursor: 0, pendingCount: 0, lastRunAt: null, lastError: err.message, epochConflict: true });
+          this.deps.onStatus({ running: false, cursor: 0, pendingCount: 0, lastRunAt: null, lastError: err.message, epochConflict: true, suppressedCount: this.suppressedCount });
           break;
         }
         this.deps.log(`补发回执失败（${record.item_id} r${record.bundle_revision}）：${err instanceof Error ? err.message : String(err)}`);

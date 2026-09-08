@@ -61,6 +61,18 @@ export class CommitStore {
     );
   }
 
+  /** 删除该条目的全部 commit 标记；返回删除数量。恢复命令用它让下次事件走全新建路径。 */
+  async removeForItem(itemId: string): Promise<number> {
+    let n = 0;
+    for (const entry of await this.fs.list(this.commitsDir)) {
+      const parsed = this.parseName(entry);
+      if (!parsed || parsed.itemId !== itemId) continue;
+      await this.fs.remove(this.path(parsed.itemId, parsed.revision));
+      n += 1;
+    }
+    return n;
+  }
+
   async all(): Promise<CommitRecord[]> {
     const out: CommitRecord[] = [];
     for (const entry of await this.fs.list(this.commitsDir)) {
@@ -106,17 +118,24 @@ export class Suppression {
     return itemId in (await this.load()).items;
   }
 
+  /** 当前被抑制的条目 ID（供状态显示与恢复命令编排）。 */
+  async list(): Promise<string[]> {
+    return Object.keys((await this.load()).items);
+  }
+
   async suppress(itemId: string, reason: string): Promise<void> {
     const doc = await this.load();
     doc.items[itemId] = { suppressed_at: new Date().toISOString(), reason };
     await this.save(doc);
   }
 
-  async unsuppressAll(): Promise<number> {
+  /** 清空抑制并返回被清除的条目 ID；调用方应同步删除这些条目的本地 commit，
+   * 否则下次事件会因“commit 存在但笔记不在”立即再次抑制（真机验收遗留 #7）。 */
+  async unsuppressAll(): Promise<string[]> {
     const doc = await this.load();
-    const n = Object.keys(doc.items).length;
+    const removed = Object.keys(doc.items);
     doc.items = {};
     await this.save(doc);
-    return n;
+    return removed;
   }
 }

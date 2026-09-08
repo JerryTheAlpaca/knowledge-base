@@ -20,11 +20,14 @@ import {
   renderSourceNote,
   rewritePreviewLinks,
 } from "../src/vault/template";
-import type { KbManifest } from "../src/types";
+import { CommitStore, Suppression } from "../src/vault/records";
+import type { KbManifest, CommitRecord } from "../src/types";
 
 let passed = 0;
-function ok(name: string, fn: () => void) {
-  fn();
+const asyncChecks: Array<Promise<void>> = [];
+function ok(name: string, fn: () => void | Promise<void>) {
+  const result = fn();
+  if (result instanceof Promise) asyncChecks.push(result);
   passed += 1;
   console.log(`  ✓ ${name}`);
 }
@@ -134,4 +137,51 @@ ok("preview.md 链接改写为本地资产路径并剥用户备注段", () => {
   assert.ok(!out.includes("## 用户备注"));
 });
 
-console.log(`\n全部 ${passed} 项通过`);
+// ---- 恢复命令语义（真机验收遗留 #7）：unsuppress 须联动删除本地 commit ----
+class MemFs {
+  files = new Map<string, string>();
+  async exists(p: string) { return this.files.has(p); }
+  async read(p: string) { return this.files.get(p) as string; }
+  async write(p: string, d: string) { this.files.set(p, d); }
+  async remove(p: string) { this.files.delete(p); }
+  async list(dir: string) {
+    const prefix = `${dir}/`;
+    return [...this.files.keys()].filter((k) => k.startsWith(prefix));
+  }
+}
+function commitOf(itemId: string, rev: number): CommitRecord {
+  return {
+    item_id: itemId, bundle_revision: rev, manifest_sha256: "x", note_path: `n/${itemId}.md`,
+    generated_digest: null, local_commit_id: `c-${rev}`, committed_at: "2026-09-08T00:00:00Z",
+    ack_sent: true, conflicts: [],
+  };
+}
+ok("removeForItem 只删该条目的 commit 标记", async () => {
+  const fs = new MemFs();
+  const commits = new CommitStore(fs as never, "99 System/KnowledgeInbox/commits");
+  await commits.put(commitOf("item-a", 3));
+  await commits.put(commitOf("item-a", 4));
+  await commits.put(commitOf("item-b", 1));
+  assert.equal(await commits.removeForItem("item-a"), 2);
+  assert.equal(await commits.latestForItem("item-a"), null);
+  assert.equal((await commits.latestForItem("item-b"))?.bundle_revision, 1);
+});
+ok("unsuppressAll 返回被清除条目且记录消失", async () => {
+  const fs = new MemFs();
+  const sup = new Suppression(fs as never, "99 System/KnowledgeInbox/suppression.json");
+  await sup.suppress("item-a", "用户删除了 Source 笔记");
+  await sup.suppress("item-b", "条目已在服务器删除或过期（GONE）");
+  assert.equal((await sup.list()).length, 2);
+  const removed = await sup.unsuppressAll();
+  assert.deepEqual(removed.sort(), ["item-a", "item-b"]);
+  assert.equal(await sup.isSuppressed("item-a"), false);
+  assert.deepEqual(await sup.unsuppressAll(), []);
+});
+
+void (async () => {
+  await Promise.all(asyncChecks);
+  console.log(`\n全部 ${passed} 项通过`);
+})().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

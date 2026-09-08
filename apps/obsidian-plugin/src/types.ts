@@ -107,6 +107,8 @@ export interface EngineStatus {
   lastRunAt: number | null;
   lastError: string | null;
   epochConflict: boolean;
+  /** 已放弃条目数（本地删除停复建或服务器已删除，A21）。 */
+  suppressedCount: number;
 }
 
 export interface KbSettings {

@@ -5,7 +5,7 @@ import { KbClient } from "./api";
 import { KbSettingTab, SecretBridge, DEFAULT_SETTINGS } from "./settings";
 import { SyncEngine, type SyncState } from "./sync/engine";
 import { VaultFs } from "./vault/vaultfs";
-import { Suppression } from "./vault/records";
+import { CommitStore, Suppression } from "./vault/records";
 import type { EngineStatus, KbSettings } from "./types";
 
 const VIEW_TYPE_STATUS = "knowledge-inbox-status";
@@ -45,6 +45,9 @@ class StatusView extends ItemView {
     ];
     if (st?.epochConflict) {
       lines.push(["设备", "已不是主要写入设备；请在服务器切换后重新同步"]);
+    }
+    if ((st?.suppressedCount ?? 0) > 0) {
+      lines.push(["已放弃条目", `${st?.suppressedCount} 条（本地删除停复建或服务器已删除）`]);
     }
     for (const [k, v] of lines) {
       const row = c.createEl("div");
@@ -219,12 +222,24 @@ export class KbPlugin extends Plugin {
   }
 
   private async restoreSuppressed(): Promise<void> {
-    const suppression = new Suppression(
-      new VaultFs(this.app),
-      `${this.settings.systemFolder}/KnowledgeInbox/suppression.json`,
+    const fs = new VaultFs(this.app);
+    const s = this.settings;
+    const suppression = new Suppression(fs, `${s.systemFolder}/KnowledgeInbox/suppression.json`);
+    const removed = await suppression.unsuppressAll();
+    if (removed.length === 0) {
+      new Notice("当前没有被抑制的条目。");
+      return;
+    }
+    // 同步删除这些条目的本地 commit：否则“commit 在而笔记不在”会让下一次事件
+    // 立即再次抑制，恢复命令永远无法触发重建（真机验收遗留 #7）。
+    const commits = new CommitStore(fs, `${s.systemFolder}/KnowledgeInbox/commits`);
+    let cleared = 0;
+    for (const itemId of removed) cleared += await commits.removeForItem(itemId);
+    await this.engine.rebuildIndex();
+    new Notice(
+      `已恢复 ${removed.length} 条（清理 ${cleared} 个本地提交标记）；`
+      + "下次该条目有新版本时会重新建立笔记。",
     );
-    const n = await suppression.unsuppressAll();
-    new Notice(n > 0 ? `已恢复 ${n} 条；下次同步会重建其笔记。` : "当前没有被抑制的条目。");
   }
 
   private async openStatusView(): Promise<void> {

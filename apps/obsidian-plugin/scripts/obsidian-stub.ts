@@ -16,7 +16,8 @@ export interface RequestUrlResponse {
   status: number;
   text: string;
   headers: Record<string, string>;
-  arrayBuffer: () => Promise<ArrayBuffer>;
+  /** 与官方 API 一致：属性而非方法（api.ts 直接 return res.arrayBuffer）。 */
+  arrayBuffer: ArrayBuffer;
   json: unknown;
 }
 
@@ -36,7 +37,7 @@ export async function requestUrl(param: RequestUrlParam): Promise<RequestUrlResp
     status: res.status,
     text,
     headers: headersObj,
-    arrayBuffer: () => twin.arrayBuffer(),
+    arrayBuffer: await twin.arrayBuffer(),
     json: (() => { try { return JSON.parse(text); } catch { return null; } })(),
   };
 }
