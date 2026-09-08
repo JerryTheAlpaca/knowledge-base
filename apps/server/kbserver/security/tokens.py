@@ -23,10 +23,12 @@ DESKTOP_SCOPES = [
     "profiles:manage",
     "devices:manage",
 ]
+# Web 收件箱：桌面同级权限 + uploads:create（收件箱要上传补充材料，docs/02 §2.1）
 WEB_SCOPES = [
     "items:read",
     "receipts:write",
     "captures:create",
+    "uploads:create",
     "items:edit",
     "profiles:manage",
     "devices:manage",

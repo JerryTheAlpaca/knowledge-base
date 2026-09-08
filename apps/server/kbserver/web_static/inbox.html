@@ -1,0 +1,590 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>知识收件箱</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --card: #ffffff; --line: #e3e6ea; --text: #1c2430;
+    --muted: #6b7684; --accent: #2563eb; --accent-soft: #eaf1fe;
+    --ok: #15803d; --ok-soft: #e8f6ec; --warn: #b45309; --warn-soft: #fdf1e0;
+    --bad: #b91c1c; --bad-soft: #fdeaea; --info: #1d4ed8; --info-soft: #e8edfd;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.55 system-ui, "PingFang SC", "Microsoft YaHei", sans-serif; }
+  header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+           padding: 10px 18px; background: var(--card); border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 17px; margin: 0; }
+  header .spacer { flex: 1; }
+  .chip { font-size: 13px; color: var(--muted); background: var(--bg);
+          border: 1px solid var(--line); border-radius: 999px; padding: 3px 12px; }
+  button, .btn { min-height: 36px; padding: 6px 14px; border-radius: 8px; border: 1px solid var(--line);
+                 background: var(--card); color: var(--text); font-size: 14px; cursor: pointer; }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover { opacity: .92; color: #fff; }
+  button.danger { color: var(--bad); border-color: #ecc8c8; }
+  button.danger:hover { background: var(--bad-soft); }
+  button:disabled { opacity: .5; cursor: default; }
+  input, textarea, select { font: inherit; color: inherit; background: var(--card);
+                            border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; width: 100%; }
+  textarea { resize: vertical; min-height: 72px; }
+  label { display: block; font-size: 13px; color: var(--muted); margin: 10px 0 4px; }
+  main { max-width: 860px; margin: 0 auto; padding: 16px 18px 60px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+          padding: 14px 16px; margin: 14px 0; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .muted { color: var(--muted); font-size: 13px; }
+  .error { color: var(--bad); background: var(--bad-soft); border-radius: 8px;
+           padding: 8px 12px; margin: 8px 0; font-size: 14px; white-space: pre-wrap; }
+  .okmsg { color: var(--ok); background: var(--ok-soft); border-radius: 8px;
+           padding: 8px 12px; margin: 8px 0; font-size: 14px; }
+  nav.tabs { display: flex; gap: 4px; margin: 0 18px; padding-top: 12px; }
+  nav.tabs button { border: none; background: transparent; padding: 8px 14px;
+                    border-radius: 8px 8px 0 0; color: var(--muted); }
+  nav.tabs button.active { color: var(--accent); background: var(--accent-soft); font-weight: 600; }
+  ul.items { list-style: none; margin: 0; padding: 0; }
+  ul.items > li { background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+                  padding: 12px 16px; margin: 10px 0; cursor: pointer; }
+  ul.items > li:hover { border-color: var(--accent); }
+  .badge { display: inline-block; font-size: 12px; border-radius: 999px; padding: 2px 10px; }
+  .b-ready { color: var(--ok); background: var(--ok-soft); }
+  .b-needs_input { color: var(--warn); background: var(--warn-soft); }
+  .b-failed, .b-unknown_outcome { color: var(--bad); background: var(--bad-soft); }
+  .b-waiting_key, .b-waiting_budget { color: var(--info); background: var(--info-soft); }
+  .b-queued, .b-extracting, .b-enriching { color: var(--muted); background: var(--bg); }
+  .title-line { font-weight: 600; }
+  .meta-line { font-size: 13px; color: var(--muted); margin-top: 2px; }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+  a { color: var(--accent); text-decoration: none; word-break: break-all; }
+  a:hover { text-decoration: underline; }
+  .kv { font-size: 14px; margin: 3px 0; }
+  .kv b { color: var(--muted); font-weight: 500; margin-right: 6px; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 500; font-size: 13px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 16px; }
+  @media (max-width: 640px) { .grid2 { grid-template-columns: 1fr; } }
+  #loginView { max-width: 380px; margin: 8vh auto 0; }
+  h2 { font-size: 16px; margin: 4px 0 10px; }
+  details summary { cursor: pointer; color: var(--accent); font-size: 14px; }
+  .filelist { font-size: 13px; }
+</style>
+</head>
+<body>
+
+<header id="topbar" hidden>
+  <h1>📥 知识收件箱</h1>
+  <span class="chip" id="usageChip" title="本月模型用量 / 预算">…</span>
+  <div class="spacer"></div>
+  <button id="logoutBtn">退出登录</button>
+</header>
+
+<nav class="tabs" id="tabsNav" hidden>
+  <button id="tabInbox" class="active">收件箱</button>
+  <button id="tabSettings">模型与预算</button>
+</nav>
+
+<main id="loginView">
+  <div class="card">
+    <h2>登录知识收件箱</h2>
+    <p class="muted">在服务器上生成 Web 配对码：</p>
+    <pre style="background:var(--bg);border-radius:8px;padding:10px;font-size:13px;overflow:auto">python -m kbserver.cli pairing-code --user &lt;用户ID&gt; --kind web</pre>
+    <label for="pairCode">配对码</label>
+    <input id="pairCode" placeholder="KBP-XXXXXXXX-XXXXXXXX" autocomplete="off">
+    <label for="deviceName">设备名称</label>
+    <input id="deviceName" value="Web 收件箱">
+    <div id="loginError"></div>
+    <div class="row" style="margin-top:12px">
+      <button class="primary" id="loginBtn" style="flex:1">登录</button>
+    </div>
+  </div>
+</main>
+
+<main id="appView" hidden>
+  <!-- ============ 收件箱 ============ -->
+  <section id="inboxTab">
+    <div class="card">
+      <h2>新采集</h2>
+      <label for="capUrl">链接（可选）</label>
+      <input id="capUrl" placeholder="https://…　（公众号 / B 站 / 普通网页）">
+      <label for="capText">文字或分享内容（可选）</label>
+      <textarea id="capText" placeholder="粘贴正文、AI 对话导出、小红书分享文字…"></textarea>
+      <label for="capNote">备注（可选）</label>
+      <input id="capNote" placeholder="为什么收集它、想让它怎么加工">
+      <label for="capFiles">附件（可选，字幕文件 / 截图等）</label>
+      <input id="capFiles" type="file" multiple>
+      <div id="capMsg"></div>
+      <div class="row" style="margin-top:12px">
+        <button class="primary" id="capSubmit">提交采集</button>
+        <span class="muted" id="capProgress"></span>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="row">
+        <h2 style="flex:1;margin:0">条目</h2>
+        <select id="stateFilter" style="width:auto">
+          <option value="">全部状态</option>
+          <option value="queued">排队中</option>
+          <option value="extracting">提取中</option>
+          <option value="enriching">加工中</option>
+          <option value="ready">已整理</option>
+          <option value="needs_input">待补充</option>
+          <option value="waiting_key">等待密钥</option>
+          <option value="waiting_budget">等待预算</option>
+          <option value="failed">失败</option>
+          <option value="unknown_outcome">结果未知</option>
+        </select>
+        <button id="refreshBtn">刷新</button>
+      </div>
+      <div class="muted" id="listSummary" style="margin:6px 0"></div>
+      <ul class="items" id="itemList"></ul>
+      <div class="row" style="margin-top:8px">
+        <button id="moreBtn" hidden>加载更多</button>
+      </div>
+    </div>
+
+    <div id="detailHost"></div>
+  </section>
+
+  <!-- ============ 模型与预算 ============ -->
+  <section id="settingsTab" hidden>
+    <div class="card">
+      <h2>预算与用量</h2>
+      <div class="kv" id="usageLine">加载中…</div>
+      <div class="grid2">
+        <div>
+          <label for="budgetYuan">每月预算（元，0 表示不设限）</label>
+          <input id="budgetYuan" type="number" min="0" step="0.01">
+        </div>
+        <div>
+          <label for="defaultProfile">默认模型配置</label>
+          <select id="defaultProfile"><option value="">（未设置）</option></select>
+        </div>
+      </div>
+      <div id="settingsMsg"></div>
+      <div class="row" style="margin-top:10px">
+        <button class="primary" id="saveSettings">保存设置</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>模型配置</h2>
+      <p class="muted">Key 加密托管在服务器，任何接口不返回明文。endpoint 必须是 HTTPS。</p>
+      <table id="profileTable">
+        <thead><tr><th>类型</th><th>模型</th><th>状态</th><th>操作</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <details style="margin-top:12px">
+        <summary>新建配置</summary>
+        <div class="grid2">
+          <div>
+            <label for="pfKind">类型</label>
+            <select id="pfKind"><option value="llm">llm（文本加工）</option><option value="vision_ocr">vision_ocr（截图识别）</option></select>
+            <label for="pfEndpoint">Endpoint</label>
+            <input id="pfEndpoint" placeholder="https://api.deepseek.com/v1">
+            <label for="pfModel">模型名</label>
+            <input id="pfModel" placeholder="deepseek-chat">
+          </div>
+          <div>
+            <label for="pfSecret">API Key</label>
+            <input id="pfSecret" type="password" autocomplete="off">
+            <label for="pfPriceIn">输入单价（元/百万 tokens，可选）</label>
+            <input id="pfPriceIn" type="number" min="0" step="0.01">
+            <label for="pfPriceOut">输出单价（元/百万 tokens，可选）</label>
+            <input id="pfPriceOut" type="number" min="0" step="0.01">
+          </div>
+        </div>
+        <div id="pfMsg"></div>
+        <div class="row" style="margin-top:10px">
+          <button class="primary" id="pfCreate">创建配置</button>
+        </div>
+      </details>
+    </div>
+
+    <div class="card">
+      <h2>B 站登录态</h2>
+      <p class="muted">需要登录才能取字幕的视频依赖它。只保存 SESSDATA 值，加密存储。</p>
+      <div class="kv" id="biliStatus">加载中…</div>
+      <label for="biliSecret">SESSDATA（粘贴值或整个 Cookie 串均可）</label>
+      <input id="biliSecret" type="password" autocomplete="off">
+      <div id="biliMsg"></div>
+      <div class="row" style="margin-top:10px">
+        <button class="primary" id="biliSave">更新登录态</button>
+        <button class="danger" id="biliRevoke">撤销</button>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script>
+"use strict";
+
+// ---------- 基础 ----------
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s == null ? "" : s)
+  .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+const MICRO = 1000000;
+const yuan = (micro) => (Number(micro || 0) / MICRO).toFixed(2);
+
+function csrfToken() {
+  const m = document.cookie.match(/(?:^|;\s*)kb_csrf=([^;]*)/);
+  return m ? decodeURIComponent(m[1]) : "";
+}
+
+async function api(path, opts = {}) {
+  const method = opts.method || "GET";
+  const headers = {};
+  if (method !== "GET") headers["X-CSRF-Token"] = csrfToken();
+  if (opts.idempotencyKey) headers["Idempotency-Key"] = opts.idempotencyKey;
+  let body;
+  if (opts.formData) { body = opts.formData; }
+  else if (opts.body !== undefined) { headers["Content-Type"] = "application/json"; body = JSON.stringify(opts.body); }
+  const res = await fetch(path, { method, headers, body, credentials: "same-origin" });
+  if (res.status === 401) { showLogin(); throw new Error("登录已过期，请重新登录"); }
+  let data = null;
+  try { data = await res.json(); } catch (e) { /* 空响应 */ }
+  if (!res.ok) {
+    const msg = data && data.error ? data.error.message : (res.status + " " + res.statusText);
+    const err = new Error(msg); err.status = res.status; throw err;
+  }
+  return data;
+}
+
+function msg(host, text, isOk) {
+  $(host).innerHTML = text ? '<div class="' + (isOk ? "okmsg" : "error") + '">' + esc(text) + "</div>" : "";
+}
+
+// ---------- 视图切换 ----------
+function showLogin() {
+  $("topbar").hidden = true; $("tabsNav").hidden = true;
+  $("appView").hidden = true; $("loginView").hidden = false;
+}
+function showApp() {
+  $("loginView").hidden = true; $("appView").hidden = false;
+  $("topbar").hidden = false; $("tabsNav").hidden = false;
+  refreshUsageChip();
+}
+function switchTab(which) {
+  $("inboxTab").hidden = which !== "inbox";
+  $("settingsTab").hidden = which !== "settings";
+  $("tabInbox").classList.toggle("active", which === "inbox");
+  $("tabSettings").classList.toggle("active", which === "settings");
+  if (which === "settings") loadSettings();
+}
+
+// ---------- 状态展示 ----------
+const STATE_LABELS = {
+  queued: "排队中", extracting: "提取中", enriching: "加工中", ready: "已整理",
+  needs_input: "待补充", waiting_key: "等待密钥", waiting_budget: "等待预算",
+  failed: "失败", unknown_outcome: "结果未知",
+};
+const stateBadge = (s) => '<span class="badge b-' + esc(s) + '">' + esc(STATE_LABELS[s] || s) + "</span>";
+const fmtTime = (iso) => { try { return new Date(iso).toLocaleString("zh-CN", { hour12: false }); } catch (e) { return iso || ""; } };
+
+// ---------- 登录 / 登出 ----------
+async function doLogin() {
+  msg("loginError", "");
+  $("loginBtn").disabled = true;
+  try {
+    await api("/v1/web/session", { method: "POST", body: {
+      code: $("pairCode").value.trim(), device_name: $("deviceName").value.trim() || "Web 收件箱",
+    }});
+    $("pairCode").value = "";
+    showApp(); switchTab("inbox"); loadItems();
+  } catch (e) { msg("loginError", e.message, false); }
+  $("loginBtn").disabled = false;
+}
+async function doLogout() {
+  try { await api("/v1/web/logout", { method: "POST" }); } catch (e) { /* 会话已无效也清理界面 */ }
+  showLogin();
+}
+
+// ---------- 采集 ----------
+async function uploadFiles(fileList, progressHost) {
+  const ids = [];
+  for (const f of fileList) {
+    $(progressHost).textContent = "上传中：" + f.name;
+    const fd = new FormData(); fd.append("file", f);
+    const r = await api("/v1/uploads", { method: "POST", formData: fd, idempotencyKey: crypto.randomUUID() });
+    ids.push(r.upload_id);
+  }
+  $(progressHost).textContent = "";
+  return ids;
+}
+
+async function submitCapture() {
+  msg("capMsg", "");
+  const url = $("capUrl").value.trim();
+  const text = $("capText").value.trim();
+  const note = $("capNote").value.trim();
+  const files = Array.from($("capFiles").files || []);
+  if (!url && !text && !files.length) { msg("capMsg", "至少提供链接、文字或附件之一", false); return; }
+  $("capSubmit").disabled = true;
+  try {
+    const uploadIds = await uploadFiles(files, "capProgress");
+    const inputKind = url ? "url" : (text ? "text" : "file");
+    const r = await api("/v1/captures", { method: "POST", idempotencyKey: crypto.randomUUID(), body: {
+      schema_version: "1.0", client_capture_id: crypto.randomUUID(),
+      input_kind: inputKind, source_hint: "web_inbox",
+      original_url: url || null, text: text || null, share_text: null,
+      user_note: note || null, upload_ids: uploadIds,
+      content_scope: "unknown", archive_policy: "source_materials",
+      processing_profile_id: ($("defaultProfile") || {}).value || null,
+      captured_at: null,
+    }});
+    msg("capMsg", "已接收（条目 " + r.item_id + "），后台开始提取与加工。", true);
+    $("capUrl").value = ""; $("capText").value = ""; $("capNote").value = ""; $("capFiles").value = "";
+    loadItems();
+  } catch (e) { msg("capMsg", e.message, false); }
+  $("capSubmit").disabled = false;
+}
+
+// ---------- 列表 ----------
+let listOffset = 0;
+async function loadItems(reset) {
+  if (reset) { listOffset = 0; $("itemList").innerHTML = ""; }
+  const state = $("stateFilter").value;
+  const q = state ? ("state=" + encodeURIComponent(state) + "&") : "";
+  try {
+    const r = await api("/v1/items?" + q + "limit=20&offset=" + listOffset);
+    $("listSummary").textContent = "共 " + r.total + " 条" + (state ? "（按状态过滤）" : "");
+    $("itemList").insertAdjacentHTML("beforeend", r.items.map(itemRow).join(""));
+    listOffset += r.items.length;
+    $("moreBtn").hidden = listOffset >= r.total;
+  } catch (e) { $("listSummary").textContent = "加载失败：" + e.message; }
+}
+
+function itemRow(it) {
+  const title = (it.original_url ? '<a href="' + esc(it.original_url) + '" target="_blank" rel="noopener">' + esc(it.original_url) + "</a>" : "（无链接）");
+  const miss = it.missing_materials && it.missing_materials.length
+    ? ' · 缺：' + esc(it.missing_materials.join("、")) : "";
+  return '<li onclick="openDetail(\'' + esc(it.item_id) + '\')">' +
+    '<div class="title-line">' + stateBadge(it.pipeline_state) + '　' + esc(it.platform) + miss + "</div>" +
+    '<div class="meta-line">' + title + "</div>" +
+    '<div class="meta-line">r' + it.source_revision + " · bundle r" + it.bundle_revision +
+      " · 创建于 " + fmtTime(it.created_at) + (it.state_detail ? " · " + esc(it.state_detail) : "") + "</div></li>";
+}
+
+// ---------- 详情 ----------
+let detailId = null;
+async function openDetail(itemId) {
+  detailId = itemId;
+  const host = $("detailHost");
+  host.innerHTML = '<div class="card muted">加载中…</div>';
+  window.scrollTo({ top: host.offsetTop - 60, behavior: "smooth" });
+  let it;
+  try { it = await api("/v1/items/" + encodeURIComponent(itemId)); }
+  catch (e) { host.innerHTML = '<div class="card"><div class="error">' + esc(e.message) + "</div></div>"; return; }
+
+  const hasUrl = !!it.original_url;
+  host.innerHTML = '<div class="card">' +
+    '<div class="row"><h2 style="flex:1;margin:0">条目详情</h2>' +
+    '<button onclick="closeDetail()">收起</button></div>' +
+    '<div class="kv"><b>状态</b>' + stateBadge(it.pipeline_state) +
+      (it.state_detail ? "　" + esc(it.state_detail) : "") + "</div>" +
+    '<div class="kv"><b>平台</b>' + esc(it.platform) + "</div>" +
+    '<div class="kv"><b>覆盖</b>' + esc(it.coverage) + "</div>" +
+    '<div class="kv"><b>链接</b>' + (hasUrl ? '<a href="' + esc(it.original_url) + '" target="_blank" rel="noopener">' + esc(it.original_url) + "</a>" : "（无）") + "</div>" +
+    '<div class="kv"><b>缺失材料</b>' + (it.missing_materials.length ? esc(it.missing_materials.join("、")) : "无") + "</div>" +
+    '<div class="kv"><b>版本</b>来源 r' + it.source_revision + " · 成品 bundle r" + it.bundle_revision + "</div>" +
+    '<div class="kv"><b>时间</b>采集 ' + fmtTime(it.captured_at) + " · 创建 " + fmtTime(it.created_at) + "</div>" +
+    '<div class="actions">' +
+      '<button onclick="doReprocess()">重新加工</button>' +
+      (hasUrl ? '<button onclick="doRefetch()">重新提取来源</button>' : "") +
+      (it.bundle_revision ? '<a class="btn" style="min-height:36px;display:inline-flex;align-items:center" href="/v1/items/' + encodeURIComponent(it.item_id) + '/bundles/' + it.bundle_revision + '/manifest" download target="_blank">下载清单</a>' : "") +
+      '<button class="danger" onclick="doDelete()">删除服务器材料</button>' +
+    "</div>" +
+    '<details style="margin-top:12px"><summary>补充材料（文字 / 字幕 / 截图）</summary>' +
+      '<label for="supText">补充文字</label><textarea id="supText" placeholder="粘贴缺失的正文、字幕内容…"></textarea>' +
+      '<label for="supFiles">补充文件</label><input id="supFiles" type="file" multiple>' +
+      '<div id="supMsg"></div>' +
+      '<div class="row" style="margin-top:10px"><button class="primary" onclick="doSupplement()">提交补充</button></div>' +
+    "</details>" +
+    '<details style="margin-top:8px" id="exportBox" ontoggle="if(this.open) loadExport()"><summary style="cursor:pointer;color:var(--accent)">导出文件列表</summary>' +
+      '<div id="exportBody" class="filelist" style="margin-top:8px"></div></details>' +
+    "</div>";
+}
+function closeDetail() { detailId = null; $("detailHost").innerHTML = ""; }
+
+async function doReprocess() {
+  if (!detailId) return;
+  try {
+    await api("/v1/items/" + encodeURIComponent(detailId) + "/reprocess", {
+      method: "POST", body: { reason: "从 Web 收件箱请求重新加工" } });
+    closeDetail(); loadItems(true);
+  } catch (e) { alert("重新加工失败：" + e.message); }
+}
+async function doRefetch() {
+  if (!detailId) return;
+  try {
+    await api("/v1/items/" + encodeURIComponent(detailId) + "/refetch", { method: "POST" });
+    closeDetail(); loadItems(true);
+  } catch (e) { alert("重新提取失败：" + e.message); }
+}
+async function doDelete() {
+  if (!detailId) return;
+  if (!confirm("确认删除该条目的服务器材料？删除后不可恢复（本地已入库的笔记不受影响）。")) return;
+  try {
+    await api("/v1/items/" + encodeURIComponent(detailId), { method: "DELETE" });
+    closeDetail(); loadItems(true);
+  } catch (e) { alert("删除失败：" + e.message); }
+}
+async function doSupplement() {
+  if (!detailId) return;
+  msg("supMsg", "");
+  const text = $("supText").value.trim();
+  const files = Array.from($("supFiles").files || []);
+  if (!text && !files.length) { msg("supMsg", "请填写文字或选择文件", false); return; }
+  try {
+    const uploadIds = await uploadFiles(files, "supMsg");
+    const it = await api("/v1/items/" + encodeURIComponent(detailId));
+    await api("/v1/items/" + encodeURIComponent(detailId) + "/supplements", {
+      method: "POST",
+      body: { expected_source_revision: it.source_revision, text: text || null, upload_ids: uploadIds },
+    });
+    msg("supMsg", "已补充，开始重新处理。", true);
+    loadItems(true);
+  } catch (e) { msg("supMsg", e.message, false); }
+}
+async function loadExport() {
+  if (!detailId || !$("exportBox").open) return;
+  const it = await api("/v1/items/" + encodeURIComponent(detailId));
+  const body = $("exportBody");
+  if (!it.bundle_revision) { body.innerHTML = '<span class="muted">还没有可导出的成品。</span>'; return; }
+  const base = "/v1/items/" + encodeURIComponent(it.item_id) + "/bundles/" + it.bundle_revision;
+  try {
+    const m = await api(base + "/manifest");
+    body.innerHTML = m.files.map((f) =>
+      '<div><a href="' + base + "/files/" + encodeURIComponent(f.file_id) + '" download>' +
+      esc(f.relative_path) + "</a>　" + (f.bytes / 1024).toFixed(1) + " KB · " + esc(f.role) + "</div>"
+    ).join("") || '<span class="muted">清单中没有文件。</span>';
+  } catch (e) { body.innerHTML = '<span class="error">' + esc(e.message) + "</span>"; }
+}
+
+// ---------- 模型与预算 ----------
+function refreshUsageChip() {
+  api("/v1/usage").then((u) => {
+    const budget = u.budget_micro > 0 ? " / ¥" + yuan(u.budget_micro) : " / 不限";
+    $("usageChip").textContent = "本月 ¥" + yuan(u.committed) + budget;
+  }).catch(() => { $("usageChip").textContent = "用量未知"; });
+}
+
+async function loadSettings() {
+  msg("settingsMsg", ""); msg("pfMsg", ""); msg("biliMsg", "");
+  try {
+    const [profiles, settings, usage, bili] = await Promise.all([
+      api("/v1/provider-profiles"), api("/v1/settings"), api("/v1/usage"),
+      api("/v1/bilibili-session"),
+    ]);
+    // 预算与默认配置
+    $("budgetYuan").value = settings.monthly_budget_micro > 0 ? (settings.monthly_budget_micro / MICRO) : 0;
+    const sel = $("defaultProfile");
+    sel.innerHTML = '<option value="">（未设置）</option>' + profiles
+      .filter((p) => p.kind === "llm")
+      .map((p) => '<option value="' + esc(p.id) + '"' + (p.id === settings.default_profile_id ? " selected" : "") + ">" +
+        esc(p.kind + " · " + p.model) + "</option>").join("");
+    // 用量
+    const budgetTxt = usage.budget_micro > 0 ? "预算 ¥" + yuan(usage.budget_micro) : "不限预算";
+    $("usageLine").innerHTML = "本月已用 <b>¥" + yuan(usage.committed) + "</b>（" + budgetTxt +
+      "，tokens " + (usage.tokens || 0).toLocaleString() + "，预留中 ¥" + yuan(usage.reserved) + "）";
+    // 配置表
+    const tb = $("profileTable").querySelector("tbody");
+    tb.innerHTML = profiles.map((p) => {
+      const host = (() => { try { return new URL(p.endpoint).host; } catch (e) { return p.endpoint; } })();
+      return "<tr><td>" + esc(p.kind) + '</td><td><div class="title-line">' + esc(p.model) +
+        '</div><div class="meta-line">' + esc(host) + " · v" + p.version + "</div></td><td>" +
+        (p.configured ? '<span class="badge b-ready">已配 Key</span>' : '<span class="badge b-needs_input">无 Key</span>') +
+        '</td><td><div class="actions" style="margin:0">' +
+        '<button onclick="testProfile(\'' + p.id + '\')">测试</button>' +
+        '<button onclick="rotateKey(\'' + p.id + '\')">换 Key</button>' +
+        (p.configured ? '<button onclick="revokeKey(\'' + p.id + '\')">撤销 Key</button>' : "") +
+        "</div></td></tr>";
+    }).join("") || '<tr><td colspan="4" class="muted">还没有模型配置</td></tr>';
+    // B 站
+    $("biliStatus").innerHTML = bili.configured
+      ? '<span class="badge b-ready">已托管</span>　凭据 v' + bili.credential_version + " · 更新于 " + fmtTime(bili.updated_at)
+      : '<span class="badge b-needs_input">未托管</span>　' + esc(bili.note);
+  } catch (e) { msg("settingsMsg", e.message, false); }
+}
+
+async function saveSettings() {
+  msg("settingsMsg", "");
+  const yuanVal = parseFloat($("budgetYuan").value);
+  if (isNaN(yuanVal) || yuanVal < 0) { msg("settingsMsg", "预算格式不正确", false); return; }
+  try {
+    await api("/v1/settings", { method: "PATCH", body: {
+      monthly_budget_micro: Math.round(yuanVal * MICRO),
+      default_profile_id: $("defaultProfile").value || null,
+    }});
+    msg("settingsMsg", "已保存。", true);
+    refreshUsageChip();
+  } catch (e) { msg("settingsMsg", e.message, false); }
+}
+
+async function createProfile() {
+  msg("pfMsg", "");
+  const prices = {};
+  const pi = parseFloat($("pfPriceIn").value), po = parseFloat($("pfPriceOut").value);
+  if (!isNaN(pi)) prices.input_per_1m = pi;
+  if (!isNaN(po)) prices.output_per_1m = po;
+  try {
+    await api("/v1/provider-profiles", { method: "POST", body: {
+      kind: $("pfKind").value, adapter: "openai-compatible",
+      endpoint: $("pfEndpoint").value.trim(), model: $("pfModel").value.trim(),
+      secret: $("pfSecret").value, prices: Object.keys(prices).length ? prices : null,
+    }});
+    $("pfEndpoint").value = ""; $("pfModel").value = ""; $("pfSecret").value = "";
+    $("pfPriceIn").value = ""; $("pfPriceOut").value = "";
+    msg("pfMsg", "配置已创建。", true);
+    loadSettings();
+  } catch (e) { msg("pfMsg", e.message, false); }
+}
+async function testProfile(id) { try { const r = await api("/v1/provider-profiles/" + id + "/test", { method: "POST" }); alert(r.ok ? "连接正常，本次测试花费 ¥" + yuan(r.cost_micro) : "测试失败：" + r.message); loadSettings(); } catch (e) { alert("测试失败：" + e.message); } }
+async function rotateKey(id) { const s = prompt("粘贴新的 API Key："); if (!s) return; try { await api("/v1/provider-profiles/" + id, { method: "PATCH", body: { secret: s } }); loadSettings(); } catch (e) { alert("换 Key 失败：" + e.message); } }
+async function revokeKey(id) { if (!confirm("撤销后等待 Key 的条目会暂停，确定？")) return; try { await api("/v1/provider-profiles/" + id + "/credential", { method: "DELETE" }); loadSettings(); } catch (e) { alert("撤销失败：" + e.message); } }
+
+async function biliSave() {
+  msg("biliMsg", "");
+  const s = $("biliSecret").value.trim();
+  if (!s) { msg("biliMsg", "请粘贴 SESSDATA", false); return; }
+  try {
+    const r = await api("/v1/bilibili-session", { method: "PUT", body: { secret: s } });
+    $("biliSecret").value = "";
+    msg("biliMsg", "已更新。" + (r.requeued_items ? "有 " + r.requeued_items + " 条待补充条目已自动重新提取。" : ""), true);
+    loadSettings();
+  } catch (e) { msg("biliMsg", e.message, false); }
+}
+async function biliRevoke() {
+  if (!confirm("撤销 B 站登录态？需要登录的视频将回到待补充。")) return;
+  try { await api("/v1/bilibili-session", { method: "DELETE" }); loadSettings(); }
+  catch (e) { msg("biliMsg", e.message, false); }
+}
+
+// ---------- 启动 ----------
+$("loginBtn").addEventListener("click", doLogin);
+$("pairCode").addEventListener("keydown", (e) => { if (e.key === "Enter") doLogin(); });
+$("logoutBtn").addEventListener("click", doLogout);
+$("tabInbox").addEventListener("click", () => switchTab("inbox"));
+$("tabSettings").addEventListener("click", () => switchTab("settings"));
+$("capSubmit").addEventListener("click", submitCapture);
+$("refreshBtn").addEventListener("click", () => loadItems(true));
+$("stateFilter").addEventListener("change", () => loadItems(true));
+$("moreBtn").addEventListener("click", () => loadItems(false));
+$("saveSettings").addEventListener("click", saveSettings);
+$("pfCreate").addEventListener("click", createProfile);
+$("biliSave").addEventListener("click", biliSave);
+$("biliRevoke").addEventListener("click", biliRevoke);
+
+// 会话探测：能列出条目说明已登录
+(async function boot() {
+  try { await api("/v1/items?limit=1"); showApp(); switchTab("inbox"); loadItems(); }
+  catch (e) { /* showLogin 已由 api() 触发 */ }
+})();
+setInterval(() => { if (!$("appView").hidden && $("inboxTab").hidden === false) loadItems(true); }, 30000);
+</script>
+</body>
+</html>

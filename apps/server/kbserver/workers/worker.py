@@ -463,16 +463,44 @@ def _publish_segments_revision(db: Session, store: ObjectStore, job: Job, item: 
     """适配器产出了新材料/新规范正文 → 新增不可变来源版本并发布，随后入 enrich。
 
     旧版本不修改（docs/02 §6.1）；enrich 按 item.source_revision 校验片段（A13）。
+    重新提取时内容与缺失情况均无变化则不新增版本（docs/02 §10.1 refetch 语义）。
     """
+    missing = missing_materials if missing_materials is not None else []
+    content_hash = pipeline.sha256_hex(
+        pipeline.canonical_json({"segments": segments, "meta_updates": meta_updates})
+    )
+    if content_hash == source.content_hash and source.metadata_json.get("missing_materials", []) == missing:
+        job.state = "succeeded"
+        bundle = None
+        if item.bundle_revision:
+            bundle = db.query(BundleRevision).filter(
+                BundleRevision.user_id == item.user_id,
+                BundleRevision.item_id == item.id,
+                BundleRevision.revision == item.bundle_revision,
+            ).one_or_none()
+        if item.pipeline_state == "failed" or (bundle is not None and bundle.processing_state != "ready"):
+            # 提取结果没变：在同一版本上重新加工（failed 重试；等待 Key/预算的会在
+            # enrich 预备阶段回到原等待状态，不产生模型调用）
+            pipeline.enqueue_stage(
+                db, user_id=item.user_id, item_id=item.id, source_revision=source.revision,
+                stage="enrich", reset_attempt=True,
+            )
+            item.pipeline_state = "queued"
+            item.state_detail = "重新提取：内容无变化，重新加工"
+        else:
+            item.pipeline_state = "ready"
+            item.state_detail = "重新提取：来源内容无变化"
+        pipeline.emit_event(db, item.user_id, item_id=item.id, bundle_revision=item.bundle_revision,
+                            event_type="refetch_unchanged", payload={"revision": source.revision})
+        return
+
     new_revision = source.revision + 1
     meta2 = dict(source.metadata_json)
     meta2.update(meta_updates)
-    meta2["missing_materials"] = missing_materials if missing_materials is not None else []
+    meta2["missing_materials"] = missing
     source2 = SourceRevision(
         item_id=item.id, user_id=item.user_id, revision=new_revision,
-        content_hash=pipeline.sha256_hex(
-            pipeline.canonical_json({"segments": segments, "meta_updates": meta_updates})
-        ),
+        content_hash=content_hash,
         metadata_json=meta2, artifacts_json={},
     )
     db.add(source2)

@@ -5,8 +5,11 @@
 - POST /v1/items/{id}/supplements：补充文字/截图/字幕，expected_source_revision 冲突 409，新增不可变来源版本。
 - DELETE /v1/items/{id}：标记 tombstone，取消后续发布。
 - POST /v1/items/{id}/reprocess：基于已有材料重新排队，不默认重新抓站点。
+- POST /v1/items/{id}/refetch：显式重新提取来源；限频，保留旧版本，内容无变化不新增版本。
 """
 from __future__ import annotations
+
+import time
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, ConfigDict, Field
@@ -214,6 +217,38 @@ def reprocess(
     )
     item.pipeline_state = "queued"
     item.state_detail = body.reason or "用户请求重新加工"
+    db.commit()
+    db.refresh(item)
+    return _item_out(item, source)
+
+
+# 重新提取限频：每条目 10 分钟一次（docs/02 §10.1 refetch 限频）
+_REFETCH_LAST_AT: dict[tuple[str, str], float] = {}
+_REFETCH_MIN_INTERVAL_SECONDS = 600
+
+
+@router.post("/{item_id}/refetch", response_model=ItemOut, status_code=202)
+def refetch(item_id: str, principal=Depends(require_scope("items:edit")), db: Session = Depends(get_db)) -> ItemOut:
+    """显式重新提取来源（重新抓站点）：限频；旧来源版本保留，由 worker 比较内容变化。"""
+    user, _device, _token = principal
+    item = _require_item(db, user.id, item_id)
+    source = _latest_source(db, item)
+    if not source.metadata_json.get("original_url"):
+        raise ApiError("SCHEMA_INVALID", "该条目没有可重新提取的来源 URL", status_code=422)
+
+    key = (user.id, item.id)
+    now = time.monotonic()
+    last = _REFETCH_LAST_AT.get(key)
+    if last is not None and now - last < _REFETCH_MIN_INTERVAL_SECONDS:
+        raise ApiError("RATE_LIMITED", f"重新提取每 {_REFETCH_MIN_INTERVAL_SECONDS // 60} 分钟限一次", status_code=429)
+    _REFETCH_LAST_AT[key] = now
+
+    pipeline.enqueue_stage(
+        db, user_id=user.id, item_id=item.id, source_revision=item.source_revision,
+        stage="extract", reset_attempt=True,
+    )
+    item.pipeline_state = "queued"
+    item.state_detail = "用户请求重新提取来源"
     db.commit()
     db.refresh(item)
     return _item_out(item, source)

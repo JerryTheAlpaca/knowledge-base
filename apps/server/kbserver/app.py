@@ -6,7 +6,7 @@ from fastapi.responses import JSONResponse
 
 from .api import (routes_bilibili, routes_captures, routes_devices, routes_health,
                   routes_items, routes_pairing, routes_profiles, routes_sync,
-                  routes_uploads)
+                  routes_uploads, routes_web)
 from .domain.errors import ApiError, status_for
 from .models import new_id
 
@@ -43,6 +43,7 @@ def create_app() -> FastAPI:
     app.include_router(routes_devices.router)
     app.include_router(routes_profiles.router)
     app.include_router(routes_bilibili.router)
+    app.include_router(routes_web.router)
     return app
 
 
