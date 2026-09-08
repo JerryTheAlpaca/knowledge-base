@@ -91,7 +91,8 @@ export class KbSettingTab extends PluginSettingTab {
     plugin: object,
     private settings: KbSettings,
     private onSave: () => Promise<void>,
-    private onPair: (code: string, deviceName: string) => Promise<void>,
+    private onLogin: () => Promise<void>,
+    private onDisconnect: () => Promise<void>,
   ) {
     super(app, plugin as never);
   }
@@ -109,28 +110,32 @@ export class KbSettingTab extends PluginSettingTab {
         await this.onSave();
       }));
 
+    const account = new Setting(containerEl)
+      .setName("账号")
+      .setDesc("点击登录后打开系统浏览器：使用统一账号（与记账/火车足迹相同）在网页上批准本设备。无需配对码。")
+      .addButton((b) => b.setButtonText("登录账号").setCta().onClick(async () => {
+        await this.onLogin();
+        this.display();
+      }));
+    if (this.settings.deviceId) {
+      account.addButton((b) => b.setButtonText("断开设备").setWarning().onClick(async () => {
+        await this.onDisconnect();
+        this.display();
+      }));
+    }
+
     new Setting(containerEl)
-      .setName("配对")
-      .setDesc("输入服务器 CLI 生成的一次性配对码（桌面设备），换取服务 Token 存入本机密钥存储。")
-      .addText((t) => t.setPlaceholder("配对码").setValue(""))
-      .addText((t) => t.setPlaceholder("设备名称").setValue(this.settings.deviceName).onChange(async (v) => {
+      .setName("设备名称")
+      .setDesc("登录时展示给网页确认的名称。")
+      .addText((t) => t.setValue(this.settings.deviceName).onChange(async (v) => {
         this.settings.deviceName = v || "Obsidian 桌面";
         await this.onSave();
-      }))
-      .addButton((b) => b.setButtonText("配对").onClick(async () => {
-        const code = (containerEl.querySelector("input[placeholder='配对码']") as HTMLInputElement | null)?.value ?? "";
-        if (!code) {
-          new Notice("请先输入配对码");
-          return;
-        }
-        await this.onPair(code.trim(), this.settings.deviceName);
-        this.display();
       }));
 
     const pairInfo = containerEl.createEl("p", {
       text: this.settings.deviceId
-        ? `已配对：device ${this.settings.deviceId.slice(0, 8)}…（Token 引用：${this.settings.tokenRef}）`
-        : "尚未配对。",
+        ? `已登录：device ${this.settings.deviceId.slice(0, 8)}…（退出网站不影响本设备；点「断开设备」撤销其凭据）`
+        : "尚未登录。",
     });
     pairInfo.addClass("kb-muted");
 

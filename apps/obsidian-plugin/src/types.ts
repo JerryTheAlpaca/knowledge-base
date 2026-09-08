@@ -65,6 +65,25 @@ export interface PairResult {
   expires_at: string;
 }
 
+/** POST /v1/auth/device/start 响应（docs/05 §4.5 浏览器授权流程）。 */
+export interface DeviceStartResult {
+  request_id: string;
+  poll_secret: string;
+  browser_url: string;
+  expires_at: string;
+  interval_seconds: number;
+}
+
+/** POST /v1/auth/device/poll 响应：pending 或最终 Token。 */
+export interface DevicePollResult {
+  status: "pending" | "ok";
+  token?: string;
+  device_id?: string;
+  user_id?: string;
+  scopes?: string[];
+  expires_at?: string;
+}
+
 export interface ReceiptResult {
   item_id: string;
   bundle_revision: number;

@@ -4,7 +4,7 @@
  */
 
 import { requestUrl } from "obsidian";
-import type { EventsPage, KbManifest, PairResult, ReceiptResult } from "./types";
+import type { DevicePollResult, DeviceStartResult, EventsPage, KbManifest, ReceiptResult } from "./types";
 
 export class ApiError extends Error {
   constructor(readonly code: string, message: string, readonly status: number) {
@@ -33,8 +33,6 @@ async function sha256HexBytes(data: BufferSource): Promise<string> {
 }
 
 export class KbClient {
-  constructor(readonly serverUrl: string, readonly token: string) {}
-
   private async request(path: string, opts: { method?: string; body?: unknown } = {}): Promise<{ status: number; text: string; headers: Record<string, string> }> {
     const res = await requestUrl({
       url: `${baseUrlOf(this.serverUrl)}${path}`,
@@ -55,16 +53,34 @@ export class KbClient {
     return JSON.parse(text) as T;
   }
 
-  static async pair(serverUrl: string, code: string, deviceName: string): Promise<PairResult> {
+  /** 发起浏览器授权（无需凭据）：返回 browser_url 与 poll_secret（docs/05 §4.5）。 */
+  static async deviceStart(serverUrl: string, deviceName: string): Promise<DeviceStartResult> {
     const res = await requestUrl({
-      url: `${baseUrlOf(serverUrl)}/v1/pairing/exchange`,
+      url: `${baseUrlOf(serverUrl)}/v1/auth/device/start`,
       method: "POST",
       contentType: "application/json",
-      body: JSON.stringify({ code, device_name: deviceName }),
+      body: JSON.stringify({ device_name: deviceName }),
       throw: false,
     });
     if (res.status < 200 || res.status >= 300) throw toApiError(res.status, res.text);
-    return JSON.parse(res.text) as PairResult;
+    return JSON.parse(res.text) as DeviceStartResult;
+  }
+
+  /** 轮询授权结果：pending 或（批准后）设备 Token。 */
+  static async devicePoll(serverUrl: string, requestId: string, pollSecret: string): Promise<DevicePollResult> {
+    const res = await requestUrl({
+      url: `${baseUrlOf(serverUrl)}/v1/auth/device/poll`,
+      method: "POST",
+      contentType: "application/json",
+      body: JSON.stringify({ request_id: requestId, poll_secret: pollSecret }),
+      throw: false,
+    });
+    if (res.status === 410) {
+      // 过期/取消/已消费：业务上等同「未完成」，由调用方提示重试
+      return { status: "pending" };
+    }
+    if (res.status < 200 || res.status >= 300) throw toApiError(res.status, res.text);
+    return JSON.parse(res.text) as DevicePollResult;
   }
 
   async listEvents(after: number, limit = 100): Promise<EventsPage> {
@@ -106,6 +122,16 @@ export class KbClient {
       },
     });
   }
+
+  /** 断开当前设备：撤销服务端 Token；本地凭据由调用方清理（docs/05 §4.5 第 7 条）。 */
+  async disconnectDevice(): Promise<void> {
+    if (!this.deviceId) throw new ApiError("NO_DEVICE", "尚未登录或缺少设备 ID", 400);
+    await this.requestJson(`/v1/devices/${encodeURIComponent(this.deviceId)}/disconnect`, {
+      method: "POST",
+    });
+  }
+
+  constructor(readonly serverUrl: string, readonly token: string, readonly deviceId: string = "") {}
 }
 
 function toApiError(status: number, text: string): ApiError {

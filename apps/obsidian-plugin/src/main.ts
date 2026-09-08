@@ -129,7 +129,8 @@ export class KbPlugin extends Plugin {
     this.addSettingTab(new KbSettingTab(
       this.app, this, this.settings,
       () => this.saveSettings(),
-      (code, deviceName) => this.pair(code, deviceName),
+      () => this.loginWithBrowser(),
+      () => this.disconnectDevice(),
     ));
 
     this.addCommand({ id: "sync-now", name: "立即同步", callback: () => void this.manualSync() });
@@ -187,7 +188,7 @@ export class KbPlugin extends Plugin {
 
   async manualSync(): Promise<void> {
     if (!(await this.refreshToken())) {
-      new Notice("Knowledge Inbox：尚未配对或 Token 缺失，请先在设置中配对。");
+      new Notice("Knowledge Inbox：尚未登录或 Token 缺失，请先在设置中登录账号。");
       return;
     }
     if (this.lastStatus?.epochConflict) this.engine.resetEpochConflict();
@@ -202,23 +203,57 @@ export class KbPlugin extends Plugin {
     }
   }
 
-  private async pair(code: string, deviceName: string): Promise<void> {
+  private async loginWithBrowser(): Promise<void> {
     if (!this.settings.serverUrl) {
       new Notice("请先填写服务器地址。");
       return;
     }
     try {
-      const result = await KbClient.pair(this.settings.serverUrl, code, deviceName);
-      await this.secrets.setToken(this.settings.tokenRef, result.token);
-      this.tokenCache = result.token;
-      this.settings.deviceId = result.device_id;
-      this.settings.userId = result.user_id;
-      await this.saveSettings();
-      new Notice(`配对成功：设备 ${result.device_id.slice(0, 8)}…`);
-      await this.engine.runOnce("paired");
+      const start = await KbClient.deviceStart(this.settings.serverUrl, this.settings.deviceName);
+      new Notice("Knowledge Inbox：已在浏览器打开授权页，请在网页上确认登录本设备。");
+      window.open(start.browser_url, "_blank");
+
+      // 按服务端间隔轮询，直到批准/过期（docs/05 §4.5 第 4-6 条）
+      const deadline = Date.now() + 6 * 60_000;
+      const intervalMs = Math.max(2, start.interval_seconds || 2) * 1000;
+      while (Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, intervalMs));
+        const poll = await KbClient.devicePoll(
+          this.settings.serverUrl, start.request_id, start.poll_secret);
+        if (poll.status !== "ok") continue;
+        await this.secrets.setToken(this.settings.tokenRef, poll.token!);
+        this.tokenCache = poll.token!;
+        this.settings.deviceId = poll.device_id!;
+        this.settings.userId = poll.user_id!;
+        await this.saveSettings();
+        new Notice(`Knowledge Inbox：登录成功，设备 ${poll.device_id!.slice(0, 8)}…`);
+        await this.engine.runOnce("logged-in");
+        return;
+      }
+      new Notice("Knowledge Inbox：授权超时或已取消，请重新点击「登录账号」。");
     } catch (err) {
-      new Notice(`配对失败：${err instanceof Error ? err.message : String(err)}`);
+      new Notice(`登录失败：${err instanceof Error ? err.message : String(err)}`);
     }
+  }
+
+  private async disconnectDevice(): Promise<void> {
+    if (!this.settings.deviceId) {
+      new Notice("尚未登录。");
+      return;
+    }
+    const client = this.getClient();
+    try {
+      if (client) await client.disconnectDevice();
+    } catch (err) {
+      // 服务端可能已撤销：本地照常清理
+      console.log(`[knowledge-inbox] disconnect: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    await this.secrets.clearToken(this.settings.tokenRef);
+    this.tokenCache = null;
+    this.settings.deviceId = "";
+    this.settings.userId = "";
+    await this.saveSettings();
+    new Notice("Knowledge Inbox：设备已断开，已导入的笔记保留。");
   }
 
   private async restoreSuppressed(): Promise<void> {
