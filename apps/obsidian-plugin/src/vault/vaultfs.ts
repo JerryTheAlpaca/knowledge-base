@@ -78,12 +78,16 @@ export class VaultFs implements FsLike {
 
   /** 读-改-写同一回调，避免读取后用户编辑造成覆盖（docs/02 §12.3）。 */
   async processNote(path: string, fn: (data: string) => string): Promise<void> {
-    const vault = this.app.vault as unknown as {
-      process?: (p: string, f: (d: string) => string) => Promise<string>;
-    };
+    const vault = this.app.vault;
     const p = this.p(path);
-    if (typeof vault.process === "function") {
-      await vault.process.call(this.app.vault, p, fn);
+    // vault.process 需要传 TFile：部分版本传 string 路径会在内部保存流程抛
+    // "Cannot create property 'saving' on string"（真机验收 A11 发现）。
+    const abstract = vault.getAbstractFileByPath(p);
+    const hasProcess = typeof (vault as unknown as { process?: unknown }).process === "function";
+    if (abstract && "stat" in abstract && hasProcess) {
+      await (vault as unknown as {
+        process: (f: unknown, f2: (d: string) => string) => Promise<string>;
+      }).process.call(vault, abstract, fn);
     } else {
       const data = await this.read(p);
       await this.write(p, fn(data));

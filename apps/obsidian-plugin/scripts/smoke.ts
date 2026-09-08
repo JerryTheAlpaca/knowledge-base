@@ -113,6 +113,12 @@ ok("mergeKbFrontmatter 更新 kb_* 且保留未知字段", () => {
   assert.ok(merged.includes('kb_status: "merge_needed"'));
   assert.ok(merged.includes("kb_bundle_revision: 3"));
   assert.ok(merged.endsWith("# 正文"));
+  // 结束线必须保留，否则下次合并会叠加出双重 frontmatter（真机验收发现的 bug）
+  const fmEnd = merged.indexOf("\n---", 4);
+  assert.ok(fmEnd !== -1, "frontmatter 必须有结尾 ---");
+  const merged2 = mergeKbFrontmatter(merged, manifest, "ready");
+  assert.ok(!merged2.includes("\n---\n---"), "重复合并不应叠加 frontmatter");
+  assert.ok(merged2.includes('kb_status: "ready"'));
 });
 
 // ---- 生成区冲突判定（A11/A12 基础）----

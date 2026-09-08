@@ -173,7 +173,7 @@ export function mergeKbFrontmatter(existing: string, manifest: KbManifest, statu
       const fmBody = trimmed.slice(4, endIdx);
       const rest = trimmed.slice(endIdx + 4);
       const kept = fmBody.split("\n").filter((line) => !/^kb_[a-z_]+:/.test(line));
-      return `---\n${[...newKb, ...kept].join("\n")}${rest}`;
+      return `---\n${[...newKb, ...kept].join("\n")}\n---${rest}`;
     }
   }
   return `---\n${newKb.join("\n")}\n---\n${trimmed}`;

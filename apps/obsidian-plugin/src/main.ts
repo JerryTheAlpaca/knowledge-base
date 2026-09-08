@@ -142,9 +142,11 @@ export class KbPlugin extends Plugin {
     // onLayoutReady 后再开始恢复与拉取，不阻塞编辑器启动（docs/02 §13.3）
     this.app.workspace.onLayoutReady(() => {
       void (async () => {
-        const n = await this.engine.recoverReceipts();
-        if (n > 0) new Notice(`Knowledge Inbox：补发了 ${n} 条回执`);
+        // 先刷新 Token 再补发回执：recoverReceipts 依赖 getClient()，
+        // tokenCache 未加载时它拿不到客户端、启动补发会静默跳过（真机验收 A10 发现）
         if (this.settings.autoSync && (await this.refreshToken())) {
+          const n = await this.engine.recoverReceipts();
+          if (n > 0) new Notice(`Knowledge Inbox：补发了 ${n} 条回执`);
           await this.engine.runOnce("startup");
         }
         this.startTimer();

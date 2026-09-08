@@ -107,12 +107,14 @@ def _owned_job(db: Session, plan: EnrichPlan) -> Job | None:
 
 
 def _base_bundle_files(db: Session, item: Item) -> list[StoredFile]:
+    """新 bundle 的基础文件 = 全部原始材料与提取产物（含用户上传附件）。
+    只排除旧加工产物（generated/preview），它们由本次 enrich 重新生成。"""
     rows = (
         db.query(StoredFile)
         .filter(
             StoredFile.item_id == item.id,
             StoredFile.user_id == item.user_id,
-            StoredFile.relative_path.in_(["capture.json", "normalized.md", "segments.json"]),
+            StoredFile.role.in_(["original_submission", "source_material"]),
         )
         .all()
     )

@@ -1,6 +1,6 @@
 {
-  "id": "knowledge-inbox",
-  "name": "Knowledge Inbox",
+  "id": "kb-inbox",
+  "name": "KB Inbox",
   "version": "0.1.0",
   "minAppVersion": "1.11.4",
   "description": "知识摄入系统本地入库：配对、增量下载、校验落盘、编辑保护与回执。",

@@ -272,7 +272,12 @@ export class SyncEngine {
     const capturePath = joinUnder(finalBase, "capture.json");
     if (await fs.exists(capturePath)) {
       try {
-        userNote = (JSON.parse(await fs.read(capturePath)) as { user_note?: string | null }).user_note ?? null;
+        // 服务端 capture.json 结构为 {"capture": <原始 payload>, "received_at": ...}（pipeline.py §接收）
+        const cap = JSON.parse(await fs.read(capturePath)) as {
+          user_note?: string | null;
+          capture?: { user_note?: string | null } | null;
+        };
+        userNote = cap.capture?.user_note ?? cap.user_note ?? null;
       } catch { userNote = null; }
     }
 
@@ -284,9 +289,17 @@ export class SyncEngine {
 
     if (await fs.exists(notePath)) {
       let conflicted = false;
+      // processNote 回调是同步的，无法在回调内做异步哈希：先读一遍算生成区摘要，
+      // 回调内用原文比对确认期间无外部修改（真机验收 A11 发现：原文与哈希直接比较恒不相等，导致每次更新都误判冲突）。
+      const preText = await fs.read(notePath);
+      const preInner = extractGenerated(preText);
+      const preDigest = preInner === null ? null : await sha256Hex(preInner);
       await fs.processNote(notePath, (current) => {
-        const inner = extractGenerated(current);
-        if (inner === null || (latest?.generated_digest && inner !== latest.generated_digest)) {
+        const innerNow = extractGenerated(current);
+        const userEdited = innerNow === null
+          || (latest?.generated_digest != null && preDigest !== latest.generated_digest)
+          || (preInner !== null && innerNow !== preInner);
+        if (userEdited) {
           // 用户改过生成区：新结果进冲突文件，笔记不动生成区（docs/02 §8.2 / A12）
           conflicted = true;
           return mergeFrontmatterOnly(current, manifest, "merge_needed");
