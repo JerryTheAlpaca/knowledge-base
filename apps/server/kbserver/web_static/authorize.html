@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>授权插件设备</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --card: #ffffff; --line: #e3e6ea; --text: #1c2430;
+    --muted: #6b7684; --accent: #2563eb; --accent-soft: #eaf1fe;
+    --ok: #15803d; --ok-soft: #e8f6ec; --bad: #b91c1c; --bad-soft: #fdeaea;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.55 system-ui, "PingFang SC", "Microsoft YaHei", sans-serif; }
+  main { max-width: 420px; margin: 10vh auto 0; padding: 0 16px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+          padding: 20px 22px; }
+  h1 { font-size: 18px; margin: 0 0 10px; }
+  .muted { color: var(--muted); font-size: 13px; }
+  button { min-height: 44px; padding: 8px 16px; border-radius: 8px; border: 1px solid var(--line);
+           background: var(--card); color: var(--text); font-size: 14px; cursor: pointer; width: 100%; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.danger { color: var(--bad); }
+  button:disabled { opacity: .5; cursor: default; }
+  .ok { color: var(--ok); background: var(--ok-soft); border-radius: 8px; padding: 8px 12px; }
+  .err { color: var(--bad); background: var(--bad-soft); border-radius: 8px; padding: 8px 12px; }
+  .row { margin-top: 12px; }
+</style>
+</head>
+<body>
+<main>
+  <div class="card">
+    <h1>授权插件设备</h1>
+    <div id="state" class="muted">加载中…</div>
+    <div class="row"><button class="primary" id="approveBtn" hidden>登录此插件</button></div>
+    <div class="row"><button id="cancelBtn" hidden>取消</button></div>
+    <p class="muted" style="margin-top:14px">确认这是你本人操作：批准后，该插件将获得与你当前
+      统一账号绑定的同步凭据。只有此页面能完成授权；插件本身接触不到浏览器登录态。</p>
+  </div>
+</main>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const requestId = new URLSearchParams(window.location.search).get("request_id") || "";
+
+function csrfToken() {
+  const m = document.cookie.match(/(?:^|;\s*)kb_csrf=([^;]*)/);
+  return m ? decodeURIComponent(m[1]) : "";
+}
+
+function setState(html) { $("state").innerHTML = html; }
+
+async function goLogin() {
+  // 未登录：跳中心登录，回来继续授权
+  window.location.href = "/login?next=" + encodeURIComponent("/authorize?request_id=" + encodeURIComponent(requestId));
+}
+
+async function refresh() {
+  if (!requestId || requestId.length !== 32) {
+    setState('<span class="err">授权链接无效：请在插件中重新点击「登录账号」。</span>');
+    return;
+  }
+  let info;
+  try {
+    info = await fetch("/v1/auth/device/info?request_id=" + encodeURIComponent(requestId),
+                       { credentials: "same-origin" }).then((r) => r.json());
+  } catch (e) {
+    setState('<span class="err">加载失败，请刷新重试。</span>');
+    return;
+  }
+  if (info.error || !info.device_name) {
+    setState('<span class="err">授权请求不存在或已过期：请在插件中重新发起。</span>');
+    return;
+  }
+  if (info.state !== "pending") {
+    setState('<span class="err">该请求当前状态为 ' + info.state + '：请在插件中重新发起。</span>');
+    return;
+  }
+  // 探测登录：有效会话可直接批准；401 则先登录
+  try {
+    const me = await fetch("/v1/auth/me", { credentials: "same-origin" });
+    if (me.status === 503) {
+      setState('<span class="err">认证服务暂不可用，请稍后刷新重试。</span>');
+      return;
+    }
+    if (!me.ok) { await goLogin(); return; }
+    const body = await me.json();
+    setState('设备名称：<b>' + info.device_name + '</b><br>当前账号：<b>' +
+      (body.central_username || body.display_name || "") + '</b><br><span class="muted">批准后插件将以该账号同步。</span>');
+    $("approveBtn").hidden = false;
+    $("cancelBtn").hidden = false;
+  } catch (e) {
+    await goLogin();
+  }
+}
+
+$("approveBtn").addEventListener("click", async () => {
+  $("approveBtn").disabled = true;
+  try {
+    const res = await fetch("/v1/auth/device/approve", {
+      method: "POST", credentials: "same-origin",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken() },
+      body: JSON.stringify({ request_id: requestId }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      setState('<span class="err">' + (data.error?.message || "批准失败") + '</span>');
+      $("approveBtn").disabled = false;
+      return;
+    }
+    setState('<span class="ok">已批准！请回到 Obsidian 插件，它会自动完成登录。</span>');
+    $("approveBtn").hidden = true;
+    $("cancelBtn").hidden = true;
+  } catch (e) {
+    setState('<span class="err">网络错误，请重试。</span>');
+    $("approveBtn").disabled = false;
+  }
+});
+
+$("cancelBtn").addEventListener("click", async () => {
+  try {
+    await fetch("/v1/auth/device/cancel", {
+      method: "POST", credentials: "same-origin",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken() },
+      body: JSON.stringify({ request_id: requestId }),
+    });
+  } catch (e) { /* 页面即将无用 */ }
+  setState("已取消。请回到插件重新发起。");
+  $("approveBtn").hidden = true;
+  $("cancelBtn").hidden = true;
+});
+
+refresh();
+</script>
+</body>
+</html>

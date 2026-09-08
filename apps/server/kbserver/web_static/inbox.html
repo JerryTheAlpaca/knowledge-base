@@ -50,11 +50,12 @@
                   padding: 12px 16px; margin: 10px 0; cursor: pointer; }
   ul.items > li:hover { border-color: var(--accent); }
   .badge { display: inline-block; font-size: 12px; border-radius: 999px; padding: 2px 10px; }
-  .b-ready { color: var(--ok); background: var(--ok-soft); }
-  .b-needs_input { color: var(--warn); background: var(--warn-soft); }
-  .b-failed, .b-unknown_outcome { color: var(--bad); background: var(--bad-soft); }
-  .b-waiting_key, .b-waiting_budget { color: var(--info); background: var(--info-soft); }
+  .b-ready, .v-valid { color: var(--ok); background: var(--ok-soft); }
+  .b-needs_input, .v-unconfirmed { color: var(--warn); background: var(--warn-soft); }
+  .b-failed, .b-unknown_outcome, .v-invalid { color: var(--bad); background: var(--bad-soft); }
+  .b-waiting_key, .v-unverified { color: var(--info); background: var(--info-soft); }
   .b-queued, .b-extracting, .b-enriching { color: var(--muted); background: var(--bg); }
+  .v-network_error, .v-blocked { color: var(--warn); background: var(--warn-soft); }
   .title-line { font-weight: 600; }
   .meta-line { font-size: 13px; color: var(--muted); margin-top: 2px; }
   .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
@@ -77,28 +78,25 @@
 
 <header id="topbar" hidden>
   <h1>📥 知识收件箱</h1>
-  <span class="chip" id="usageChip" title="本月模型用量 / 预算">…</span>
+  <span class="chip" id="whoChip" title="当前账号">…</span>
+  <a id="adminLink" class="chip" href="#" hidden style="text-decoration:none">管理员</a>
   <div class="spacer"></div>
   <button id="logoutBtn">退出登录</button>
 </header>
 
 <nav class="tabs" id="tabsNav" hidden>
   <button id="tabInbox" class="active">收件箱</button>
-  <button id="tabSettings">模型与预算</button>
+  <button id="tabSettings">模型与账号</button>
 </nav>
 
-<main id="loginView">
+<main id="loginView" hidden>
   <div class="card">
     <h2>登录知识收件箱</h2>
-    <p class="muted">在服务器上生成 Web 配对码：</p>
-    <pre style="background:var(--bg);border-radius:8px;padding:10px;font-size:13px;overflow:auto">python -m kbserver.cli pairing-code --user &lt;用户ID&gt; --kind web</pre>
-    <label for="pairCode">配对码</label>
-    <input id="pairCode" placeholder="KBP-XXXXXXXX-XXXXXXXX" autocomplete="off">
-    <label for="deviceName">设备名称</label>
-    <input id="deviceName" value="Web 收件箱">
+    <p class="muted">使用 jerrythealpaca.cn 的统一账号登录（与记账、火车足迹同一账号）。
+      新用户需要持邀请码在统一登录页注册。</p>
     <div id="loginError"></div>
     <div class="row" style="margin-top:12px">
-      <button class="primary" id="loginBtn" style="flex:1">登录</button>
+      <button class="primary" id="loginBtn" style="flex:1">前往登录 / 注册</button>
     </div>
   </div>
 </main>
@@ -134,7 +132,6 @@
           <option value="ready">已整理</option>
           <option value="needs_input">待补充</option>
           <option value="waiting_key">等待密钥</option>
-          <option value="waiting_budget">等待预算</option>
           <option value="failed">失败</option>
           <option value="unknown_outcome">结果未知</option>
         </select>
@@ -150,19 +147,18 @@
     <div id="detailHost"></div>
   </section>
 
-  <!-- ============ 模型与预算 ============ -->
+  <!-- ============ 模型与账号 ============ -->
   <section id="settingsTab" hidden>
     <div class="card">
-      <h2>预算与用量</h2>
-      <div class="kv" id="usageLine">加载中…</div>
+      <h2>偏好</h2>
       <div class="grid2">
-        <div>
-          <label for="budgetYuan">每月预算（元，0 表示不设限）</label>
-          <input id="budgetYuan" type="number" min="0" step="0.01">
-        </div>
         <div>
           <label for="defaultProfile">默认模型配置</label>
           <select id="defaultProfile"><option value="">（未设置）</option></select>
+        </div>
+        <div>
+          <label>账号</label>
+          <div class="kv" id="accountLine">加载中…</div>
         </div>
       </div>
       <div id="settingsMsg"></div>
@@ -173,7 +169,8 @@
 
     <div class="card">
       <h2>模型配置</h2>
-      <p class="muted">Key 加密托管在服务器，任何接口不返回明文。endpoint 必须是 HTTPS。</p>
+      <p class="muted">Key 加密托管在服务器，任何接口不返回明文。endpoint 必须是 HTTPS。
+        用量与费用请在供应商平台查看，本系统不再统计。</p>
       <table id="profileTable">
         <thead><tr><th>类型</th><th>模型</th><th>状态</th><th>操作</th></tr></thead>
         <tbody></tbody>
@@ -192,10 +189,6 @@
           <div>
             <label for="pfSecret">API Key</label>
             <input id="pfSecret" type="password" autocomplete="off">
-            <label for="pfPriceIn">输入单价（元/百万 tokens，可选）</label>
-            <input id="pfPriceIn" type="number" min="0" step="0.01">
-            <label for="pfPriceOut">输出单价（元/百万 tokens，可选）</label>
-            <input id="pfPriceOut" type="number" min="0" step="0.01">
           </div>
         </div>
         <div id="pfMsg"></div>
@@ -214,6 +207,7 @@
       <div id="biliMsg"></div>
       <div class="row" style="margin-top:10px">
         <button class="primary" id="biliSave">更新登录态</button>
+        <button id="biliCheck">检测登录态</button>
         <button class="danger" id="biliRevoke">撤销</button>
       </div>
     </div>
@@ -227,8 +221,6 @@
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s == null ? "" : s)
   .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-const MICRO = 1000000;
-const yuan = (micro) => (Number(micro || 0) / MICRO).toFixed(2);
 
 function csrfToken() {
   const m = document.cookie.match(/(?:^|;\s*)kb_csrf=([^;]*)/);
@@ -244,7 +236,7 @@ async function api(path, opts = {}) {
   if (opts.formData) { body = opts.formData; }
   else if (opts.body !== undefined) { headers["Content-Type"] = "application/json"; body = JSON.stringify(opts.body); }
   const res = await fetch(path, { method, headers, body, credentials: "same-origin" });
-  if (res.status === 401) { showLogin(); throw new Error("登录已过期，请重新登录"); }
+  if (res.status === 401) { showLogin(); throw new Error("未登录或登录已过期"); }
   let data = null;
   try { data = await res.json(); } catch (e) { /* 空响应 */ }
   if (!res.ok) {
@@ -259,14 +251,23 @@ function msg(host, text, isOk) {
 }
 
 // ---------- 视图切换 ----------
+let meInfo = null;
 function showLogin() {
   $("topbar").hidden = true; $("tabsNav").hidden = true;
   $("appView").hidden = true; $("loginView").hidden = false;
 }
-function showApp() {
+function showApp(me) {
+  meInfo = me;
   $("loginView").hidden = true; $("appView").hidden = false;
   $("topbar").hidden = false; $("tabsNav").hidden = false;
-  refreshUsageChip();
+  const name = me.central_username || me.display_name || me.user_id;
+  $("whoChip").textContent = name + (me.auth_method === "central_session" ? "" : "（设备）");
+  if (me.is_admin && me.admin_url) {
+    $("adminLink").href = me.admin_url;
+    $("adminLink").hidden = false;
+  } else {
+    $("adminLink").hidden = true;
+  }
 }
 function switchTab(which) {
   $("inboxTab").hidden = which !== "inbox";
@@ -279,27 +280,15 @@ function switchTab(which) {
 // ---------- 状态展示 ----------
 const STATE_LABELS = {
   queued: "排队中", extracting: "提取中", enriching: "加工中", ready: "已整理",
-  needs_input: "待补充", waiting_key: "等待密钥", waiting_budget: "等待预算",
+  needs_input: "待补充", waiting_key: "等待密钥", waiting_budget: "等待预算（已下线）",
   failed: "失败", unknown_outcome: "结果未知",
 };
 const stateBadge = (s) => '<span class="badge b-' + esc(s) + '">' + esc(STATE_LABELS[s] || s) + "</span>";
 const fmtTime = (iso) => { try { return new Date(iso).toLocaleString("zh-CN", { hour12: false }); } catch (e) { return iso || ""; } };
 
 // ---------- 登录 / 登出 ----------
-async function doLogin() {
-  msg("loginError", "");
-  $("loginBtn").disabled = true;
-  try {
-    await api("/v1/web/session", { method: "POST", body: {
-      code: $("pairCode").value.trim(), device_name: $("deviceName").value.trim() || "Web 收件箱",
-    }});
-    $("pairCode").value = "";
-    showApp(); switchTab("inbox"); loadItems();
-  } catch (e) { msg("loginError", e.message, false); }
-  $("loginBtn").disabled = false;
-}
 async function doLogout() {
-  try { await api("/v1/web/logout", { method: "POST" }); } catch (e) { /* 会话已无效也清理界面 */ }
+  try { await api("/v1/auth/logout", { method: "POST" }); } catch (e) { /* 会话已无效也清理界面 */ }
   showLogin();
 }
 
@@ -465,32 +454,31 @@ async function loadExport() {
   } catch (e) { body.innerHTML = '<span class="error">' + esc(e.message) + "</span>"; }
 }
 
-// ---------- 模型与预算 ----------
-function refreshUsageChip() {
-  api("/v1/usage").then((u) => {
-    const budget = u.budget_micro > 0 ? " / ¥" + yuan(u.budget_micro) : " / 不限";
-    $("usageChip").textContent = "本月 ¥" + yuan(u.committed) + budget;
-  }).catch(() => { $("usageChip").textContent = "用量未知"; });
-}
+// ---------- 模型与账号 ----------
+const VERIFY_LABELS = {
+  unconfigured: "未托管", unverified: "已保存未验证", valid: "最近验证有效",
+  invalid: "已失效/被拒", network_error: "检测受网络影响", blocked: "被风控拒绝",
+};
 
 async function loadSettings() {
   msg("settingsMsg", ""); msg("pfMsg", ""); msg("biliMsg", "");
   try {
-    const [profiles, settings, usage, bili] = await Promise.all([
-      api("/v1/provider-profiles"), api("/v1/settings"), api("/v1/usage"),
-      api("/v1/bilibili-session"),
+    const [profiles, settings, bili] = await Promise.all([
+      api("/v1/provider-profiles"), api("/v1/settings"), api("/v1/bilibili-session"),
     ]);
-    // 预算与默认配置
-    $("budgetYuan").value = settings.monthly_budget_micro > 0 ? (settings.monthly_budget_micro / MICRO) : 0;
+    // 账号信息
+    if (meInfo) {
+      $("accountLine").innerHTML = esc(meInfo.central_username || meInfo.display_name || "") +
+        '<span class="muted">（' + esc(meInfo.auth_method === "central_session" ? "统一账号" : "设备 Token") + '）</span>' +
+        (meInfo.is_admin ? ' <span class="badge b-ready">管理员</span>' : "") +
+        (meInfo.admin_url ? ' · <a href="' + esc(meInfo.admin_url) + '" target="_blank" rel="noopener">邀请码管理</a>' : "");
+    }
+    // 默认配置
     const sel = $("defaultProfile");
     sel.innerHTML = '<option value="">（未设置）</option>' + profiles
       .filter((p) => p.kind === "llm")
       .map((p) => '<option value="' + esc(p.id) + '"' + (p.id === settings.default_profile_id ? " selected" : "") + ">" +
         esc(p.kind + " · " + p.model) + "</option>").join("");
-    // 用量
-    const budgetTxt = usage.budget_micro > 0 ? "预算 ¥" + yuan(usage.budget_micro) : "不限预算";
-    $("usageLine").innerHTML = "本月已用 <b>¥" + yuan(usage.committed) + "</b>（" + budgetTxt +
-      "，tokens " + (usage.tokens || 0).toLocaleString() + "，预留中 ¥" + yuan(usage.reserved) + "）";
     // 配置表
     const tb = $("profileTable").querySelector("tbody");
     tb.innerHTML = profiles.map((p) => {
@@ -505,45 +493,44 @@ async function loadSettings() {
         "</div></td></tr>";
     }).join("") || '<tr><td colspan="4" class="muted">还没有模型配置</td></tr>';
     // B 站
+    const vBadge = '<span class="badge v-' + esc(bili.verification || "unverified") + '">' +
+      esc(VERIFY_LABELS[bili.verification] || bili.verification || "未验证") + "</span>";
     $("biliStatus").innerHTML = bili.configured
-      ? '<span class="badge b-ready">已托管</span>　凭据 v' + bili.credential_version + " · 更新于 " + fmtTime(bili.updated_at)
+      ? vBadge + "　凭据 v" + bili.credential_version + " · 更新于 " + fmtTime(bili.updated_at) +
+        (bili.last_check ? '<div class="meta-line">最近检测：' + esc(bili.last_check.detail || "") +
+          (bili.last_check.checked_at ? "（" + fmtTime(bili.last_check.checked_at) + "）" : "") + "</div>" : "")
       : '<span class="badge b-needs_input">未托管</span>　' + esc(bili.note);
   } catch (e) { msg("settingsMsg", e.message, false); }
 }
 
 async function saveSettings() {
   msg("settingsMsg", "");
-  const yuanVal = parseFloat($("budgetYuan").value);
-  if (isNaN(yuanVal) || yuanVal < 0) { msg("settingsMsg", "预算格式不正确", false); return; }
   try {
     await api("/v1/settings", { method: "PATCH", body: {
-      monthly_budget_micro: Math.round(yuanVal * MICRO),
       default_profile_id: $("defaultProfile").value || null,
     }});
     msg("settingsMsg", "已保存。", true);
-    refreshUsageChip();
   } catch (e) { msg("settingsMsg", e.message, false); }
 }
 
 async function createProfile() {
   msg("pfMsg", "");
-  const prices = {};
-  const pi = parseFloat($("pfPriceIn").value), po = parseFloat($("pfPriceOut").value);
-  if (!isNaN(pi)) prices.input_per_1m = pi;
-  if (!isNaN(po)) prices.output_per_1m = po;
   try {
     await api("/v1/provider-profiles", { method: "POST", body: {
       kind: $("pfKind").value, adapter: "openai-compatible",
       endpoint: $("pfEndpoint").value.trim(), model: $("pfModel").value.trim(),
-      secret: $("pfSecret").value, prices: Object.keys(prices).length ? prices : null,
+      secret: $("pfSecret").value,
     }});
     $("pfEndpoint").value = ""; $("pfModel").value = ""; $("pfSecret").value = "";
-    $("pfPriceIn").value = ""; $("pfPriceOut").value = "";
     msg("pfMsg", "配置已创建。", true);
     loadSettings();
   } catch (e) { msg("pfMsg", e.message, false); }
 }
-async function testProfile(id) { try { const r = await api("/v1/provider-profiles/" + id + "/test", { method: "POST" }); alert(r.ok ? "连接正常，本次测试花费 ¥" + yuan(r.cost_micro) : "测试失败：" + r.message); loadSettings(); } catch (e) { alert("测试失败：" + e.message); } }
+async function testProfile(id) {
+  try { const r = await api("/v1/provider-profiles/" + id + "/test", { method: "POST" });
+    alert(r.ok ? "连接正常。" : "测试失败：" + r.message); }
+  catch (e) { alert("测试失败：" + e.message); }
+}
 async function rotateKey(id) { const s = prompt("粘贴新的 API Key："); if (!s) return; try { await api("/v1/provider-profiles/" + id, { method: "PATCH", body: { secret: s } }); loadSettings(); } catch (e) { alert("换 Key 失败：" + e.message); } }
 async function revokeKey(id) { if (!confirm("撤销后等待 Key 的条目会暂停，确定？")) return; try { await api("/v1/provider-profiles/" + id + "/credential", { method: "DELETE" }); loadSettings(); } catch (e) { alert("撤销失败：" + e.message); } }
 
@@ -554,7 +541,16 @@ async function biliSave() {
   try {
     const r = await api("/v1/bilibili-session", { method: "PUT", body: { secret: s } });
     $("biliSecret").value = "";
-    msg("biliMsg", "已更新。" + (r.requeued_items ? "有 " + r.requeued_items + " 条待补充条目已自动重新提取。" : ""), true);
+    msg("biliMsg", "已更新。" + (r.requeued_items ? "有 " + r.requeued_items + " 条 B 站待补充条目已自动重新提取。" : ""), true);
+    loadSettings();
+  } catch (e) { msg("biliMsg", e.message, false); }
+}
+async function biliCheck() {
+  msg("biliMsg", "");
+  try {
+    const r = await api("/v1/bilibili-session/test", { method: "POST" });
+    const cls = r.status === "valid" ? "okmsg" : (r.status === "network_error" ? "error" : "error");
+    $("biliMsg").innerHTML = '<div class="' + cls + '">' + esc(r.detail || r.status) + "</div>";
     loadSettings();
   } catch (e) { msg("biliMsg", e.message, false); }
 }
@@ -565,8 +561,7 @@ async function biliRevoke() {
 }
 
 // ---------- 启动 ----------
-$("loginBtn").addEventListener("click", doLogin);
-$("pairCode").addEventListener("keydown", (e) => { if (e.key === "Enter") doLogin(); });
+$("loginBtn").addEventListener("click", () => { window.location.href = "/login?next=%2Finbox"; });
 $("logoutBtn").addEventListener("click", doLogout);
 $("tabInbox").addEventListener("click", () => switchTab("inbox"));
 $("tabSettings").addEventListener("click", () => switchTab("settings"));
@@ -577,12 +572,21 @@ $("moreBtn").addEventListener("click", () => loadItems(false));
 $("saveSettings").addEventListener("click", saveSettings);
 $("pfCreate").addEventListener("click", createProfile);
 $("biliSave").addEventListener("click", biliSave);
+$("biliCheck").addEventListener("click", biliCheck);
 $("biliRevoke").addEventListener("click", biliRevoke);
 
-// 会话探测：能列出条目说明已登录
+// 会话探测：中心会话有效则直接进入
 (async function boot() {
-  try { await api("/v1/items?limit=1"); showApp(); switchTab("inbox"); loadItems(); }
-  catch (e) { /* showLogin 已由 api() 触发 */ }
+  try {
+    const me = await api("/v1/auth/me");
+    showApp(me); switchTab("inbox"); loadItems();
+  } catch (e) {
+    if (e.status === 503) {
+      $("loginView").hidden = false;
+      msg("loginError", "认证服务暂不可用，请稍后重试：" + e.message, false);
+    }
+    /* 401 已由 api() 触发 showLogin */
+  }
 })();
 setInterval(() => { if (!$("appView").hidden && $("inboxTab").hidden === false) loadItems(true); }, 30000);
 </script>

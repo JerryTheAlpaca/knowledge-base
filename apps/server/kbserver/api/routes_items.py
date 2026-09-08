@@ -107,7 +107,7 @@ def list_items(
     principal=Depends(require_scope("items:read")),
     db: Session = Depends(get_db),
 ) -> ItemList:
-    user, _device, _token = principal
+    user = principal.user
     limit = max(1, min(limit, 200))
     items, total = repo.list_items(db, user.id, state=state, limit=limit, offset=max(0, offset))
     outs = []
@@ -122,7 +122,7 @@ def list_items(
 
 @router.get("/{item_id}", response_model=ItemOut)
 def get_item(item_id: str, principal=Depends(require_scope("items:read")), db: Session = Depends(get_db)) -> ItemOut:
-    user, _device, _token = principal
+    user = principal.user
     item = _require_item(db, user.id, item_id)
     return _item_out(item, _latest_source(db, item))
 
@@ -135,7 +135,7 @@ def supplement(
     db: Session = Depends(get_db),
 ) -> ItemOut:
     """补充材料：新增不可变来源版本并重新排队（docs/02 §8.1 needs_input -> queued）。"""
-    user, _device, _token = principal
+    user = principal.user
     item = _require_item(db, user.id, item_id)
     source = _latest_source(db, item)
     if body.expected_source_revision != item.source_revision:
@@ -207,7 +207,7 @@ def reprocess(
     db: Session = Depends(get_db),
 ) -> ItemOut:
     """重新加工已有材料：不默认重新抓站点。"""
-    user, _device, _token = principal
+    user = principal.user
     item = _require_item(db, user.id, item_id)
     source = _latest_source(db, item)
     stage = "extract" if item.pipeline_state in {"needs_input", "failed"} else "enrich"
@@ -230,7 +230,7 @@ _REFETCH_MIN_INTERVAL_SECONDS = 600
 @router.post("/{item_id}/refetch", response_model=ItemOut, status_code=202)
 def refetch(item_id: str, principal=Depends(require_scope("items:edit")), db: Session = Depends(get_db)) -> ItemOut:
     """显式重新提取来源（重新抓站点）：限频；旧来源版本保留，由 worker 比较内容变化。"""
-    user, _device, _token = principal
+    user = principal.user
     item = _require_item(db, user.id, item_id)
     source = _latest_source(db, item)
     if not source.metadata_json.get("original_url"):
@@ -257,7 +257,7 @@ def refetch(item_id: str, principal=Depends(require_scope("items:edit")), db: Se
 @router.delete("/{item_id}", status_code=200)
 def delete_item(item_id: str, principal=Depends(require_scope("items:edit")), db: Session = Depends(get_db)) -> dict:
     """先标记 tombstone 并取消后续发布；在线对象由清理任务在 24 小时内回收。"""
-    user, _device, _token = principal
+    user = principal.user
     item = repo.get_item(db, user.id, item_id)
     if item is None:
         raise ApiError("NOT_FOUND", "条目不存在", status_code=404)

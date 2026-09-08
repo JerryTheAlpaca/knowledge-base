@@ -5,7 +5,7 @@
 - 错误分类对应 docs/02 §8.3：
   - 401/403            -> ProviderAuthFailed    -> waiting_key
   - 429 / 5xx / 连接失败 -> ProviderRetryable    -> retry_wait 退避
-  - 已发出但超时未响应   -> ProviderOutcomeUnknown -> unknown_outcome（可能已计费，不盲目重发）
+  - 已发出但超时未响应   -> ProviderOutcomeUnknown -> unknown_outcome（结果未知，不盲目重发）
   - 其余 4xx           -> ProviderInvalidRequest -> 失败（配置问题，重试无意义）
 - 明文 Key 只在单次请求对象中使用，不落日志；SDK 请求对象不进异常堆栈。
 """
@@ -59,7 +59,6 @@ class GenerateRequest:
 @dataclass
 class GenerateResult:
     output_text: str
-    usage: dict = field(default_factory=dict)  # prompt_tokens / completion_tokens / total_tokens
     provider_request_id: str | None = None
     finish_reason: str | None = None
     raw: dict = field(default_factory=dict)
@@ -151,11 +150,6 @@ class OpenAICompatibleProvider:
             raise ProviderRetryable("供应商返回空内容")
         return GenerateResult(
             output_text=content,
-            usage={
-                "prompt_tokens": (data.get("usage") or {}).get("prompt_tokens"),
-                "completion_tokens": (data.get("usage") or {}).get("completion_tokens"),
-                "total_tokens": (data.get("usage") or {}).get("total_tokens"),
-            },
             provider_request_id=resp.headers.get("x-request-id") or data.get("id"),
             finish_reason=choices[0].get("finish_reason"),
             raw=data,

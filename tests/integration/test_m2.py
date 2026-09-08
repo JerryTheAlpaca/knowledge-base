@@ -1,8 +1,9 @@
 """M2 云端加工集成测试。
 
 覆盖：凭据托管 API（明文不回读）、enrich 成功发布、JSON 修复、校验失败诊断、
-401 waiting_key 与凭据更新重排队、超时 unknown_outcome、预算暂停/恢复、
-旧来源版本不覆盖新内容（A13）、重新加工幂等、用量账本、usage-only 模式、
+401 waiting_key 与凭据更新重排队、超时 unknown_outcome、
+旧来源版本不覆盖新内容（A13）、重新加工幂等、
+不提供价格/供应商不返回 usage 也能完成（docs/05 §5）、
 长文本分块、租户隔离。
 """
 from __future__ import annotations
@@ -45,7 +46,6 @@ def llm_result(payload) -> GenerateResult:
     text = json.dumps(payload, ensure_ascii=False) if isinstance(payload, dict) else payload
     return GenerateResult(
         output_text=text,
-        usage={"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150},
         provider_request_id="req-fake",
         finish_reason="stop",
         raw={},
@@ -101,16 +101,13 @@ def _drain(session_factory, max_rounds=20):
             break
 
 
-def _create_profile(client, token, *, prices="default", capabilities=None, secret="sk-test-1234567890"):
-    if prices == "default":
-        prices = {"input_per_1m": 1.0, "output_per_1m": 2.0, "currency": "CNY"}
+def _create_profile(client, token, *, capabilities=None, secret="sk-test-1234567890"):
     body = {
         "kind": "llm",
         "adapter": "openai-compatible",
         "endpoint": ALLOWED_ENDPOINT,
         "model": "deepseek-chat",
         "capabilities": capabilities or {},
-        "prices": prices,
         "secret": secret,
     }
     return client.post("/v1/provider-profiles", json=body, headers=auth(token))
@@ -202,7 +199,7 @@ def test_profile_tenant_isolation(client, user_a, user_b):
 def test_enrich_success_publishes_ready_bundle(client, user_a, session_factory, fake_llm):
     fake_llm.behavior = chunk_aware_behavior
     token = user_a["desktop"]["token"]
-    profile = _create_profile(client, token, prices={"input_per_1m": 1.0, "output_per_1m": 2.0, "currency": "CNY"}).json()
+    _create_profile(client, token)
 
     c = _capture_text(client, user_a["phone"]["token"], "m2cap1", "第一段：可靠保存材料。\n第二段：加工不丢原文。", note="我的备注")
     item_id = c.json()["item_id"]
@@ -225,17 +222,15 @@ def test_enrich_success_publishes_ready_bundle(client, user_a, session_factory, 
     assert analysis_doc["summary"] == "演示摘要。"
     assert analysis_doc["key_points"][0]["evidence_ids"]
 
-    # 结算正确：100 in × 1元/M + 50 out × 2元/M = 200 微单位
-    usage = client.get("/v1/usage", headers=auth(token)).json()
-    assert usage["committed"] == 200
-    assert usage["tokens"] == 150
-    assert profile["id"] in usage["by_profile"]
+    # 去计费后无 /v1/usage 接口
+    assert client.get("/v1/usage", headers=auth(token)).status_code == 404
 
 
-def test_enrich_usage_only_without_prices(client, user_a, session_factory, fake_llm):
+def test_enrich_succeeds_without_usage_in_response(client, user_a, session_factory, fake_llm):
+    """供应商响应不返回 usage、配置无价格：加工照常完成（docs/05 §5）。"""
     fake_llm.behavior = chunk_aware_behavior
     token = user_a["desktop"]["token"]
-    _create_profile(client, token, prices=None)
+    _create_profile(client, token)
     c = _capture_text(client, user_a["phone"]["token"], "m2usage", "无价格配置的加工。")
     item_id = c.json()["item_id"]
     _drain(session_factory)
@@ -243,10 +238,7 @@ def test_enrich_usage_only_without_prices(client, user_a, session_factory, fake_
     it = _get_item(client, token, item_id)
     assert it["pipeline_state"] == "ready"
     m = client.get(f"/v1/items/{item_id}/bundles/{it['bundle_revision']}/manifest", headers=auth(token)).json()
-    assert any("只统计用量" in w for w in m["warnings"])
-    usage = client.get("/v1/usage", headers=auth(token)).json()
-    assert usage["committed"] == 0
-    assert usage["tokens"] == 150
+    assert m["processing"]["state"] == "ready"
 
 
 # ---- 校验与修复 ----
@@ -307,12 +299,10 @@ def test_auth_failed_then_credential_update_requeues(client, user_a, session_fac
     _drain(session_factory)
     assert _get_item(client, token, item_id)["pipeline_state"] == "waiting_key"
 
-    # 配置了坏 Key 的凭据 → enrich 失败 → 仍 waiting_key，且预留已退款
+    # 配置了坏 Key 的凭据 → enrich 失败 → 仍 waiting_key
     _create_profile(client, token)
     _drain(session_factory)
     assert _get_item(client, token, item_id)["pipeline_state"] == "waiting_key"
-    usage = client.get("/v1/usage", headers=auth(token)).json()
-    assert usage["committed"] == 0, "401 失败必须退款"
 
     # 更新凭据（轮换）→ waiting_key 条目自动重新排队并成功
     fake_llm.behavior = chunk_aware_behavior
@@ -323,7 +313,7 @@ def test_auth_failed_then_credential_update_requeues(client, user_a, session_fac
     assert _get_item(client, token, item_id)["pipeline_state"] == "ready"
 
 
-# ---- 未知结果与预算 ----
+# ---- 未知结果 ----
 
 def test_timeout_unknown_outcome_then_reprocess(client, user_a, session_factory, fake_llm):
     from kbserver.providers.llm import ProviderOutcomeUnknown
@@ -337,32 +327,11 @@ def test_timeout_unknown_outcome_then_reprocess(client, user_a, session_factory,
 
     it = _get_item(client, token, item_id)
     assert it["pipeline_state"] == "unknown_outcome"
-    usage = client.get("/v1/usage", headers=auth(token)).json()
-    assert usage["committed"] > 0, "未知结果保留成本预留"
 
-    # 对账后允许重新加工
+    # 不自动重发：允许显式重新加工后成功
     fake_llm.behavior = chunk_aware_behavior
     r = client.post(f"/v1/items/{item_id}/reprocess", json={"reason": "对账完成"}, headers=auth(token))
     assert r.status_code == 202
-    _drain(session_factory)
-    assert _get_item(client, token, item_id)["pipeline_state"] == "ready"
-
-
-def test_budget_pause_and_resume(client, user_a, session_factory, fake_llm):
-    fake_llm.behavior = chunk_aware_behavior
-    token = user_a["desktop"]["token"]
-    _create_profile(client, token)
-    # 预算 1 微单位 → 任何预留都会超出
-    s = client.patch("/v1/settings", json={"monthly_budget_micro": 1}, headers=auth(token))
-    assert s.status_code == 200
-
-    c = _capture_text(client, user_a["phone"]["token"], "m2budget", "预算暂停测试。")
-    item_id = c.json()["item_id"]
-    _drain(session_factory)
-    assert _get_item(client, token, item_id)["pipeline_state"] == "waiting_budget"
-
-    # 提高预算 → 自动继续
-    client.patch("/v1/settings", json={"monthly_budget_micro": 20_000_000}, headers=auth(token))
     _drain(session_factory)
     assert _get_item(client, token, item_id)["pipeline_state"] == "ready"
 

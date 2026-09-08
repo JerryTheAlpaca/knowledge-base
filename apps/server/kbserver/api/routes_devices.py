@@ -28,7 +28,7 @@ class DeviceOut(BaseModel):
 
 @router.get("", response_model=list[DeviceOut])
 def list_devices(principal=Depends(require_scope("devices:manage")), db: Session = Depends(get_db)) -> list[DeviceOut]:
-    user, _device, _token = principal
+    user = principal.user
     devices = repo.list_devices(db, user.id)
     return [
         DeviceOut(
@@ -47,7 +47,7 @@ def activate_consumer(
     db: Session = Depends(get_db),
 ) -> DeviceOut:
     """切换主要写入设备：递增 consumer_epoch，旧设备停止新回执（docs/02 §9.1）。"""
-    user, _device, _token = principal
+    user = principal.user
     target = repo.get_device(db, user.id, device_id)
     if target is None or target.revoked_at is not None:
         raise ApiError("NOT_FOUND", "设备不存在", status_code=404)
@@ -67,7 +67,7 @@ def activate_consumer(
 @router.delete("/{device_id}")
 def revoke_device(device_id: str, principal=Depends(require_scope("devices:manage")), db: Session = Depends(get_db)) -> dict:
     """撤销设备：服务 Token 随之失效；模型 Key 不受影响。"""
-    user, _device, _token = principal
+    user = principal.user
     target = repo.get_device(db, user.id, device_id)
     if target is None:
         raise ApiError("NOT_FOUND", "设备不存在", status_code=404)

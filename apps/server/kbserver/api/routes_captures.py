@@ -61,7 +61,7 @@ def create_capture(
     principal=Depends(require_scope("captures:create")),
     db: Session = Depends(get_db),
 ) -> CaptureAccepted:
-    user, _device, _token = principal
+    user = principal.user
     if not idempotency_key:
         raise ApiError("SCHEMA_INVALID", "缺少 Idempotency-Key 请求头", status_code=422)
 

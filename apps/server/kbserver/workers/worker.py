@@ -30,6 +30,7 @@ from ..models import (
     BundleRevision,
     Capture,
     Credential,
+    DeviceAuthRequest,
     Event,
     IdempotencyRecord,
     Item,
@@ -226,12 +227,16 @@ def _is_bilibili_capture(payload: dict, meta: dict) -> bool:
     return False
 
 
-def _needs_input(db: Session, job: Job, item: Item, detail: str, reason: str) -> None:
+def _needs_input(db: Session, job: Job, item: Item, detail: str, reason: str,
+                 stage: str = "extract") -> None:
+    """进入补充材料：state_detail 保留人话，事件 payload 保存机器可读的
+    stage/discovery_status（docs/05 §3.3），供 UI 给出下一步操作。"""
     item.pipeline_state = "needs_input"
     item.state_detail = detail[:200]
     job.state = "succeeded"
     pipeline.emit_event(db, item.user_id, item_id=item.id, bundle_revision=item.bundle_revision,
-                        event_type="item_needs_input", payload={"reason": reason, "detail": detail[:200]})
+                        event_type="item_needs_input",
+                        payload={"reason": reason, "detail": detail[:200], "stage": stage})
 
 
 def _extract_from_subtitle_uploads(db: Session, store: ObjectStore, job: Job,
@@ -570,7 +575,7 @@ def retention_sweep(session_factory, store: ObjectStore) -> dict[str, int]:
     """
     settings = get_settings()
     now = utcnow()
-    stats = {"expired_uploads": 0, "expired_bundles": 0, "orphan_files": 0, "events": 0, "idempotency": 0}
+    stats = {"expired_uploads": 0, "expired_bundles": 0, "orphan_files": 0, "events": 0, "idempotency": 0, "device_auth": 0}
     with session_factory() as db:
         # 未引用上传（24h 过期，docs/02 §14.3）
         stats["expired_uploads"] = cleanup_expired_uploads(db, store)
@@ -619,6 +624,10 @@ def retention_sweep(session_factory, store: ObjectStore) -> dict[str, int]:
         ).delete(synchronize_session=False)
         stats["idempotency"] = db.query(IdempotencyRecord).filter(
             IdempotencyRecord.expires_at < now
+        ).delete(synchronize_session=False)
+        # 过期的插件设备授权请求（docs/05 §4.5）：过期超过 1 天清理
+        stats["device_auth"] = db.query(DeviceAuthRequest).filter(
+            DeviceAuthRequest.expires_at < now - timedelta(days=1)
         ).delete(synchronize_session=False)
         db.commit()
     return stats

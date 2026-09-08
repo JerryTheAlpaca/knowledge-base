@@ -41,6 +41,22 @@ class Settings:
     pairing_code_ttl_minutes: int = int(os.environ.get("PAIRING_CODE_TTL_MINUTES", "10"))
     web_session_ttl_days: int = int(os.environ.get("WEB_SESSION_TTL_DAYS", "7"))
 
+    # 中心认证（docs/05 §4.1）：统一登录由 jerrythealpaca.cn 的 Ledger 提供。
+    # 为空表示未接入中心认证：Web Cookie 通道返回 503，插件/设备 Bearer 不受影响。
+    auth_session_url: str = os.environ.get("AUTH_SESSION_URL", "")
+    auth_login_url: str = os.environ.get("AUTH_LOGIN_URL", "")
+    auth_logout_url: str = os.environ.get("AUTH_LOGOUT_URL", "")
+    # 中心会话 Cookie 名称；AUTH_COOKIE_DOMAIN 用于校验续期 Cookie 的域（为空则要求无域属性）
+    auth_cookie_name: str = os.environ.get("AUTH_COOKIE_NAME", "__Secure-session")
+    auth_cookie_domain: str = os.environ.get("AUTH_COOKIE_DOMAIN", "")
+    auth_timeout_seconds: float = float(os.environ.get("AUTH_TIMEOUT_SECONDS", "5"))
+    # KB 代理退出时转发给中心 logout 的固定 Origin（不转发任意来源）
+    auth_forward_origin: str = os.environ.get("AUTH_FORWARD_ORIGIN", "")
+
+    # 插件设备授权流程（docs/05 §4.5）
+    device_auth_ttl_seconds: int = int(os.environ.get("DEVICE_AUTH_TTL_SECONDS", "300"))
+    device_auth_poll_interval_seconds: int = int(os.environ.get("DEVICE_AUTH_POLL_INTERVAL_SECONDS", "2"))
+
     # Worker
     job_lease_seconds: int = int(os.environ.get("JOB_LEASE_SECONDS", "120"))
     job_max_lifetime_days: int = int(os.environ.get("JOB_MAX_LIFETIME_DAYS", "7"))
@@ -98,4 +114,14 @@ class Settings:
 
 
 def get_settings() -> Settings:
-    return Settings()
+    # 中心认证与对外地址在调用时读取环境变量：部署配置可随时调整，测试也能注入替身；
+    # 其余字段沿用模块加载时的值（与既有行为一致）。
+    return Settings(
+        public_base_url=os.environ.get("PUBLIC_BASE_URL", "http://localhost:8000"),
+        auth_session_url=os.environ.get("AUTH_SESSION_URL", ""),
+        auth_login_url=os.environ.get("AUTH_LOGIN_URL", ""),
+        auth_logout_url=os.environ.get("AUTH_LOGOUT_URL", ""),
+        auth_cookie_name=os.environ.get("AUTH_COOKIE_NAME", "__Secure-session"),
+        auth_cookie_domain=os.environ.get("AUTH_COOKIE_DOMAIN", ""),
+        auth_forward_origin=os.environ.get("AUTH_FORWARD_ORIGIN", ""),
+    )

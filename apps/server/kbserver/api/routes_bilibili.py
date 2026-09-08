@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import re
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, ConfigDict, Field
@@ -20,8 +21,9 @@ from ..db import get_db
 from ..api.deps import require_scope
 from ..domain import pipeline
 from ..domain.errors import ApiError
-from ..models import Credential, Item, ProviderProfile, new_id, utcnow
+from ..models import Capture, Credential, Item, ProviderProfile, SourceRevision, new_id, utcnow
 from ..security import credentials as cred_crypto
+from ..security.safe_fetch import SafeFetchError, safe_fetch
 
 router = APIRouter(tags=["bilibili-session"])
 
@@ -76,30 +78,112 @@ def _out(db: Session, profile: ProviderProfile | None) -> dict:
             "configured": False,
             "credential_version": None,
             "updated_at": None,
+            "verification": "unconfigured",
+            "last_check": None,
             "note": "未托管 B 站登录态：需要登录才能取得字幕的视频将进入补充材料。",
         }
     cred = _active_credential(db, profile)
+    last_check = (profile.meta_json or {}).get("bilibili_last_check")
+    if last_check:
+        verification = last_check.get("status") or "unverified"
+    else:
+        verification = "unverified"  # 已保存但未验证
     return {
         "configured": cred is not None,
         "credential_version": cred.version if cred else None,
         "updated_at": cred.created_at.isoformat() if cred else None,
-        "note": "只保存 SESSDATA 值并加密存储；任何接口不返回明文。失效时更新即可。",
+        "verification": verification,
+        "last_check": last_check,
+        "note": "只保存 SESSDATA 值并加密存储；任何接口不返回明文。失效时更新即可。"
+                if cred is not None else "凭据已撤销。",
     }
 
 
+def _check_sessdata_online(sessdata: str, max_bytes: int) -> dict:
+    """用当前凭据请求 B 站 nav 接口验证登录态；只返回脱敏状态，不触发重抓。"""
+    url = "https://api.bilibili.com/x/web-interface/nav"
+    try:
+        from ..extractors.bilibili import _browser_headers
+
+        result = safe_fetch(url, max_bytes=max_bytes, timeout=15.0,
+                            headers=_browser_headers(url, sessdata))
+    except SafeFetchError as exc:
+        return {"status": "network_error", "detail": f"检测请求失败：{exc}"}
+    if result.status_code >= 500:
+        return {"status": "network_error", "detail": f"平台临时错误（HTTP {result.status_code}）"}
+    try:
+        import json as _json
+
+        doc = _json.loads(result.content.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return {"status": "blocked", "detail": "接口返回内容异常（可能被风控）"}
+    code = doc.get("code")
+    if code == 0:
+        uname = str(((doc.get("data") or {}).get("uname")) or "")
+        masked = (uname[:1] + "***") if uname else ""
+        return {"status": "valid",
+                "detail": f"登录态有效{('（B 站用户 ' + masked + '）') if masked else ''}"}
+    if code in (-101, -111):
+        return {"status": "invalid", "detail": "B 站返回未登录：凭据已失效或被拒绝，请重新提交 SESSDATA"}
+    return {"status": "blocked", "detail": f"平台拒绝访问（code={code}）"}
+
+
+def _is_bilibili_item(db: Session, item: Item) -> bool:
+    """条目是否属于 B 站来源：按最新来源版本元数据或采集输入判断。"""
+    source = (
+        db.query(SourceRevision)
+        .filter(SourceRevision.item_id == item.id, SourceRevision.revision == item.source_revision)
+        .one_or_none()
+    )
+    meta = source.metadata_json if source else {}
+    if meta.get("platform") == "bilibili":
+        return True
+    capture = db.get(Capture, item.capture_id)
+    payload = (capture.input_json or {}) if capture else {}
+    candidates = [payload.get("original_url")]
+    m = re.search(r"https?://[^\s，,、）)】\]]+", payload.get("share_text") or "")
+    if m:
+        candidates.append(m.group(0))
+    for url in candidates:
+        if not url:
+            continue
+        host = (urlparse(url).hostname or "").lower()
+        if host == "bilibili.com" or host.endswith(".bilibili.com") or host.endswith("b23.tv"):
+            return True
+    return False
+
+
 def _requeue_needs_input(db: Session, user_id: str) -> int:
-    """登录态变化：此前因缺登录态降级的条目重新提取（A13 语义由新来源版本保证）。"""
+    """登录态变化：仅重提「B 站来源 + 因字幕/登录态问题等待」的条目（docs/05 §3.2）。
+
+    不重抓公众号/网页/其他来源；已有用户补充正文的条目跳过，避免覆盖人工补充。
+    """
     items = (
         db.query(Item)
         .filter(Item.user_id == user_id, Item.pipeline_state == "needs_input", Item.deleted_at.is_(None))
         .all()
     )
+    requeued = 0
     for it in items:
+        if not _is_bilibili_item(db, it):
+            continue
+        source = (
+            db.query(SourceRevision)
+            .filter(SourceRevision.item_id == it.id, SourceRevision.revision == it.source_revision)
+            .one_or_none()
+        )
+        meta = source.metadata_json if source else {}
+        if (meta.get("supplement_text") or "").strip():
+            continue  # 已有人工补充正文，不覆盖
+        detail = it.state_detail or ""
+        if not any(k in detail for k in ("字幕", "登录", "SESSDATA", "凭据")):
+            continue  # 非字幕/会话原因的待补充条目不重排
         pipeline.enqueue_stage(
             db, user_id=user_id, item_id=it.id, source_revision=it.source_revision,
             stage="extract", reset_attempt=True,
         )
-    return len(items)
+        requeued += 1
+    return requeued
 
 
 class SessionSecret(BaseModel):
@@ -109,13 +193,13 @@ class SessionSecret(BaseModel):
 
 @router.get("/v1/bilibili-session")
 def get_session(principal=Depends(require_scope("profiles:manage")), db: Session = Depends(get_db)):
-    user, _device, _token = principal
+    user = principal.user
     return _out(db, _session_profile(db, user.id))
 
 
 @router.put("/v1/bilibili-session")
 def put_session(body: SessionSecret, principal=Depends(require_scope("profiles:manage")), db: Session = Depends(get_db)):
-    user, _device, _token = principal
+    user = principal.user
     sessdata = _extract_sessdata(body.secret)
 
     profile = _session_profile(db, user.id)
@@ -123,7 +207,7 @@ def put_session(body: SessionSecret, principal=Depends(require_scope("profiles:m
         profile = ProviderProfile(
             user_id=user.id, kind=SESSION_KIND, adapter=SESSION_ADAPTER,
             endpoint=SESSION_ENDPOINT, model=SESSION_MODEL,
-            capabilities_json={}, prices_json={}, version=1,
+            capabilities_json={}, version=1,
         )
         db.add(profile)
         db.flush()
@@ -153,7 +237,7 @@ def put_session(body: SessionSecret, principal=Depends(require_scope("profiles:m
 
 @router.delete("/v1/bilibili-session")
 def delete_session(principal=Depends(require_scope("profiles:manage")), db: Session = Depends(get_db)):
-    user, _device, _token = principal
+    user = principal.user
     profile = _session_profile(db, user.id)
     if profile is None:
         return {"revoked": True, "note": "本来就没有托管登录态。"}
@@ -167,3 +251,34 @@ def delete_session(principal=Depends(require_scope("profiles:manage")), db: Sess
     db.commit()
     return {"revoked": True, "revoked_versions": revoked,
             "note": "后续提取回到匿名路径；需要登录的视频将进入补充材料。"}
+
+
+@router.post("/v1/bilibili-session/test")
+def test_session(principal=Depends(require_scope("profiles:manage")), db: Session = Depends(get_db)):
+    """检测当前用户的 B 站登录态是否有效（docs/05 §3.3）。
+
+    只验证凭据本身（nav 接口），不触发任何条目重抓；结果（含时间与脱敏原因）
+    存入 profile.meta_json，供 GET 状态区分「已保存未验证 / 最近有效 / 已失效」。
+    """
+    user = principal.user
+    profile = _session_profile(db, user.id)
+    cred = _active_credential(db, profile) if profile else None
+    if cred is None:
+        raise ApiError("SCHEMA_INVALID", "尚未托管 B 站登录态", status_code=422)
+    try:
+        sessdata = cred_crypto.decrypt_secret(
+            cred.encrypted_secret, cred.encrypted_dek, cred.nonces_json,
+            get_settings().load_master_key(),
+            user_id=user.id, profile_id=profile.id, credential_version=cred.version,
+        )
+    except Exception as exc:
+        check = {"status": "invalid", "detail": f"凭据解密失败（{type(exc).__name__}）；请重新提交 SESSDATA",
+                 "checked_at": utcnow().isoformat()}
+        profile.meta_json = {**(profile.meta_json or {}), "bilibili_last_check": check}
+        db.commit()
+        return check
+    check = _check_sessdata_online(sessdata, get_settings().subtitle_download_limit)
+    check["checked_at"] = utcnow().isoformat()
+    profile.meta_json = {**(profile.meta_json or {}), "bilibili_last_check": check}
+    db.commit()
+    return check

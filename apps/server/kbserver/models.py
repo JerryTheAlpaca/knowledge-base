@@ -65,7 +65,9 @@ class User(Base, TimestampMixin):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     name: Mapped[str] = mapped_column(String(120))
     status: Mapped[str] = mapped_column(String(20), default="active")  # active|disabled
-    settings_json: Mapped[dict] = mapped_column(JSON, default=dict)  # 预算、默认处理配置等
+    settings_json: Mapped[dict] = mapped_column(JSON, default=dict)  # 默认模型等本地偏好
+    # 中心认证服务的不可变 user.id；SSO 首次登录时绑定，唯一约束收敛并发首次访问
+    auth_subject: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True)
 
 
 class Device(Base, TimestampMixin):
@@ -109,12 +111,13 @@ class ProviderProfile(Base, TimestampMixin):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
-    kind: Mapped[str] = mapped_column(String(20))  # llm|vision_ocr
-    adapter: Mapped[str] = mapped_column(String(40))  # openai-compatible|...
+    kind: Mapped[str] = mapped_column(String(20))  # llm|vision_ocr|bilibili_session
+    adapter: Mapped[str] = mapped_column(String(40))  # openai-compatible|bilibili-web|...
     endpoint: Mapped[str] = mapped_column(String(512))
     model: Mapped[str] = mapped_column(String(120))
     capabilities_json: Mapped[dict] = mapped_column(JSON, default=dict)
-    prices_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    # 适配器自有元数据（如 B 站登录态最近检测结果）；不再存价格（docs/05 §5）
+    meta_json: Mapped[dict] = mapped_column(JSON, default=dict)
     version: Mapped[int] = mapped_column(Integer, default=1)
 
 
@@ -253,6 +256,12 @@ class Job(Base, TimestampMixin):
 
 
 class ProviderOperation(Base, TimestampMixin):
+    """模型调用执行状态（不含金额；docs/05 §5.2）。
+
+    prepared=已规划未发送；sent=请求已发出（结果未知前不再自动重发）；
+    succeeded / failed / unknown_outcome。中断恢复语义见 workers/enrich.py。
+    """
+
     __tablename__ = "provider_operations"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
@@ -261,23 +270,31 @@ class ProviderOperation(Base, TimestampMixin):
     profile_id: Mapped[str | None] = mapped_column(ForeignKey("provider_profiles.id"), nullable=True)
     request_fingerprint: Mapped[str] = mapped_column(String(64))
     provider_task_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
-    state: Mapped[str] = mapped_column(String(30), default="reserved")  # reserved|sent|succeeded|failed|unknown_outcome
-    reserved_cost: Mapped[int] = mapped_column(Integer, default=0)  # 整数微单位
-    actual_usage_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    state: Mapped[str] = mapped_column(String(30), default="prepared")  # prepared|sent|succeeded|failed|unknown_outcome
+    detail: Mapped[str] = mapped_column(String(200), default="")  # 结束原因的简短说明（不含敏感信息）
 
 
-class UsageLedger(Base, TimestampMixin):
-    __tablename__ = "usage_ledger"
+class DeviceAuthRequest(Base, TimestampMixin):
+    """插件浏览器授权请求（docs/05 §4.5）：浏览器批准，插件轮询领取设备 Token。
+
+    poll_secret 只存 SHA-256 摘要；browser_url 仅含 request_id；
+    一条请求只能被批准一次，Token 领取时原子消费。
+    """
+
+    __tablename__ = "device_auth_requests"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
-    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
-    operation_id: Mapped[str] = mapped_column(ForeignKey("provider_operations.id"), index=True)
-    currency: Mapped[str] = mapped_column(String(8), default="CNY")
-    unit: Mapped[str] = mapped_column(String(20))  # token|image|request
-    quantity: Mapped[int] = mapped_column(Integer)
-    estimated_cost: Mapped[int] = mapped_column(Integer)  # 微单位
-    price_snapshot_json: Mapped[dict] = mapped_column(JSON, default=dict)
-    event_type: Mapped[str] = mapped_column(String(30))  # reserve|settle|refund
+    device_name: Mapped[str] = mapped_column(String(120))
+    poll_secret_hash: Mapped[str] = mapped_column(String(64))
+    state: Mapped[str] = mapped_column(String(20), default="pending")  # pending|approved|consumed|expired|cancelled
+    # 批准时绑定的中心账号与本地用户
+    auth_subject: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    central_username: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    local_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    device_id: Mapped[str | None] = mapped_column(String(36), nullable=True)  # 批准时创建，领取后回填
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime())
+    approved_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    consumed_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
 
 
 class Receipt(Base, TimestampMixin):

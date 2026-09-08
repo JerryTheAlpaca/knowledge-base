@@ -3,7 +3,8 @@
 - 仅 HTTP/HTTPS；每跳重定向都重新做 DNS/IP 校验。
 - 拒绝回环、私网、链路本地、云元数据等非公网目的地（IPv4/IPv6 全部地址检查）。
 - 连接与读取超时、最大解压后大小、MIME 校验；超限视为失败。
-- 不转发服务 Token、模型 Key 或原请求 Cookie。
+- 不转发服务 Token、模型 Key 或原请求 Cookie；跨主机跳转去掉
+  Cookie/Authorization 等敏感头（docs/05 §3.2）。
 """
 from __future__ import annotations
 
@@ -89,18 +90,26 @@ def safe_fetch(url: str, *, max_bytes: int | None = None, timeout: float = 20.0,
         transport=transport,
         timeout=httpx.Timeout(timeout, connect=10.0),
         follow_redirects=False,
-        headers={"User-Agent": "KnowledgeInbox/0.1 (+restricted-fetcher)", **(headers or {})},
+        headers={"User-Agent": "KnowledgeInbox/0.1 (+restricted-fetcher)"},
     ) as client:
         current = url
+        current_host = (urlparse(current).hostname or "").lower()
         for _ in range(MAX_REDIRECTS + 1):
             try:
-                resp = client.get(current)
+                # headers 按跳传递：跨主机跳转剥离敏感头，防止凭据跟随重定向
+                hop_headers = {
+                    k: v for k, v in (headers or {}).items()
+                    if not (current_host != (urlparse(url).hostname or "").lower()
+                            and k.lower() in _SENSITIVE_HEADERS)
+                }
+                resp = client.get(current, headers=hop_headers)
             except httpx.HTTPError as exc:
                 raise SafeFetchError("NETWORK_ERROR", f"下载失败：{exc}") from exc
             if resp.is_redirect:
                 current = _verify_redirect(current, resp)
                 if current is None:
                     raise SafeFetchError("SOURCE_BLOCKED", "重定向缺少 Location")
+                current_host = (urlparse(current).hostname or "").lower()
                 continue
             break
         else:

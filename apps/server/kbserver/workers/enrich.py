@@ -1,16 +1,18 @@
-"""enrich 阶段：预算预留 → 按用户凭据调用模型 → 校验 → 发布成品 Bundle（docs/02 §4.2、§7.3、§8.1、§11）。
+"""enrich 阶段：按用户凭据调用模型 → 校验 → 发布成品 Bundle（docs/02 §4.2、§7.3、§8.1、§11）。
 
 事务边界：
-- Phase A（事务）：校验任务/来源/凭据/预算，创建 provider_operation 并写 reserve 账目。
+- Phase A（事务）：校验任务/来源/凭据，创建 provider_operation（prepared）。
 - Phase B（事务外）：解密凭据、标记 operation=sent、调用模型（长任务调用前续租）。
-- Phase C（事务）：结算账本、发布新 Bundle、落 Item 状态。
+- Phase C（事务）：落定操作状态、发布新 Bundle、落 Item 状态。
 
-故障语义（docs/02 §8.3）：
-- 无凭据 -> waiting_key；401/403/解密失败 -> waiting_key 并退款；预算不足 -> waiting_budget；
-  429/5xx/连接失败 -> retry_wait 并退款；请求已发出但超时/租约丢失 -> unknown_outcome 保留预留；
+故障语义（docs/02 §8.3；docs/05 §5：不再有金额预算与账本）：
+- 无凭据 -> waiting_key；401/403/解密失败 -> waiting_key；
+  429/5xx/连接失败 -> retry_wait 有限退避；请求已发出但超时/租约丢失 ->
+  unknown_outcome（不盲目重发，用户可显式重新加工）；
   JSON/证据校验失败 -> 最多 1 次修复调用，仍失败保留诊断文件、不覆盖成品。
 - 旧 enrich 结果发布前复查 source_revision，来源已更新则取消任务（A13）。
 - Key 只从当前用户配置解密；解密失败按凭据失效处理，不回退他人 Key。
+- 不统计模型用量与费用（docs/05 §5）：响应 usage 不影响成功与否。
 """
 from __future__ import annotations
 
@@ -22,7 +24,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
-from ..domain import analysis, budget, pipeline, templates
+from ..domain import analysis, pipeline, provider_ops, templates
 from ..models import (
     Capture,
     Credential,
@@ -32,7 +34,6 @@ from ..models import (
     ProviderProfile,
     SourceRevision,
     StoredFile,
-    User,
     utcnow,
 )
 from ..providers.llm import (
@@ -57,7 +58,6 @@ class AnalysisInvalid(Exception):
         self.errors = errors
         self.raw = raw
         self.doc = doc
-        self.usage: dict = {}
 
 
 @dataclass
@@ -71,11 +71,7 @@ class EnrichPlan:
     endpoint: str
     model: str
     capabilities: dict
-    prices: dict
-    currency: str
-    usage_only: bool
     operation_id: str
-    reserved_cost: int
     segments: list[dict] = field(default_factory=list)
     user_note: str | None = None
     source_meta: dict = field(default_factory=dict)
@@ -143,10 +139,10 @@ def _load_segments(db: Session, item: Item) -> list[dict]:
     return []
 
 
-# ---- Phase A：校验与预留 ----
+# ---- Phase A：校验与操作登记 ----
 
 def prepare(session_factory, job_id: str, lease_token: str) -> EnrichPlan | None:
-    """校验并预留；返回 None 表示任务已在库中落定（无需再调用模型）。"""
+    """校验并登记调用操作；返回 None 表示任务已在库中落定（无需再调用模型）。"""
     with session_factory() as db:
         job = db.get(Job, job_id)
         if job is None or job.lease_token != lease_token or job.state != "running":
@@ -197,22 +193,15 @@ def prepare(session_factory, job_id: str, lease_token: str) -> EnrichPlan | None
             return None
         profile, _credential = row
 
-        # 已有未完成操作：sent 表示请求可能已计费，不盲目重发（docs/02 §7.3）
-        op = (
-            db.query(ProviderOperation)
-            .filter(ProviderOperation.job_id == job.id)
-            .order_by(ProviderOperation.created_at.desc(), ProviderOperation.id)
-            .first()
-        )
+        # 已有未完成操作：sent 表示请求可能已生效，不盲目重发（docs/02 §7.3）
+        op = provider_ops.latest_for_job(db, job.id)
         if op is not None and op.state == "sent":
-            _mark_unknown_outcome(db, job, item, op, "上次请求已发出但结果未确认；对账后可重新加工。")
+            _mark_unknown_outcome(db, job, item, op, "上次请求已发出但结果未确认；可从条目发起重新加工。")
             db.commit()
             return None
-        if op is not None and op.state == "reserved":
-            # 上次预留后未发出即中断：退款并重新规划
-            snapshot = budget.operation_price_snapshot(db, op)
-            budget.refund_operation(db, op, currency=snapshot.get("currency") or "CNY",
-                                    price_snapshot=snapshot)
+        if op is not None and op.state in ("prepared", "reserved"):
+            # 上次登记后未发出即中断：请求确定未发出，安全放弃并重新规划
+            provider_ops.finish_operation(op, "failed", "中断：请求未发出，重新规划")
             db.flush()
 
         capture = db.get(Capture, item.capture_id)
@@ -223,7 +212,6 @@ def prepare(session_factory, job_id: str, lease_token: str) -> EnrichPlan | None
             db.commit()
             return None
 
-        user = db.get(User, item.user_id)
         meta = source.metadata_json
         conversation_mode = input_kind in {"conversation", "workflow"} or meta.get("platform") in {
             "ai_conversation", "agent_workflow"
@@ -238,39 +226,17 @@ def prepare(session_factory, job_id: str, lease_token: str) -> EnrichPlan | None
         if seg_tokens > max(1000, int(context_tokens * 0.6)):
             chunked = True
             chunks = templates.plan_chunks(segments, int(context_tokens * 0.6))
-        call_count = len(chunks) + 1 if chunked else 1
-        plan_call_count = call_count + 1  # 预算含最多 1 次修复调用（docs/02 §8.3）
-
-        prices = profile.prices_json or {}
-        currency = prices.get("currency") or "CNY"
-        per_call_in = 1200 + seg_tokens
-        per_call_cost = budget.estimate_cost_micro(per_call_in, max_output, prices)
-        usage_only = per_call_cost is None
-        reserved_cost = 0 if usage_only else per_call_cost * plan_call_count
-
-        budget_micro, _budget_currency = budget.budget_of(user)
-        month = utcnow().strftime("%Y-%m")
-        committed = budget.month_committed(db, item.user_id, month)
-        if not usage_only and budget_micro > 0 and committed + reserved_cost > budget_micro:
-            _waiting(db, job, item, "waiting_budget",
-                     "本月调用预算已用尽：调整预算后自动继续；原始材料已保存。",
-                     "item_waiting_budget")
-            db.commit()
-            return None
 
         fingerprint_src = json.dumps(
             [pipeline.RECIPE_VERSION, profile.id, profile.model, source.content_hash, chunked, len(chunks)],
             sort_keys=True,
         )
-        op = budget.create_operation(
+        op = provider_ops.create_operation(
             db,
             user_id=item.user_id,
             job_id=job.id,
             profile_id=profile.id,
             request_fingerprint=pipeline.sha256_hex(fingerprint_src.encode())[:32],
-            reserved_cost=reserved_cost,
-            currency=currency,
-            price_snapshot=prices,
         )
         db.commit()
 
@@ -284,11 +250,7 @@ def prepare(session_factory, job_id: str, lease_token: str) -> EnrichPlan | None
             endpoint=profile.endpoint,
             model=profile.model,
             capabilities=caps,
-            prices=prices,
-            currency=currency,
-            usage_only=usage_only,
             operation_id=op.id,
-            reserved_cost=reserved_cost,
             segments=segments,
             user_note=meta.get("user_note"),
             source_meta=meta,
@@ -308,7 +270,7 @@ def _waiting(db: Session, job: Job, item: Item, state: str, detail: str, event_t
 
 
 def _mark_unknown_outcome(db: Session, job: Job, item: Item, op: ProviderOperation, note: str) -> None:
-    op.state = "unknown_outcome"
+    provider_ops.mark_unknown(op, note)
     item.pipeline_state = "unknown_outcome"
     item.state_detail = note[:200]
     job.state = "succeeded"
@@ -319,9 +281,9 @@ def _mark_unknown_outcome(db: Session, job: Job, item: Item, op: ProviderOperati
 # ---- Phase B：调用模型 ----
 
 def call_provider(session_factory, plan: EnrichPlan) -> dict:
-    """调用模型（可分块+合并+修复），返回 {"doc", "usage", "raw"}。
+    """调用模型（可分块+合并+修复），返回 {"doc", "raw"}。
 
-    抛出 ProviderError 子类或 AnalysisInvalid（后者携带 usage 以便结算）。
+    抛出 ProviderError 子类或 AnalysisInvalid。
     """
     settings = get_settings()
     with session_factory() as db:
@@ -349,22 +311,15 @@ def call_provider(session_factory, plan: EnrichPlan) -> dict:
         capabilities=plan.capabilities,
     )
 
-    # 标记已发送：此后进程崩溃/租约丢失都按 unknown_outcome 对账（docs/02 §7.3）
+    # 标记已发送：此后进程崩溃/租约丢失都按 unknown_outcome 处理（docs/02 §7.3）
     with session_factory() as db:
         op = db.get(ProviderOperation, plan.operation_id)
-        if op is None or op.state != "reserved":
+        if op is None or op.state != "prepared":
             raise ProviderOutcomeUnknown("操作状态已变化，放弃本次发送")
-        op.state = "sent"
+        provider_ops.mark_sent(op)
         db.commit()
 
-    usage_total = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
     raws: list[dict] = []
-
-    def _merge_usage(u: dict) -> None:
-        for k in usage_total:
-            v = u.get(k)
-            if isinstance(v, int):
-                usage_total[k] += v
 
     def _call(prompt: str) -> dict:
         _lease_refresh(session_factory, plan.job_id, plan.lease_token)
@@ -375,7 +330,6 @@ def call_provider(session_factory, plan: EnrichPlan) -> dict:
             temperature=0.2,
             json_mode=True,
         ))
-        _merge_usage(result.usage)
         raws.append(result.raw)
         try:
             return parse_model_json(result.output_text)
@@ -393,7 +347,6 @@ def call_provider(session_factory, plan: EnrichPlan) -> dict:
             temperature=0.0,
             json_mode=True,
         ))
-        _merge_usage(result.usage)
         raws.append(result.raw)
         return parse_model_json(result.output_text)
 
@@ -416,74 +369,63 @@ def call_provider(session_factory, plan: EnrichPlan) -> dict:
             return doc2
         return doc
 
-    try:
-        if plan.chunked:
-            candidates: dict[str, list] = {"key_points": [], "methods": [], "insights": []}
-            chunk_errors: list[str] = []
-            for i, chunk in enumerate(plan.chunks, start=1):
-                prompt = templates.build_chunk_user_prompt(
-                    source_meta=plan.source_meta, segments=chunk,
-                    chunk_index=i, chunk_total=len(plan.chunks),
-                )
-                doc = _call(prompt)
-                for key in candidates:
-                    value = doc.get(key)
-                    if isinstance(value, list):
-                        candidates[key].extend(v for v in value if isinstance(v, dict))
-                    else:
-                        chunk_errors.append(f"第 {i} 段输出缺少 {key}")
-            chunk_errors = list(dict.fromkeys(chunk_errors))
-            merge_prompt = templates.build_merge_user_prompt(
-                source_meta=plan.source_meta, user_note=plan.user_note,
-                candidates=candidates, conversation_mode=plan.conversation_mode,
-                source_revision=plan.source_revision,
-            )
-            merge_doc = _call(merge_prompt)
-            if chunk_errors:
-                merge_doc.setdefault("limitations", []).append("部分分段输出不完整，对应内容可能缺失。")
-            doc = _validate(merge_doc, merge_prompt, json.dumps(merge_doc, ensure_ascii=False))
-        else:
-            prompt = templates.build_user_prompt(
-                source_meta=plan.source_meta, user_note=plan.user_note,
-                segments=plan.segments, conversation_mode=plan.conversation_mode,
-                source_revision=plan.source_revision,
+    if plan.chunked:
+        candidates: dict[str, list] = {"key_points": [], "methods": [], "insights": []}
+        chunk_errors: list[str] = []
+        for i, chunk in enumerate(plan.chunks, start=1):
+            prompt = templates.build_chunk_user_prompt(
+                source_meta=plan.source_meta, segments=chunk,
+                chunk_index=i, chunk_total=len(plan.chunks),
             )
             doc = _call(prompt)
-            doc = _validate(doc, prompt, json.dumps(doc, ensure_ascii=False))
-    except AnalysisInvalid as exc:
-        exc.usage = dict(usage_total)
-        raise
+            for key in candidates:
+                value = doc.get(key)
+                if isinstance(value, list):
+                    candidates[key].extend(v for v in value if isinstance(v, dict))
+                else:
+                    chunk_errors.append(f"第 {i} 段输出缺少 {key}")
+        chunk_errors = list(dict.fromkeys(chunk_errors))
+        merge_prompt = templates.build_merge_user_prompt(
+            source_meta=plan.source_meta, user_note=plan.user_note,
+            candidates=candidates, conversation_mode=plan.conversation_mode,
+            source_revision=plan.source_revision,
+        )
+        merge_doc = _call(merge_prompt)
+        if chunk_errors:
+            merge_doc.setdefault("limitations", []).append("部分分段输出不完整，对应内容可能缺失。")
+        doc = _validate(merge_doc, merge_prompt, json.dumps(merge_doc, ensure_ascii=False))
+    else:
+        prompt = templates.build_user_prompt(
+            source_meta=plan.source_meta, user_note=plan.user_note,
+            segments=plan.segments, conversation_mode=plan.conversation_mode,
+            source_revision=plan.source_revision,
+        )
+        doc = _call(prompt)
+        doc = _validate(doc, prompt, json.dumps(doc, ensure_ascii=False))
 
-    return {"doc": doc, "usage": usage_total, "raw": raws[-1] if raws else {}}
+    return {"doc": doc, "raw": raws[-1] if raws else {}}
 
 
-# ---- Phase C：结算与发布 ----
+# ---- Phase C：落定状态与发布 ----
 
 def finish(session_factory, plan: EnrichPlan, result: dict) -> None:
     with session_factory() as db:
         job = _owned_job(db, plan)
         if job is None:
-            return  # 租约丢失：operation 处于 sent，恢复路径按 unknown_outcome 对账
+            return  # 租约丢失：operation 处于 sent，恢复路径按 unknown_outcome 处理
         item = db.get(Item, plan.item_id)
         op = db.get(ProviderOperation, plan.operation_id)
         if item is None or op is None:
             return
 
-        usage = result["usage"]
-        actual_cost = budget.estimate_cost_micro(
-            int(usage.get("prompt_tokens") or 0),
-            int(usage.get("completion_tokens") or 0),
-            plan.prices,
-        ) or 0
-        budget.settle_operation(db, op, actual_cost=actual_cost, usage=usage,
-                                currency=plan.currency, price_snapshot=plan.prices)
+        provider_ops.finish_operation(op, "succeeded")
 
         if item.deleted_at is not None:
             job.state = "cancelled"
             db.commit()
             return
         if item.source_revision != plan.source_revision:
-            # 调用期间来源更新：成本照实结算，但不发布旧结果（A13）
+            # 调用期间来源更新：不发布旧结果（A13）
             job.state = "cancelled"
             job.last_error = f"来源已更新至 r{item.source_revision}，放弃发布旧结果"
             db.commit()
@@ -495,9 +437,6 @@ def finish(session_factory, plan: EnrichPlan, result: dict) -> None:
         doc["recipe_version"] = pipeline.RECIPE_VERSION
 
         store = ObjectStore()
-        warnings: list[str] = []
-        if plan.usage_only:
-            warnings.append("该模型配置未提供价格：本系统只统计用量，费用以供应商账单为准。")
         preview_md = analysis.render_preview_md(doc, user_note=plan.user_note)
 
         analysis_file = pipeline.register_file(
@@ -522,35 +461,27 @@ def finish(session_factory, plan: EnrichPlan, result: dict) -> None:
             files=_base_bundle_files(db, item) + [analysis_file, preview_file],
             processing_state="ready", pipeline_state="ready",
             result_file_id=analysis_file.file_id,
-            warnings=warnings,
+            warnings=["AI 加工完成。"],
         )
         item.state_detail = ""
         job.state = "succeeded"
         pipeline.emit_event(
             db, item.user_id, item_id=item.id, bundle_revision=item.bundle_revision,
             event_type="item_ready",
-            payload={"bundle_revision": item.bundle_revision, "usage": usage,
-                     "cost_micro": actual_cost, "usage_only": plan.usage_only},
+            payload={"bundle_revision": item.bundle_revision},
         )
         db.commit()
 
 
 def _diagnostic_bundle(session_factory, plan: EnrichPlan, exc: AnalysisInvalid) -> None:
-    """校验最终失败：结算用量、保留诊断文件、任务与条目落 failed；不覆盖成品。"""
+    """校验最终失败：保留诊断文件、任务与条目落 failed；不覆盖成品。"""
     with session_factory() as db:
         job = _owned_job(db, plan)
         item = db.get(Item, plan.item_id)
         op = db.get(ProviderOperation, plan.operation_id)
         if job is None or item is None or op is None:
             return
-        usage = exc.usage or {"note": "校验失败"}
-        actual_cost = budget.estimate_cost_micro(
-            int(usage.get("prompt_tokens") or 0),
-            int(usage.get("completion_tokens") or 0),
-            plan.prices,
-        ) or 0
-        budget.settle_operation(db, op, actual_cost=actual_cost, usage=usage,
-                                currency=plan.currency, price_snapshot=plan.prices)
+        provider_ops.finish_operation(op, "failed", "输出未通过校验")
 
         diagnostic = {
             "schema_version": "1.0",
@@ -601,7 +532,7 @@ def execute(session_factory, job_id: str, lease_token: str) -> None:
             item = db.get(Item, plan.item_id)
             op = db.get(ProviderOperation, plan.operation_id)
             if job and item and op and item.deleted_at is None:
-                _mark_unknown_outcome(db, job, item, op, f"供应商结果未知：{exc}；对账后可重新加工。")
+                _mark_unknown_outcome(db, job, item, op, f"供应商结果未知：{exc}；可从条目发起重新加工。")
                 db.commit()
         return
     except ProviderAuthFailed as exc:
@@ -610,7 +541,7 @@ def execute(session_factory, job_id: str, lease_token: str) -> None:
             item = db.get(Item, plan.item_id)
             op = db.get(ProviderOperation, plan.operation_id)
             if job and item and op and item.deleted_at is None:
-                budget.refund_operation(db, op, currency=plan.currency, price_snapshot=plan.prices)
+                provider_ops.finish_operation(op, "failed", f"凭据被拒绝：{type(exc).__name__}")
                 _waiting(db, job, item, "waiting_key",
                          f"模型凭据被拒绝或不可用：{exc}；更新 Key 后自动继续。",
                          "item_waiting_key")
@@ -620,7 +551,7 @@ def execute(session_factory, job_id: str, lease_token: str) -> None:
         with session_factory() as db:
             op = db.get(ProviderOperation, plan.operation_id)
             if op is not None:
-                budget.refund_operation(db, op, currency=plan.currency, price_snapshot=plan.prices)
+                provider_ops.finish_operation(op, "failed", f"可重试错误：{type(exc).__name__}")
                 db.commit()
         with session_factory() as db:
             from .worker import retry_or_fail
@@ -636,7 +567,7 @@ def execute(session_factory, job_id: str, lease_token: str) -> None:
             item = db.get(Item, plan.item_id)
             op = db.get(ProviderOperation, plan.operation_id)
             if job and item and op and item.deleted_at is None:
-                budget.refund_operation(db, op, currency=plan.currency, price_snapshot=plan.prices)
+                provider_ops.finish_operation(op, "failed", "请求被供应商拒绝")
                 job.state = "failed"
                 job.last_error = f"ProviderInvalidRequest: {exc}"
                 item.pipeline_state = "failed"

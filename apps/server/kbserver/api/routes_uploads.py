@@ -36,7 +36,7 @@ def upload(
     principal=Depends(require_scope("uploads:create")),
     db: Session = Depends(get_db),
 ) -> UploadResult:
-    user, _device, _token = principal
+    user = principal.user
     settings = get_settings()
     store = ObjectStore()
 

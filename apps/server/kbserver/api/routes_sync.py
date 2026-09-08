@@ -27,7 +27,7 @@ def list_events(
     principal=Depends(require_scope("items:read")),
     db: Session = Depends(get_db),
 ) -> dict:
-    user, _device, _token = principal
+    user = principal.user
     limit = max(1, min(limit, 500))
     rows = db.scalars(
         select(Event)
@@ -73,7 +73,7 @@ def get_manifest(
     principal=Depends(require_scope("items:read")),
     db: Session = Depends(get_db),
 ) -> Response:
-    user, _device, _token = principal
+    user = principal.user
     item = _require_item_any_state(db, user.id, item_id)
     bundle = repo.get_bundle(db, user.id, item_id, revision)
     if bundle is None:
@@ -96,7 +96,7 @@ def get_file(
     principal=Depends(require_scope("items:read")),
     db: Session = Depends(get_db),
 ) -> Response:
-    user, _device, _token = principal
+    user = principal.user
     item = _require_item_any_state(db, user.id, item_id)
     bundle = repo.get_bundle(db, user.id, item_id, revision)
     if bundle is None:
@@ -141,7 +141,10 @@ def post_receipt(
     principal=Depends(require_scope("receipts:write")),
     db: Session = Depends(get_db),
 ) -> ReceiptResult:
-    user, device, _token = principal
+    user, device = principal.user, principal.device
+    # 同步回执只允许有合法设备的通道（docs/05 §4.2）
+    if device is None:
+        raise ApiError("FORBIDDEN", "同步回执需要已授权设备", status_code=403)
     item = _require_item_any_state(db, user.id, body.item_id)
     bundle = repo.get_bundle(db, user.id, body.item_id, body.bundle_revision)
     if bundle is None:

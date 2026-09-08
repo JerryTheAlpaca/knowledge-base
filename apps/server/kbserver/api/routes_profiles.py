@@ -1,13 +1,12 @@
-"""模型配置与凭据托管、预算设置、用量查询（docs/02 §9.2、§10.1、§14.2）。
+"""模型配置与凭据托管（docs/02 §9.2、§10.1；docs/05 §5 去计费）。
 
 - 凭据只进不出：任何读取接口不返回明文、掩码或可还原形式，只返回 configured 状态。
 - PATCH 凭据产生新版本并撤销旧版本；更新后 waiting_key 条目自动重新排队。
-- 连接测试限频（每配置 60 秒一次）；测试调用同样预留/结算，纳入预算。
-- 预算提高后 waiting_budget 条目自动重新排队；预算为 0 表示不设限（仅记账）。
+- 连接测试限频（每配置 60 秒一次）；仅返回连通结果，无金额/用量。
+- 不统计模型 API 用量、价格和估算费用；供应商账单由用户在供应商平台查看。
 """
 from __future__ import annotations
 
-import re
 import time
 from urllib.parse import urlparse
 
@@ -18,9 +17,9 @@ from sqlalchemy.orm import Session
 from ..config import get_settings
 from ..db import get_db
 from ..api.deps import require_scope
-from ..domain import budget, pipeline
+from ..domain import pipeline, provider_ops
 from ..domain.errors import ApiError
-from ..models import Credential, Item, ProviderProfile, User, new_id, utcnow
+from ..models import Credential, Item, ProviderOperation, ProviderProfile, User, utcnow
 from ..providers.llm import (
     GenerateRequest,
     OpenAICompatibleProvider,
@@ -86,21 +85,6 @@ def _validate_capabilities(caps: dict | None) -> dict:
     return out
 
 
-def _validate_prices(prices: dict | None) -> dict:
-    if prices is None:
-        return {}
-    if not isinstance(prices, dict):
-        raise ApiError("SCHEMA_INVALID", "prices 必须是对象")
-    for key in ("input_per_1m", "output_per_1m"):
-        v = prices.get(key)
-        if v is not None and (not isinstance(v, (int, float)) or isinstance(v, bool) or v < 0):
-            raise ApiError("SCHEMA_INVALID", f"单价 {key} 必须是非负数字（元/百万 tokens）")
-    normalized = budget.normalize_prices(prices)
-    if normalized.get("currency") and not re.match(r"^[A-Za-z]{3}$", normalized["currency"]):
-        raise ApiError("SCHEMA_INVALID", "currency 必须是三位货币代码，如 CNY")
-    return normalized
-
-
 # ---- 模型配置 ----
 
 class ProfileCreate(BaseModel):
@@ -110,7 +94,6 @@ class ProfileCreate(BaseModel):
     endpoint: str
     model: str = Field(min_length=1, max_length=120)
     capabilities: dict | None = None
-    prices: dict | None = None
     secret: str = Field(min_length=8, max_length=4096)
 
 
@@ -119,7 +102,6 @@ class ProfileUpdate(BaseModel):
     endpoint: str | None = None
     model: str | None = Field(default=None, min_length=1, max_length=120)
     capabilities: dict | None = None
-    prices: dict | None = None
     secret: str | None = Field(default=None, min_length=8, max_length=4096)
     expected_version: int | None = None
 
@@ -132,7 +114,6 @@ class ProfileOut(BaseModel):
     endpoint: str
     model: str
     capabilities: dict
-    prices: dict
     version: int
     configured: bool
     credential_version: int | None
@@ -153,7 +134,6 @@ def _profile_out(db: Session, profile: ProviderProfile) -> ProfileOut:
         endpoint=profile.endpoint,
         model=profile.model,
         capabilities=profile.capabilities_json or {},
-        prices=profile.prices_json or {},
         version=profile.version,
         configured=cred is not None,
         credential_version=cred.version if cred else None,
@@ -187,21 +167,20 @@ def _requeue_waiting(db: Session, user_id: str, state: str, stage: str) -> int:
 
 @router.get("/v1/provider-profiles", response_model=list[ProfileOut])
 def list_profiles(principal=Depends(require_scope("profiles:manage")), db: Session = Depends(get_db)):
-    user, _device, _token = principal
+    user = principal.user
     rows = db.query(ProviderProfile).filter(ProviderProfile.user_id == user.id).order_by(ProviderProfile.created_at).all()
     return [_profile_out(db, p) for p in rows]
 
 
 @router.post("/v1/provider-profiles", response_model=ProfileOut, status_code=201)
 def create_profile(body: ProfileCreate, principal=Depends(require_scope("profiles:manage")), db: Session = Depends(get_db)):
-    user, _device, _token = principal
+    user = principal.user
     if body.kind not in ALLOWED_KINDS:
         raise ApiError("SCHEMA_INVALID", f"kind 仅支持 {sorted(ALLOWED_KINDS)}")
     if body.adapter not in ALLOWED_ADAPTERS:
         raise ApiError("SCHEMA_INVALID", f"adapter 仅支持 {sorted(ALLOWED_ADAPTERS)}")
     endpoint = _validate_endpoint(body.endpoint)
     caps = _validate_capabilities(body.capabilities)
-    prices = _validate_prices(body.prices)
 
     profile = ProviderProfile(
         user_id=user.id,
@@ -210,7 +189,6 @@ def create_profile(body: ProfileCreate, principal=Depends(require_scope("profile
         endpoint=endpoint,
         model=body.model,
         capabilities_json=caps,
-        prices_json=prices,
         version=1,
     )
     db.add(profile)
@@ -228,7 +206,7 @@ def create_profile(body: ProfileCreate, principal=Depends(require_scope("profile
 
 @router.patch("/v1/provider-profiles/{profile_id}", response_model=ProfileOut)
 def update_profile(profile_id: str, body: ProfileUpdate, principal=Depends(require_scope("profiles:manage")), db: Session = Depends(get_db)):
-    user, _device, _token = principal
+    user = principal.user
     profile = _require_profile(db, user.id, profile_id)
     if body.expected_version is not None and body.expected_version != profile.version:
         raise ApiError("REVISION_CONFLICT", "配置版本已变化，请刷新后重试", status_code=409)
@@ -242,9 +220,6 @@ def update_profile(profile_id: str, body: ProfileUpdate, principal=Depends(requi
         changed = True
     if body.capabilities is not None:
         profile.capabilities_json = _validate_capabilities(body.capabilities)
-        changed = True
-    if body.prices is not None:
-        profile.prices_json = _validate_prices(body.prices)
         changed = True
     if changed:
         profile.version += 1
@@ -280,7 +255,7 @@ def update_profile(profile_id: str, body: ProfileUpdate, principal=Depends(requi
 
 @router.delete("/v1/provider-profiles/{profile_id}/credential")
 def revoke_credential(profile_id: str, principal=Depends(require_scope("profiles:manage")), db: Session = Depends(get_db)):
-    user, _device, _token = principal
+    user = principal.user
     profile = _require_profile(db, user.id, profile_id)
     now = utcnow()
     revoked = 0
@@ -291,14 +266,15 @@ def revoke_credential(profile_id: str, principal=Depends(require_scope("profiles
         revoked += 1
     db.commit()
     return {"profile_id": profile.id, "revoked": True, "revoked_versions": revoked,
-            "note": "后续加工任务将进入 waiting_key；已产生的账单与历史不受影响。"}
+            "note": "后续加工任务将进入 waiting_key；已产生的调用记录不受影响。"}
 
 
 # ---- 连接测试 ----
 
 @router.post("/v1/provider-profiles/{profile_id}/test")
 def test_profile(profile_id: str, principal=Depends(require_scope("profiles:manage")), db: Session = Depends(get_db)):
-    user, _device, _token = principal
+    """连通性测试：只验证凭据与模型可达，不返回金额或用量。"""
+    user = principal.user
     profile = _require_profile(db, user.id, profile_id)
     key = (user.id, profile.id)
     now = time.monotonic()
@@ -316,9 +292,6 @@ def test_profile(profile_id: str, principal=Depends(require_scope("profiles:mana
     if cred is None:
         raise ApiError("SCHEMA_INVALID", "该配置还没有可用的凭据")
 
-    prices = profile.prices_json or {}
-    currency = prices.get("currency") or "CNY"
-    reserve_cost = budget.estimate_cost_micro(40, 16, prices) or 0
     settings = get_settings()
     try:
         api_key = cred_crypto.decrypt_secret(
@@ -329,12 +302,11 @@ def test_profile(profile_id: str, principal=Depends(require_scope("profiles:mana
     except Exception as exc:
         raise ApiError("PROVIDER_AUTH_FAILED", f"凭据解密失败：{type(exc).__name__}", status_code=422) from exc
 
-    op = budget.create_operation(
+    op = provider_ops.create_operation(
         db, user_id=user.id, job_id=None, profile_id=profile.id,
         request_fingerprint=pipeline.sha256_hex(f"test|{profile.id}".encode())[:32],
-        reserved_cost=reserve_cost, currency=currency, price_snapshot=prices,
     )
-    op.state = "sent"
+    provider_ops.mark_sent(op)
     db.commit()
 
     provider = OpenAICompatibleProvider(
@@ -348,96 +320,58 @@ def test_profile(profile_id: str, principal=Depends(require_scope("profiles:mana
             max_output_tokens=16, temperature=0.0, json_mode=False,
         ))
     except ProviderOutcomeUnknown as exc:
-        op.state = "unknown_outcome"  # 请求可能已计费；预留保留待对账
+        provider_ops.mark_unknown(op, "连接测试结果未知")
         db.commit()
         return {"ok": False, "code": "PROVIDER_OUTCOME_UNKNOWN", "message": str(exc)}
     except ProviderError as exc:
-        budget.refund_operation(db, op, currency=currency, price_snapshot=prices)
+        provider_ops.finish_operation(op, "failed", f"连接测试失败：{type(exc).__name__}")
         db.commit()
         return {"ok": False, "code": type(exc).__name__, "message": str(exc)}
 
-    usage = result.usage
-    actual = budget.estimate_cost_micro(
-        int(usage.get("prompt_tokens") or 0), int(usage.get("completion_tokens") or 0), prices
-    ) or 0
-    budget.settle_operation(db, op, actual_cost=actual, usage=usage, currency=currency, price_snapshot=prices)
+    provider_ops.finish_operation(op, "succeeded", "连接测试通过")
     db.commit()
-    return {"ok": True, "usage": usage, "cost_micro": actual, "currency": currency,
-            "request_id": result.provider_request_id}
+    return {"ok": True, "request_id": result.provider_request_id}
 
 
-# ---- 设置与用量 ----
+# ---- 设置 ----
 
 class SettingsOut(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    monthly_budget_micro: int
-    currency: str
     default_profile_id: str | None
     note: str = ""
 
 
 class SettingsUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    monthly_budget_micro: int | None = None
-    currency: str | None = None
     default_profile_id: str | None = None
 
 
 def _settings_out(user: User) -> SettingsOut:
     s = user.settings_json or {}
-    budget_micro, currency = budget.budget_of(user)
     return SettingsOut(
-        monthly_budget_micro=budget_micro,
-        currency=currency,
         default_profile_id=s.get("default_profile_id"),
-        note="monthly_budget_micro 为整数微单位（1 元 = 1000000）；0 表示不设限，仅记账。",
+        note="模型账单请在供应商平台查看；本系统不统计用量与费用。",
     )
 
 
 @router.get("/v1/settings", response_model=SettingsOut)
 def get_settings_route(principal=Depends(require_scope("profiles:manage")), db: Session = Depends(get_db)):
-    user, _device, _token = principal
+    user = principal.user
     return _settings_out(user)
 
 
 @router.patch("/v1/settings", response_model=SettingsOut)
 def update_settings(body: SettingsUpdate, principal=Depends(require_scope("profiles:manage")), db: Session = Depends(get_db)):
-    user, _device, _token = principal
+    user = principal.user
     s = dict(user.settings_json or {})
-    old_budget, _ = budget.budget_of(user)
-    requeued = 0
-    if body.monthly_budget_micro is not None:
-        if body.monthly_budget_micro < 0:
-            raise ApiError("SCHEMA_INVALID", "预算不能为负")
-        s["monthly_budget_micro"] = body.monthly_budget_micro
-        if body.monthly_budget_micro > old_budget:
-            requeued = _requeue_waiting(db, user.id, "waiting_budget", "enrich")
-    if body.currency is not None:
-        if not re.match(r"^[A-Za-z]{3}$", body.currency):
-            raise ApiError("SCHEMA_INVALID", "currency 必须是三位货币代码")
-        s["currency"] = body.currency.upper()
     if body.default_profile_id is not None:
         if body.default_profile_id:
             _require_profile(db, user.id, body.default_profile_id)
         s["default_profile_id"] = body.default_profile_id or None
     user.settings_json = s
     db.commit()
-    if requeued:
-        pipeline.emit_event(db, user.id, item_id=None, bundle_revision=None,
-                            event_type="budget_updated", payload={"requeued": requeued})
-        db.commit()
     return _settings_out(user)
 
 
-@router.get("/v1/usage")
-def usage(month: str | None = None, principal=Depends(require_scope("profiles:manage")), db: Session = Depends(get_db)):
-    user, _device, _token = principal
-    month = month or utcnow().strftime("%Y-%m")
-    if not re.match(r"^\d{4}-\d{2}$", month):
-        raise ApiError("SCHEMA_INVALID", "month 必须是 YYYY-MM")
-    summary = budget.usage_summary(db, user.id, month)
-    budget_micro, currency = budget.budget_of(user)
-    summary["budget_micro"] = budget_micro
-    summary["currency"] = currency
-    summary["note"] = "本系统调用记录与估算；供应商账单是最终依据。金额为整数微单位。"
-    return summary
+# ProviderOperation 仍被引用，避免误删导入（reconcile/管理查询使用）
+_ = ProviderOperation

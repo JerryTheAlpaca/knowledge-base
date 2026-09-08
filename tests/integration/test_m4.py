@@ -136,18 +136,23 @@ class FakeBiliNet:
     """按 URL 前缀路由的假 safe_fetch；记录调用以便断言。"""
 
     def __init__(self, *, view=None, players=None, subtitle=None, redirects=None, fail_urls=(),
-                 require_cookie=False, cookie_value=None):
+                 require_cookie=False, cookie_value=None, statuses=None, nav=None):
         # players: {"cid值": player_doc}; redirects: {"短链": "最终URL"}
+        # statuses: {"view"/"player"/"subtitle": HTTP 状态码覆盖}
+        # nav: B 站 nav 接口响应（登录态检测接口测试用）
         self.view = view or _view_doc([{"page": 1, "cid": 111, "part": "P1", "duration": 300}])
         self.players = players or {"111": _player_doc([])}
         self.subtitle = subtitle if subtitle is not None else SUBTITLE_BODY
         self.redirects = redirects or {}
         self.fail_urls = set(fail_urls)
+        self.statuses = statuses or {}
+        self.nav = nav
         self.calls: list[str] = []
         # require_cookie=True 时，player 仅在 Cookie 头匹配 cookie_value 时返回轨道
         self.require_cookie = require_cookie
         self.cookie_value = cookie_value
         self.cookie_headers_seen: list = []
+        self.subtitle_headers_seen: list = []
 
     def __call__(self, url, *, max_bytes=None, timeout=20.0, mime_prefixes=None, headers=None):
         self.calls.append(url)
@@ -156,9 +161,14 @@ class FakeBiliNet:
         for short, final in self.redirects.items():
             if url.startswith(short):
                 return FetchResult(url=final, status_code=200, mime="text/html", content=b"")
-        if "web-interface/view" in url:
+        if "web-interface/nav" in url:
+            if self.nav is None:
+                raise SafeFetchError("SOURCE_BLOCKED", f"意外请求：{url}")
             return FetchResult(url=url, status_code=200, mime="application/json",
-                               content=json.dumps(self.view).encode("utf-8"))
+                               content=json.dumps(self.nav).encode("utf-8"))
+        if "web-interface/view" in url:
+            return FetchResult(url=url, status_code=self.statuses.get("view", 200),
+                               mime="application/json", content=json.dumps(self.view).encode("utf-8"))
         if "player/v2" in url:
             cid = url.split("cid=")[-1]
             if self.require_cookie:
@@ -170,11 +180,12 @@ class FakeBiliNet:
                     doc = self.players.get(cid, _player_doc([]))
             else:
                 doc = self.players.get(cid, _player_doc([]))
-            return FetchResult(url=url, status_code=200, mime="application/json",
-                               content=json.dumps(doc).encode("utf-8"))
+            return FetchResult(url=url, status_code=self.statuses.get("player", 200),
+                               mime="application/json", content=json.dumps(doc).encode("utf-8"))
         if "aisubtitle" in url or url.endswith(".json"):
-            return FetchResult(url=url, status_code=200, mime="application/json",
-                               content=json.dumps(self.subtitle).encode("utf-8"))
+            self.subtitle_headers_seen.append((headers or {}).get("Cookie"))
+            return FetchResult(url=url, status_code=self.statuses.get("subtitle", 200),
+                               mime="application/json", content=json.dumps(self.subtitle).encode("utf-8"))
         raise SafeFetchError("SOURCE_BLOCKED", f"意外请求：{url}")
 
 
@@ -404,6 +415,15 @@ def test_bilibili_network_error_retries_not_needs_input(client, user_a, session_
     assert it["pipeline_state"] in ("extracting", "retry_wait", "queued")
     assert it["pipeline_state"] != "needs_input"
 
+    # 清理退避中的任务，避免被后续测试的 drain 接管造成串扰
+    from kbserver.models import Item, Job
+
+    with session_factory() as db:
+        item = db.query(Item).filter(Item.id == item_id).one()
+        for job in db.query(Job).filter(Job.item_id == item.id).all():
+            job.state = "cancelled"
+        db.commit()
+
 
 # ---- B 站登录态托管 ----
 
@@ -509,3 +529,149 @@ def test_bilibili_session_invalid_needs_input(client, user_a, session_factory, b
     it = _get_item(client, user_a["desktop"]["token"], item_id)
     assert it["pipeline_state"] == "needs_input"
     assert "失效" in (it.get("state_detail") or "")
+
+
+# ---- docs/05 §3.2 补充用例：登录信号、有轨无 URL、HTTP 分流、凭据边界、限定重排队 ----
+
+def test_bilibili_need_login_subtitle_explicit_signal(client, user_a, session_factory, bili_net):
+    """player 明确 need_login_subtitle=true 且无轨：login_required，不称“无字幕”（2026-09-08 实测）。"""
+    players = {"111": {"code": 0, "data": {
+        "need_login_subtitle": True,
+        "subtitle": {"allow_submit": False, "subtitles": []},
+    }}}
+    bili_net(FakeBiliNet(players=players))
+    c = _capture_url(client, user_a["phone"]["token"], "m4needlogin",
+                     url=f"https://www.bilibili.com/video/{BV}/")
+    item_id = c.json()["item_id"]
+    _drain(session_factory)
+
+    it = _get_item(client, user_a["desktop"]["token"], item_id)
+    assert it["pipeline_state"] == "needs_input"
+    detail = it.get("state_detail") or ""
+    assert "登录" in detail
+
+
+def test_bilibili_tracks_without_url_unconfirmed(client, user_a, session_factory, bili_net):
+    """player 列出轨道但没有可下载地址、无登录信号：标记“未能确认”，不声称无字幕（docs/05 §3.2）。"""
+    track_no_url = {"id": 777, "lan": "zh-CN", "lan_doc": "中文", "ai_type": 0, "subtitle_url": ""}
+    players = {"111": {"code": 0, "data": {"subtitle": {"allow_submit": False, "subtitles": [track_no_url]}}}}
+    bili_net(FakeBiliNet(players=players))
+    c = _capture_url(client, user_a["phone"]["token"], "m4nourl",
+                     url=f"https://www.bilibili.com/video/{BV}/")
+    item_id = c.json()["item_id"]
+    _drain(session_factory)
+
+    it = _get_item(client, user_a["desktop"]["token"], item_id)
+    assert it["pipeline_state"] == "needs_input"
+    detail = it.get("state_detail") or ""
+    assert "未提供可下载地址" in detail or "未能确认" in detail
+
+
+def test_bilibili_player_http_412_blocked(bili_net):
+    """player 返回 HTTP 412（风控）：按 blocked 处理，不当作无字幕。"""
+    bili_net(FakeBiliNet(statuses={"player": 412}))
+    with pytest.raises(bili.BilibiliError) as ei:
+        bili.extract(f"https://www.bilibili.com/video/{BV}/")
+    assert ei.value.status == "blocked"
+
+
+def test_bilibili_player_http_500_network_error(bili_net):
+    """player 返回 HTTP 5xx：network_error（可退避重试），不当作无字幕。"""
+    bili_net(FakeBiliNet(statuses={"player": 502}))
+    with pytest.raises(bili.BilibiliError) as ei:
+        bili.extract(f"https://www.bilibili.com/video/{BV}/")
+    assert ei.value.status == "network_error"
+
+
+def test_bilibili_credential_never_sent_to_subtitle_cdn(client, user_a, session_factory, bili_net):
+    """SESSDATA 只发往 api.bilibili.com；字幕 CDN 下载不带 Cookie（docs/05 §3.2）。"""
+    net = bili_net(FakeBiliNet(
+        players={"111": _player_doc([TRACK_MANUAL])},
+        require_cookie=True,
+        cookie_value="SESSDATA=fake-sessdata-value-123456",
+    ))
+    client.put("/v1/bilibili-session", json={"secret": "fake-sessdata-value-123456"},
+               headers=auth(user_a["desktop"]["token"]))
+    c = _capture_url(client, user_a["phone"]["token"], "m4cdn",
+                     url=f"https://www.bilibili.com/video/{BV}/")
+    item_id = c.json()["item_id"]
+    _drain(session_factory)
+
+    it = _get_item(client, user_a["desktop"]["token"], item_id)
+    assert it["source_revision"] == 2  # 取到了字幕
+    # player 请求带凭据；字幕 CDN 请求绝不带 Cookie
+    assert any(h == "SESSDATA=fake-sessdata-value-123456" for h in net.cookie_headers_seen)
+    assert net.subtitle_headers_seen
+    assert all(h is None for h in net.subtitle_headers_seen)
+
+
+def test_bilibili_update_does_not_requeue_other_sources(client, user_a, session_factory, bili_net, monkeypatch):
+    """更新 B 站登录态只重排 B 站待补充条目；网页/公众号条目不受影响（docs/05 §3.2）。"""
+    from kbserver.extractors import webpages
+    from kbserver.security.safe_fetch import SafeFetchError
+
+    def _blocked(*args, **kwargs):
+        raise SafeFetchError("SOURCE_BLOCKED", "拒绝访问（测试固定行为，无重试残留）")
+
+    monkeypatch.setattr(webpages, "safe_fetch", _blocked)
+    bili_net(FakeBiliNet())  # 匿名无轨：B 站条目进入 needs_input
+    token = user_a["desktop"]["token"]
+    c1 = _capture_url(client, user_a["phone"]["token"], "m4mixbili",
+                      url=f"https://www.bilibili.com/video/{BV}/")
+    bili_item = c1.json()["item_id"]
+    _drain(session_factory)
+    assert _get_item(client, token, bili_item)["pipeline_state"] == "needs_input"
+
+    # 网页条目：下载被拒 → needs_input（非字幕/会话原因，不随 B 站凭据重排）
+    c2 = _capture_url(client, user_a["phone"]["token"], "m4mixweb",
+                      url="https://example.com/article/no-content")
+    web_item = c2.json()["item_id"]
+    _drain(session_factory)
+    web_state = _get_item(client, token, web_item)["pipeline_state"]
+    assert web_state == "needs_input"
+
+    put = client.put("/v1/bilibili-session", json={"secret": "fake-sessdata-value-123456"},
+                     headers=auth(token))
+    out = put.json()
+    assert out["requeued_items"] == 1  # 只重排了 B 站那一条
+    assert _get_item(client, token, web_item)["pipeline_state"] == web_state
+
+
+def test_bilibili_session_test_endpoint(client, user_a, session_factory, bili_net, monkeypatch):
+    """登录态检测：nav 接口 code=0 → valid；-101 → invalid；未托管 → 422。"""
+    from kbserver.api import routes_bilibili
+
+    # PUT 触发的限定重排队会留下 extract 任务：用假网络消费掉，不泄漏到后续测试
+    bili_net(FakeBiliNet())
+
+    token = user_a["desktop"]["token"]
+
+    # 未托管
+    r = client.post("/v1/bilibili-session/test", headers=auth(token))
+    assert r.status_code == 422
+
+    client.put("/v1/bilibili-session", json={"secret": "fake-sessdata-value-123456"},
+               headers=auth(token))
+
+    valid_nav = {"code": 0, "data": {"isLogin": True, "uname": "测试用户"}}
+    dead_nav = {"code": -101, "message": "账号未登录"}
+
+    monkeypatch.setattr(routes_bilibili, "safe_fetch",
+                        FakeBiliNet(nav=valid_nav))
+    r = client.post("/v1/bilibili-session/test", headers=auth(token))
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "valid"
+    assert "测***" in body["detail"], "用户名必须脱敏展示"
+    # 结果入库：GET 状态变为最近验证有效
+    got = client.get("/v1/bilibili-session", headers=auth(token)).json()
+    assert got["verification"] == "valid" and got["last_check"]["checked_at"]
+
+    monkeypatch.setattr(routes_bilibili, "safe_fetch",
+                        FakeBiliNet(nav=dead_nav))
+    r2 = client.post("/v1/bilibili-session/test", headers=auth(token))
+    assert r2.json()["status"] == "invalid"
+    got2 = client.get("/v1/bilibili-session", headers=auth(token)).json()
+    assert got2["verification"] == "invalid"
+
+    _drain(session_factory)  # 消费重排队任务，避免跨测试串扰

@@ -23,9 +23,9 @@ def test_health_live(client):
     assert r.json() == {"live": True}
 
 
-# ---- 配对 ----
+# ---- 配对（docs/05 §4.5：配对交换接口已关闭，改为浏览器设备授权） ----
 
-def test_pairing_exchange(db, client, session_factory):
+def test_pairing_exchange_disabled(db, client, session_factory):
     from kbserver.security.tokens import PHONE_SCOPES, issue_pairing_code
 
     user = make_user_with_tokens(db, "配对用户")
@@ -34,14 +34,7 @@ def test_pairing_exchange(db, client, session_factory):
     db.commit()
 
     r = client.post("/v1/pairing/exchange", json={"code": raw_code, "device_name": "测试手机"})
-    assert r.status_code == 200
-    body = r.json()
-    assert body["token"].startswith("kbi_")
-    assert body["scopes"] == PHONE_SCOPES
-
-    # 一次性：同码复用被拒绝
-    r2 = client.post("/v1/pairing/exchange", json={"code": raw_code, "device_name": "测试手机2"})
-    assert r2.status_code == 403
+    assert r.status_code == 404, "配对交换接口已随统一登录下线"
 
 
 # ---- 上传与 Capture 幂等（A02/A03） ----
