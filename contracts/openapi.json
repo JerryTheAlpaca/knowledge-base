@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Knowledge Inbox Server",
-    "version": "0.1.0"
+    "version": "0.2.0"
   },
   "paths": {
     "/health/live": {
@@ -51,18 +51,57 @@
         }
       }
     },
-    "/v1/pairing/exchange": {
+    "/v1/auth/me": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Auth Me",
+        "operationId": "auth_me_v1_auth_me_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/logout": {
       "post": {
         "tags": [
-          "pairing"
+          "auth"
         ],
-        "summary": "Exchange",
-        "operationId": "exchange_v1_pairing_exchange_post",
+        "summary": "Auth Logout",
+        "description": "共享退出：撤销当前中心会话并清理 Cookie（中心会话通道）。\n\n设备 Token 通道不受浏览器退出影响（docs/05 §4.2：区分「退出网站」与「断开设备」）。",
+        "operationId": "auth_logout_v1_auth_logout_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/device/start": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Device Start",
+        "operationId": "device_start_v1_auth_device_start_post",
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/PairingExchange"
+                "$ref": "#/components/schemas/DeviceStartInput"
               }
             }
           },
@@ -74,8 +113,209 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PairingResult"
+                  "$ref": "#/components/schemas/DeviceStartResult"
                 }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/device/info": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Device Info",
+        "description": "授权页展示用：只暴露设备名/状态等非敏感信息；不含有能领取 Token 的数据。",
+        "operationId": "device_info_v1_auth_device_info_get",
+        "parameters": [
+          {
+            "name": "request_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Request Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/device/approve": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Device Approve",
+        "description": "浏览器批准：绑定中心账号与本地用户；一条请求只能批准一次、不能换账号。",
+        "operationId": "device_approve_v1_auth_device_approve_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceApproveInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/device/cancel": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Device Cancel",
+        "operationId": "device_cancel_v1_auth_device_cancel_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceApproveInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/device/poll": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Device Poll",
+        "description": "插件轮询：pending 返回 pending；approved 原子消费并签发设备 Token。",
+        "operationId": "device_poll_v1_auth_device_poll_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DevicePollInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/devices/{device_id}/disconnect": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Disconnect Device",
+        "description": "插件「断开设备」：撤销当前设备 Token，清理由调用方在本地完成。",
+        "operationId": "disconnect_device_v1_devices__device_id__disconnect_post",
+        "parameters": [
+          {
+            "name": "device_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Device Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
               }
             }
           },
@@ -446,6 +686,49 @@
             }
           }
         },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ItemOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/items/{item_id}/refetch": {
+      "post": {
+        "tags": [
+          "items"
+        ],
+        "summary": "Refetch",
+        "description": "显式重新提取来源（重新抓站点）：限频；旧来源版本保留，由 worker 比较内容变化。",
+        "operationId": "refetch_v1_items__item_id__refetch_post",
+        "parameters": [
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Item Id"
+            }
+          }
+        ],
         "responses": {
           "202": {
             "description": "Successful Response",
@@ -948,6 +1231,7 @@
           "profiles"
         ],
         "summary": "Test Profile",
+        "description": "连通性测试：只验证凭据与模型可达，不返回金额或用量。",
         "operationId": "test_profile_v1_provider_profiles__profile_id__test_post",
         "parameters": [
           {
@@ -1042,31 +1326,40 @@
         }
       }
     },
-    "/v1/usage": {
+    "/v1/bilibili-session": {
       "get": {
         "tags": [
-          "profiles"
+          "bilibili-session"
         ],
-        "summary": "Usage",
-        "operationId": "usage_v1_usage_get",
-        "parameters": [
-          {
-            "name": "month",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Month"
+        "summary": "Get Session",
+        "operationId": "get_session_v1_bilibili_session_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
             }
           }
+        }
+      },
+      "put": {
+        "tags": [
+          "bilibili-session"
         ],
+        "summary": "Put Session",
+        "operationId": "put_session_v1_bilibili_session_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionSecret"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -1083,6 +1376,43 @@
                 "schema": {
                   "$ref": "#/components/schemas/HTTPValidationError"
                 }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "bilibili-session"
+        ],
+        "summary": "Delete Session",
+        "operationId": "delete_session_v1_bilibili_session_delete",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/bilibili-session/test": {
+      "post": {
+        "tags": [
+          "bilibili-session"
+        ],
+        "summary": "Test Session",
+        "description": "检测当前用户的 B 站登录态是否有效（docs/05 §3.3）。\n\n只验证凭据本身（nav 接口），不触发任何条目重抓；结果（含时间与脱敏原因）\n存入 profile.meta_json，供 GET 状态区分「已保存未验证 / 最近有效 / 已失效」。",
+        "operationId": "test_session_v1_bilibili_session_test_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
               }
             }
           }
@@ -1270,6 +1600,22 @@
         ],
         "title": "CaptureInput"
       },
+      "DeviceApproveInput": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 8,
+            "title": "Request Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "request_id"
+        ],
+        "title": "DeviceApproveInput"
+      },
       "DeviceOut": {
         "properties": {
           "device_id": {
@@ -1320,6 +1666,78 @@
           "last_seen_at"
         ],
         "title": "DeviceOut"
+      },
+      "DevicePollInput": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 8,
+            "title": "Request Id"
+          },
+          "poll_secret": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 16,
+            "title": "Poll Secret"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "request_id",
+          "poll_secret"
+        ],
+        "title": "DevicePollInput"
+      },
+      "DeviceStartInput": {
+        "properties": {
+          "device_name": {
+            "type": "string",
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Device Name"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "device_name"
+        ],
+        "title": "DeviceStartInput"
+      },
+      "DeviceStartResult": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "title": "Request Id"
+          },
+          "poll_secret": {
+            "type": "string",
+            "title": "Poll Secret"
+          },
+          "browser_url": {
+            "type": "string",
+            "title": "Browser Url"
+          },
+          "expires_at": {
+            "type": "string",
+            "title": "Expires At"
+          },
+          "interval_seconds": {
+            "type": "integer",
+            "title": "Interval Seconds"
+          }
+        },
+        "type": "object",
+        "required": [
+          "request_id",
+          "poll_secret",
+          "browser_url",
+          "expires_at",
+          "interval_seconds"
+        ],
+        "title": "DeviceStartResult"
       },
       "HTTPValidationError": {
         "properties": {
@@ -1447,66 +1865,6 @@
         ],
         "title": "ItemOut"
       },
-      "PairingExchange": {
-        "properties": {
-          "code": {
-            "type": "string",
-            "maxLength": 64,
-            "minLength": 10,
-            "title": "Code"
-          },
-          "device_name": {
-            "type": "string",
-            "maxLength": 120,
-            "minLength": 1,
-            "title": "Device Name"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "code",
-          "device_name"
-        ],
-        "title": "PairingExchange"
-      },
-      "PairingResult": {
-        "properties": {
-          "token": {
-            "type": "string",
-            "title": "Token"
-          },
-          "device_id": {
-            "type": "string",
-            "title": "Device Id"
-          },
-          "user_id": {
-            "type": "string",
-            "title": "User Id"
-          },
-          "scopes": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Scopes"
-          },
-          "expires_at": {
-            "type": "string",
-            "format": "date-time",
-            "title": "Expires At"
-          }
-        },
-        "type": "object",
-        "required": [
-          "token",
-          "device_id",
-          "user_id",
-          "scopes",
-          "expires_at"
-        ],
-        "title": "PairingResult"
-      },
       "ProfileCreate": {
         "properties": {
           "kind": {
@@ -1540,18 +1898,6 @@
               }
             ],
             "title": "Capabilities"
-          },
-          "prices": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Prices"
           },
           "secret": {
             "type": "string",
@@ -1596,11 +1942,6 @@
             "type": "object",
             "title": "Capabilities"
           },
-          "prices": {
-            "additionalProperties": true,
-            "type": "object",
-            "title": "Prices"
-          },
           "version": {
             "type": "integer",
             "title": "Version"
@@ -1634,7 +1975,6 @@
           "endpoint",
           "model",
           "capabilities",
-          "prices",
           "version",
           "configured",
           "credential_version",
@@ -1679,18 +2019,6 @@
               }
             ],
             "title": "Capabilities"
-          },
-          "prices": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Prices"
           },
           "secret": {
             "anyOf": [
@@ -1812,16 +2140,24 @@
         "type": "object",
         "title": "ReprocessInput"
       },
+      "SessionSecret": {
+        "properties": {
+          "secret": {
+            "type": "string",
+            "maxLength": 8192,
+            "minLength": 16,
+            "title": "Secret"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "secret"
+        ],
+        "title": "SessionSecret"
+      },
       "SettingsOut": {
         "properties": {
-          "monthly_budget_micro": {
-            "type": "integer",
-            "title": "Monthly Budget Micro"
-          },
-          "currency": {
-            "type": "string",
-            "title": "Currency"
-          },
           "default_profile_id": {
             "anyOf": [
               {
@@ -1842,36 +2178,12 @@
         "additionalProperties": false,
         "type": "object",
         "required": [
-          "monthly_budget_micro",
-          "currency",
           "default_profile_id"
         ],
         "title": "SettingsOut"
       },
       "SettingsUpdate": {
         "properties": {
-          "monthly_budget_micro": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Monthly Budget Micro"
-          },
-          "currency": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Currency"
-          },
           "default_profile_id": {
             "anyOf": [
               {
