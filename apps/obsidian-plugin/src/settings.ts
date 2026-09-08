@@ -77,7 +77,7 @@ export class SecretBridge {
 
   private async loadFallback(): Promise<Record<string, unknown>> {
     if (!this.fallbackLoader) return {};
-    return this.fallbackLoader();
+    return (await this.fallbackLoader()) ?? {};
   }
 
   private async saveFallback(data: Record<string, unknown>): Promise<void> {

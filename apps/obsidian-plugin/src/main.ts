@@ -75,6 +75,17 @@ export class KbPlugin extends Plugin {
   private tokenCache: string | null = null;
 
   async onload(): Promise<void> {
+    try {
+      await this.doLoad();
+    } catch (err) {
+      const detail = err instanceof Error ? (err.stack || err.message) : String(err);
+      console.error("[kb-inbox] onload threw:", err);
+      new Notice("KB Inbox 加载错误：" + detail, 0);
+      throw err;
+    }
+  }
+
+  private async doLoad(): Promise<void> {
     await this.loadSettings();
     this.secrets = new SecretBridge(this.app);
     this.secrets.registerFallback(
@@ -88,13 +99,13 @@ export class KbPlugin extends Plugin {
       getClient: () => this.getClient(),
       settings: () => this.settings,
       loadState: async () => {
-        const data = (await this.loadData()) as PluginData;
+        const data = ((await this.loadData()) ?? {}) as PluginData;
         this.syncState = data.syncState ?? { cursor: 0, pending: {}, lastRunAt: null };
         return this.syncState;
       },
       saveState: async (s) => {
         this.syncState = s;
-        const data = (await this.loadData()) as PluginData;
+        const data = ((await this.loadData()) ?? {}) as PluginData;
         data.syncState = s;
         await this.saveData(data);
       },
@@ -244,13 +255,13 @@ export class KbPlugin extends Plugin {
   }
 
   private async loadSettings(): Promise<void> {
-    const data = (await this.loadData()) as PluginData;
+    const data = ((await this.loadData()) ?? {}) as PluginData;
     this.settings = { ...DEFAULT_SETTINGS, ...data };
     this.syncState = data.syncState ?? { cursor: 0, pending: {}, lastRunAt: null };
   }
 
   private async saveSettings(): Promise<void> {
-    const data = (await this.loadData()) as PluginData;
+    const data = ((await this.loadData()) ?? {}) as PluginData;
     Object.assign(data, this.settings);
     await this.saveData(data);
   }
