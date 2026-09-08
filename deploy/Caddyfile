@@ -1,0 +1,10 @@
+# kb（信息沉淀知识库 Web 收件箱）的 Caddy 站点片段。
+# 宿主机 /etc/caddy/Caddyfile 是多站点共享的（atlas/ledger/auth），
+# 本文件只是本仓库拥有的片段：部署时把下面的站点块追加到宿主机
+# Caddyfile（不要覆盖），然后 `sudo systemctl reload caddy`。
+# 证书由 Caddy 自动申请续期（DNS 已有 A 记录 -> 122.51.211.231）。
+
+kb.jerrythealpaca.cn {
+	encode zstd gzip
+	reverse_proxy 127.0.0.1:8000
+}
