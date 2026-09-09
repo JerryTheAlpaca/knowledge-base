@@ -19,9 +19,9 @@
   .menu { position: absolute; right: 0; top: calc(100% + 6px); background: var(--surface);
           border: 1px solid var(--border); border-radius: var(--radius-ctl); box-shadow: var(--shadow-pop);
           min-width: 150px; padding: 6px; z-index: 40; }
-  .menu-item { display: flex; width: 100%; align-items: center; min-height: 40px; padding: 6px 10px;
-               border: none; background: transparent; border-radius: 8px; color: var(--text);
-               font-size: 14px; cursor: pointer; text-decoration: none; text-align: left; }
+  .menu-item { display: flex; width: 100%; align-items: center; justify-content: center; min-height: 40px;
+               padding: 6px 10px; border: none; background: transparent; border-radius: 8px; color: var(--text);
+               font-size: 14px; cursor: pointer; text-decoration: none; }
   .menu-item:hover { background: var(--surface-2); }
   .menu-item.danger { color: var(--bad); }
 
@@ -472,7 +472,7 @@
         <h2 style="flex:1">模型</h2>
         <button class="primary" id="newProfileBtn">新建配置</button>
       </div>
-      <p class="help" style="margin:0 0 4px">Key 加密托管在服务器，任何接口都不返回明文，可随时更换或撤销；endpoint 必须是 HTTPS。</p>
+      <p class="help" style="margin:0 0 4px">Key 加密托管在服务器，任何接口都不返回明文，可随时更换或撤销。</p>
       <label for="defaultProfile" style="margin-top:12px">默认模型配置</label>
       <select id="defaultProfile"><option value="">（未设置）</option></select>
       <div class="row" style="margin-top:12px">
@@ -868,7 +868,7 @@ function itemInner(it) {
       esc(it.item_id) + '\')">重试</button>' : "");
   return '<div class="item-main">' + main +
     '<span class="item-time num" title="创建于 ' + esc(fmtTime(it.created_at)) + '">' + esc(fmtShort(it.created_at)) + "</span></div>" +
-    '<div class="item-aux">' + stateBadge(it.pipeline_state) + "<span>·</span><span>" + esc(it.platform) + "</span>" + miss +
+    '<div class="item-aux">' + stateBadge(it.pipeline_state) + "<span>·</span><span>" + esc(platformLabel(it.platform)) + "</span>" + miss +
     (auxextra ? '<span class="auxextra">' + auxextra + "</span>" : "") +
     "</div>";
 }
@@ -891,7 +891,7 @@ function rebuildPlatformChips() {
   host.innerHTML = (plats.length > 1
     ? '<button class="pchip' + (activePlatform === "" ? " active" : "") + '" data-p="">全部</button>' : "") +
     plats.map((p) => '<button class="pchip' + (activePlatform === p ? " active" : "") + '" data-p="' +
-      esc(p) + '">' + esc(p) + "</button>").join("");
+      esc(p) + '">' + esc(platformLabel(p)) + "</button>").join("");
 }
 function applyFilters() {
   const q = $("searchBox").value.trim().toLowerCase();
@@ -900,7 +900,7 @@ function applyFilters() {
     if (!li.dataset.json) { continue; }
     let d;
     try { d = JSON.parse(li.dataset.json); } catch (e) { continue; }
-    const hay = ((d[5] || "") + " " + (d[6] || "") + " " + (d[4] || "") + " " + (d[1] || "")).toLowerCase();
+    const hay = ((d[5] || "") + " " + (d[6] || "") + " " + (d[4] || "") + " " + platformLabel(d[4] || "") + " " + (d[1] || "")).toLowerCase();
     const show = (!activePlatform || d[4] === activePlatform) && (!q || hay.includes(q));
     li.hidden = !show;
     if (show) vis++;
@@ -1029,6 +1029,14 @@ const COVERAGE_LABELS = {
 const DIGEST_STATE_LABELS = {
   ready: "已生成", pending: "待提炼", failed: "提炼失败", expired: "云端材料已过期", missing: "无提炼",
 };
+// 平台值可能来自客户端 source_hint（如 weichat_mp）或 URL 推断（如 wechat_mp），显示统一转中文
+const PLATFORM_LABELS = {
+  weichat_mp: "微信公众号", wechat_mp: "微信公众号", wechat: "微信公众号",
+  bilibili: "B 站", xiaohongshu: "小红书",
+  web: "网页", webpage: "网页",
+  note: "笔记", file: "文件", unknown: "未知",
+};
+const platformLabel = (p) => PLATFORM_LABELS[p] || p;
 
 function stepperState(s) {
   // 返回 {done, cur, tone}：done=已完成段数；cur=当前段下标；tone=active|paused|bad
@@ -1161,7 +1169,7 @@ function renderSourcePane(d) {
   const sm = d.source_material;
   const rows = [];
   rows.push('<div class="grid2">' +
-    '<div class="kv"><b>平台</b>' + esc(it.platform) + "</div>" +
+    '<div class="kv"><b>平台</b>' + esc(platformLabel(it.platform)) + "</div>" +
     '<div class="kv"><b>作者</b>' + esc(it.author || "未取得") + "</div>" +
     '<div class="kv"><b>来源 URL</b>' + (it.original_url
       ? '<a href="' + esc(it.original_url) + '" target="_blank" rel="noopener">' + esc(shortUrl(it.original_url)) + "</a>"
