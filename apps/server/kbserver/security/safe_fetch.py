@@ -19,6 +19,14 @@ from ..config import get_settings
 
 MAX_REDIRECTS = 5
 
+# httpx 0.28 起不再导出 _SENSITIVE_HEADERS；本地维护这份清单用于跨主机跳转剥离敏感头
+_SENSITIVE_HEADERS = frozenset({
+    "authorization",
+    "proxy-authorization",
+    "cookie",
+    "set-cookie",
+})
+
 
 class SafeFetchError(Exception):
     def __init__(self, code: str, message: str):
