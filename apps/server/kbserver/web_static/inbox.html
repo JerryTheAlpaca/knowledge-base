@@ -19,9 +19,9 @@
   .menu { position: absolute; right: 0; top: calc(100% + 6px); background: var(--surface);
           border: 1px solid var(--border); border-radius: var(--radius-ctl); box-shadow: var(--shadow-pop);
           min-width: 150px; padding: 6px; z-index: 40; }
-  .menu-item { display: flex; width: 100%; align-items: center; min-height: 40px; padding: 6px 10px;
-               border: none; background: transparent; border-radius: 8px; color: var(--text);
-               font-size: 14px; cursor: pointer; text-decoration: none; text-align: left; }
+  .menu-item { display: flex; width: 100%; align-items: center; justify-content: center; min-height: 40px;
+               padding: 6px 10px; border: none; background: transparent; border-radius: 8px; color: var(--text);
+               font-size: 14px; cursor: pointer; text-decoration: none; }
   .menu-item:hover { background: var(--surface-2); }
   .menu-item.danger { color: var(--bad); }
 
@@ -254,8 +254,7 @@
                                          transition: transform var(--t-slow) var(--ease); }
   details.disclosure[open] > summary::before { transform: rotate(90deg); }
   details.disclosure > summary:hover { color: var(--accent); }
-  details.disclosure.danger-disc > summary { color: var(--bad); }
-  details.disclosure.danger-disc > summary::before { color: var(--bad); }
+  .dangerblock { border-top: 1px dashed var(--border); margin-top: 18px; padding-top: 14px; }
   .disclosure-body { padding: 0 14px 14px; }
   details.disclosure.slim { margin-top: 6px; }
   details.disclosure.slim > summary { min-height: 32px; padding: 4px 8px; font-weight: 500;
@@ -466,19 +465,14 @@
     </div>
   </section>
 
-  <!-- ============ 设置（docs/10 §4.3：账号 / 模型 / 平台接入 / 高级） ============ -->
+  <!-- ============ 设置（2026-09-09 走查调整：高级卡已移除，顺序：模型 / 平台接入 / 账号） ============ -->
   <section id="settingsTab" hidden>
-    <div class="card" id="secAccount">
-      <h2>账号</h2>
-      <div class="kv" id="accountLine">加载中…</div>
-    </div>
-
     <div class="card" id="secModel">
       <div class="list-head">
         <h2 style="flex:1">模型</h2>
         <button class="primary" id="newProfileBtn">新建配置</button>
       </div>
-      <p class="help" style="margin:0 0 4px">Key 加密托管在服务器，任何接口都不返回明文，可随时更换或撤销；endpoint 必须是 HTTPS。</p>
+      <p class="help" style="margin:0 0 4px">Key 加密托管在服务器，任何接口都不返回明文，可随时更换或撤销。</p>
       <label for="defaultProfile" style="margin-top:12px">默认模型配置</label>
       <select id="defaultProfile"><option value="">（未设置）</option></select>
       <div class="row" style="margin-top:12px">
@@ -504,12 +498,13 @@
       </div>
     </div>
 
-    <details class="disclosure" id="advOcr" hidden>
-      <summary>高级 · 截图识别（vision_ocr）配置</summary>
-      <div class="disclosure-body">
-        <div id="ocrList"></div>
+    <div class="card" id="secAccount">
+      <h2>账号</h2>
+      <div class="kv" id="accountLine">加载中…</div>
+      <div class="row" style="margin-top:14px">
+        <button class="danger" id="accountLogoutBtn">退出登录</button>
       </div>
-    </details>
+    </div>
   </section>
 </main>
 
@@ -878,7 +873,7 @@ function itemInner(it) {
       esc(it.item_id) + '\')">重试</button>' : "");
   return '<div class="item-main">' + main +
     '<span class="item-time num" title="创建于 ' + esc(fmtTime(it.created_at)) + '">' + esc(fmtShort(it.created_at)) + "</span></div>" +
-    '<div class="item-aux">' + stateBadge(it.pipeline_state) + "<span>·</span><span>" + esc(it.platform) + "</span>" + miss +
+    '<div class="item-aux">' + stateBadge(it.pipeline_state) + "<span>·</span><span>" + esc(platformLabel(it.platform)) + "</span>" + miss +
     (auxextra ? '<span class="auxextra">' + auxextra + "</span>" : "") +
     "</div>";
 }
@@ -901,7 +896,7 @@ function rebuildPlatformChips() {
   host.innerHTML = (plats.length > 1
     ? '<button class="pchip' + (activePlatform === "" ? " active" : "") + '" data-p="">全部</button>' : "") +
     plats.map((p) => '<button class="pchip' + (activePlatform === p ? " active" : "") + '" data-p="' +
-      esc(p) + '">' + esc(p) + "</button>").join("");
+      esc(p) + '">' + esc(platformLabel(p)) + "</button>").join("");
 }
 function applyFilters() {
   const q = $("searchBox").value.trim().toLowerCase();
@@ -910,7 +905,7 @@ function applyFilters() {
     if (!li.dataset.json) { continue; }
     let d;
     try { d = JSON.parse(li.dataset.json); } catch (e) { continue; }
-    const hay = ((d[5] || "") + " " + (d[6] || "") + " " + (d[4] || "") + " " + (d[1] || "")).toLowerCase();
+    const hay = ((d[5] || "") + " " + (d[6] || "") + " " + (d[4] || "") + " " + platformLabel(d[4] || "") + " " + (d[1] || "")).toLowerCase();
     const show = (!activePlatform || d[4] === activePlatform) && (!q || hay.includes(q));
     li.hidden = !show;
     if (show) vis++;
@@ -1039,6 +1034,14 @@ const COVERAGE_LABELS = {
 const DIGEST_STATE_LABELS = {
   ready: "已生成", pending: "待提炼", failed: "提炼失败", expired: "云端材料已过期", missing: "无提炼",
 };
+// 平台值可能来自客户端 source_hint（如 weichat_mp）或 URL 推断（如 wechat_mp），显示统一转中文
+const PLATFORM_LABELS = {
+  weichat_mp: "微信公众号", wechat_mp: "微信公众号", wechat: "微信公众号",
+  bilibili: "B 站", xiaohongshu: "小红书",
+  web: "网页", webpage: "网页",
+  note: "笔记", file: "文件", unknown: "未知",
+};
+const platformLabel = (p) => PLATFORM_LABELS[p] || p;
 
 function stepperState(s) {
   // 返回 {done, cur, tone}：done=已完成段数；cur=当前段下标；tone=active|paused|bad
@@ -1165,13 +1168,13 @@ function renderDetailPane(d) {
   return renderManagePane(d);
 }
 
-// ---- 原文（C3：单主题；S3 定位入技术细节；S6 去 role；文件折叠） ----
+// ---- 原文（C3：单主题；S6 去 role；原始文件直接展示，2026-09-09 走查调整） ----
 function renderSourcePane(d) {
   const it = d.item;
   const sm = d.source_material;
   const rows = [];
   rows.push('<div class="grid2">' +
-    '<div class="kv"><b>平台</b>' + esc(it.platform) + "</div>" +
+    '<div class="kv"><b>平台</b>' + esc(platformLabel(it.platform)) + "</div>" +
     '<div class="kv"><b>作者</b>' + esc(it.author || "未取得") + "</div>" +
     '<div class="kv"><b>来源 URL</b>' + (it.original_url
       ? '<a href="' + esc(it.original_url) + '" target="_blank" rel="noopener">' + esc(shortUrl(it.original_url)) + "</a>"
@@ -1194,11 +1197,10 @@ function renderSourcePane(d) {
   }
   const downloads = sm.files.filter((f) => f.relative_path !== "normalized.md");
   if (downloads.length) {
-    rows.push('<details class="disclosure"><summary>原始文件（' + downloads.length + '）</summary>' +
-      '<div class="disclosure-body"><div class="filelist">' + downloads.map((f) =>
+    rows.push('<h4>原始文件（' + downloads.length + '）</h4><div class="filelist">' + downloads.map((f) =>
       '<div><a href="' + esc(sm.download_base) + "/" + encodeURIComponent(f.file_id) + '" download>' +
       esc(f.relative_path) + "</a>　" + (f.bytes / 1024).toFixed(1) + " KB</div>"
-    ).join("") + "</div></div></details>");
+    ).join("") + "</div>");
   }
   rows.push('<h4>实际取得的全文</h4>');
   if (sm.normalized_md) {
@@ -1222,18 +1224,7 @@ function renderSourceLine(line) {
   return '<div class="seg" id="' + esc(m[2]) + '"><span class="segid">' + esc(m[2]) + "</span>" +
     esc(m[1]) + "</div>";
 }
-function locatorText(loc) {
-  if (!loc || typeof loc !== "object") return "—";
-  const parts = [];
-  if (loc.part) parts.push("分P " + loc.part);
-  if (loc.cid) parts.push("cid " + loc.cid);
-  if (loc.bvid) parts.push(loc.bvid);
-  if (loc.index) parts.push("第 " + loc.index + " 段");
-  if (loc.type) parts.push(loc.type);
-  return parts.length ? parts.join(" · ") : "—";
-}
-
-// ---- 提炼（S4：版本串移入技术细节；证据锚点保留、弱化样式） ----
+// ---- 提炼（证据锚点保留、弱化样式） ----
 function renderDigestPane(d) {
   const g = d.cloud_digest;
   const rows = [];
@@ -1307,7 +1298,7 @@ function jumpToSegment(sid) {
   if (el) { el.scrollIntoView({ block: "center" }); el.classList.add("highlight"); }
 }
 
-// ---- 管理（C2：操作区 / 补充材料 / 导出 / 技术细节 / 危险区，后四者折叠） ----
+// ---- 管理（操作区 / 补充材料与导出折叠；时间与删除区直接展示，2026-09-09 走查调整） ----
 function renderManagePane(d) {
   const it = d.item;
   const hasUrl = !!it.original_url;
@@ -1341,32 +1332,17 @@ function renderManagePane(d) {
       '<div class="disclosure-body" id="asrBody"><span class="muted">展开时加载…</span></div>' +
       "</details>");
   }
-  rows.push('<details class="disclosure"><summary>技术细节</summary><div class="disclosure-body">' +
-    renderTechRows(d) + "</div></details>");
-  rows.push('<details class="disclosure danger-disc"><summary>危险操作</summary><div class="disclosure-body">' +
+  const g = d.cloud_digest;
+  rows.push('<div class="grid2">' +
+    '<div class="kv"><b>创建时间</b><span class="num">' + fmtTime(it.created_at) + "</span></div>" +
+    '<div class="kv"><b>提炼时间</b>' + (g && g.created_at ? '<span class="num">' + fmtTime(g.created_at) + "</span>" : "尚未提炼") + "</div>" +
+    '<div class="kv"><b>云端保留至</b>' + (it.expires_at ? '<span class="num">' + fmtTime(it.expires_at) + "</span>" : "—") + "</div>" +
+    "</div>");
+  rows.push('<div class="dangerblock">' +
     '<p class="small" style="margin:0 0 10px">删除该条目在服务器上的全部材料与加工结果；本地已入库的笔记不受影响，删除后不可恢复。</p>' +
     '<div class="row"><button class="danger" onclick="doDelete()">删除服务器材料</button></div>' +
-    "</div></details>");
+    "</div>");
   return rows.join("");
-}
-
-// 技术细节（S1/S3/S4/S5：版本、定位、保留期、item_id 集中收纳）
-function renderTechRows(d) {
-  const it = d.item;
-  const g = d.cloud_digest;
-  return '<div class="grid2">' +
-    '<div class="kv"><b>item_id</b><span class="num">' + esc(it.item_id) + "</span></div>" +
-    '<div class="kv"><b>来源版本</b><span class="num">r' + it.source_revision + "</span></div>" +
-    '<div class="kv"><b>成品版本</b><span class="num">bundle r' + it.bundle_revision + "</span></div>" +
-    '<div class="kv"><b>提炼基于</b>' + (it.analysis_source_revision
-      ? '<span class="num">来源 r' + it.analysis_source_revision + "（提炼 r" + it.analysis_bundle_revision + "）</span>" : "尚无提炼") + "</div>" +
-    (g && g.bundle_revision
-      ? '<div class="kv"><b>提炼生成</b><span class="num">来源 r' + g.source_revision + " · 提炼 r" + g.bundle_revision +
-        (g.created_at ? " · " + fmtTime(g.created_at) : "") + "</span></div>" : "") +
-    '<div class="kv"><b>定位</b>' + esc(locatorText(it.source_locator)) + "</div>" +
-    '<div class="kv"><b>创建时间</b>' + fmtTime(it.created_at) + "</div>" +
-    '<div class="kv"><b>云端保留至</b>' + (it.expires_at ? fmtTime(it.expires_at) : "—") + "</div>" +
-    "</div>";
 }
 
 // 主操作条入口：切到管理页签并展开对应折叠区 + 滚动 + flash（docs/10 §4.2）
@@ -1575,7 +1551,7 @@ function renderAsrSettings(asr) {
   };
 }
 
-// 模型卡只含 LLM（S7：删 kind 徽章与版本号）；vision_ocr 存量进「高级」折叠区只读管理
+// 模型卡只含 LLM（S7：删 kind 徽章与版本号）；vision_ocr 卡已移除，存量配置仅在服务端生效
 function profileCard(p) {
   const hostName = (() => { try { return new URL(p.endpoint).host; } catch (e) { return p.endpoint; } })();
   const stateBadgeHtml = p.configured
@@ -1597,35 +1573,14 @@ function profileCard(p) {
     "</div>";
 }
 function renderProfileCards(profiles) {
+  // 高级（vision_ocr）卡已按 2026-09-09 走查反馈移除；存量 vision_ocr 配置仍在服务端生效，仅不在 UI 展示
   const llm = profiles.filter((p) => p.kind === "llm");
-  const ocr = profiles.filter((p) => p.kind !== "llm");
-  const host = $("profileList");
-  host.innerHTML = llm.length
+  $("profileList").innerHTML = llm.length
     ? llm.map(profileCard).join("")
     : '<div class="muted" style="padding:8px 0">还没有模型配置——点右上角「新建配置」开始。</div>';
-  const adv = $("advOcr");
-  if (ocr.length) { adv.hidden = false; $("ocrList").innerHTML = ocr.map(profileCard).join(""); }
-  else { adv.hidden = true; $("ocrList").innerHTML = ""; }
 }
 
 $("profileList").addEventListener("click", async (e) => {
-  const menuBtn = e.target.closest("[data-menu]");
-  if (menuBtn) {
-    const menu = menuBtn.parentElement.querySelector(".menu");
-    const open = menu.hidden;
-    closeMenus();
-    menu.hidden = !open;
-    return;
-  }
-  const item = e.target.closest("[data-act]");
-  if (!item) return;
-  const act = item.dataset.act, id = item.dataset.id;
-  closeMenus();
-  if (act === "test") testProfile(id);
-  else if (act === "rotate") rotateKey(id);
-  else if (act === "revoke") revokeKey(id);
-});
-$("ocrList").addEventListener("click", async (e) => {
   const menuBtn = e.target.closest("[data-menu]");
   if (menuBtn) {
     const menu = menuBtn.parentElement.querySelector(".menu");
@@ -1808,6 +1763,7 @@ async function doLogout() {
 // ---------- 启动与事件 ----------
 $("loginBtn").addEventListener("click", () => { window.location.href = "/login?next=%2Finbox"; });
 $("logoutBtn").addEventListener("click", doLogout);
+$("accountLogoutBtn").addEventListener("click", doLogout);
 $("userChip").addEventListener("click", (e) => {
   e.stopPropagation();
   $("userMenu").hidden = !$("userMenu").hidden;
@@ -1895,7 +1851,8 @@ function saveDraftSoon() {
   try {
     const me = await api("/v1/auth/me");
     showApp(me);
-    switchTab("inbox");
+    const tabParam = new URLSearchParams(location.search).get("tab");
+    switchTab(tabParam === "settings" ? "settings" : "inbox");
     restoreDraft();
     loadItems(true);
     checkModelKey();

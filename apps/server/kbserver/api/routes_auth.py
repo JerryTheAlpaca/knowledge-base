@@ -58,13 +58,21 @@ def _check_rate(request: Request) -> None:
 
 
 def _admin_url(settings) -> str | None:
-    """由中心登录地址推导管理员邀请码页地址（同一认证站点）。"""
+    """由中心登录地址推导管理员邀请码页地址（同一认证站点）。
+
+    附带 return_to 指回 KB 设置页：Ledger 端校验白名单后，「返回设置」回到 KB。
+    """
     if not settings.auth_login_url:
         return None
-    from urllib.parse import urlsplit, urlunsplit
+    from urllib.parse import quote, urlsplit, urlunsplit
 
     parts = urlsplit(settings.auth_login_url)
-    return urlunsplit((parts.scheme, parts.netloc, "/admin/invitations", "", ""))
+    url = urlunsplit((parts.scheme, parts.netloc, "/admin/invitations", "", ""))
+    if settings.public_base_url:
+        return_to = f"{settings.public_base_url}/inbox?tab=settings"
+        sep = "&" if "?" in url else "?"
+        url = f"{url}{sep}return_to={quote(return_to, safe='')}"
+    return url
 
 
 @router.get("/login", include_in_schema=False)
