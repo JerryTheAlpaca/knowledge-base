@@ -246,6 +246,8 @@ knowledge_id + knowledge_revision + claim_id
 
 正文显示易读链接，系统保存上述 ID 映射。例如知识结论链接到 `99 System/.../revisions/digests/<id>/r000001#^c0001` 的冻结 Digest 证据块，该块再链接 `01 Sources/_assets/<item>/source-000001/normalized#^s0001`；旁边可另设“当前 Digest”入口。用户看到的是“依据：Digest 标题”，无需阅读系统路径。
 
+`claim_id` 由 `key_points` 分配（格式 `c` + 4 位数字，如 `c0001`）。`excerpts` 的 `claim_id` 是**引用**，必须指向同一份输出里某条 `key_points` 已有的 `claim_id`，可以重复（表示给同一观点补充多条摘录）；`evidence_map` 按该 ID 把摘录合并进观点条目，不为其另开条目。摘录不占独立 ID，否则观点与它的摘录在证据链上会被拆成两条。
+
 普通阅读以当前 Digest 为主，正式支撑链以固定版本为准。重新提炼不能使旧知识的依据悄悄变化；删除或替换一个已有观点时，记录它是被哪条观点取代，旧锚点留在历史快照。已有 Knowledge 观点的 ID 在含义不变时保留，不能每次融合全部重编号。
 
 原文片段保存段落／字幕时间／消息角色与消息 ID／图片 ID。块引用用 `#^id`，块 ID 只用拉丁字母、数字和连字符；具体格式遵循 [Obsidian 块链接](https://obsidian.md/help/links)。
