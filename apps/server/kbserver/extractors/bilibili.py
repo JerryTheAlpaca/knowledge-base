@@ -10,11 +10,20 @@
   （轨道 id/lan/ai_type），但 subtitle_url 为空；轨字段名是 lan（不是 language）。
 - GET https://api.bilibili.com/x/player/v2?bvid=…&cid=…  匿名可用，data 里
   携带明确的 need_login_subtitle=true 信号，data.subtitle.subtitles[] 为空列表；
-  即字幕内容需登录态才能取得。WBI 路径（/x/player/wbi/v2）非必需：普通路径
-  仍返回完整元数据与登录信号（2026-09-08 实测 code=0）。
+  即字幕内容需登录态才能取得。
 - 因此：player 的 need_login_subtitle 是最可靠的登录判定来源；view 的字幕
   列表是视频级辅助信息，不能用于证明某个分 P 有或没有字幕。绝不声称有轨
   视频“无字幕”（A18）。
+
+登录态取字幕的必要条件（2026-09-09 实测，务必保持）：
+- 只带 SESSDATA 请求 /x/player/v2，平台返回的 ai_subtitle 地址**属于别的视频**
+  （实测 4 个视频 × 2 轮共 8 次全部错：正文是穿越剧、股票、iPhone 评测等无关内容，
+  且地址路径不含本分 P 的 cid）。这是“拿到完全不对的视频字幕”的根因。
+- 必须同时满足三点才稳定返回本视频字幕（实测 4 视频 × 2 轮 8/8 正确）：
+  ① 用 WBI 端点 /x/player/wbi/v2（带 wts/w_rid 签名）；
+  ② 带 buvid3 设备指纹 Cookie；
+  ③ 带 SESSDATA。
+- 因此下载后仍做归属校验，校验不通过绝不发布（见 _belongs_to_part）。
 
 规则：
 - 站点内部接口封装在本模块内，不是本项目的稳定 API（docs/02 §5.6）。
@@ -30,17 +39,37 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+import threading
 import time
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
 
 from ..security.safe_fetch import SafeFetchError, safe_fetch
 from . import subtitles as subfmt
 
-EXTRACTOR_VERSION = "bilibili_subtitles-1.1.0"
+EXTRACTOR_VERSION = "bilibili_subtitles-2.0.0"
+
+# ---- WBI 签名（B 站 Web 端现行接口要求，2026-09-09 实测）----
+_NAV_URL = "https://api.bilibili.com/x/web-interface/nav"
+_PLAYER_WBI_URL = "https://api.bilibili.com/x/player/wbi/v2"
+_SPI_URL = "https://api.bilibili.com/x/frontend/finger/spi"
+# WBI 密钥重排表（站点固定常量）
+_WBI_MIXIN = [
+    46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49,
+    33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13, 37, 48, 7, 16, 24, 55, 40,
+    61, 26, 17, 0, 1, 60, 51, 30, 4, 22, 25, 54, 21, 56, 59, 6, 63, 57, 62, 11,
+    36, 20, 34, 44, 52,
+]
+_WBI_TTL_S = 6 * 3600
+_wbi_lock = threading.Lock()
+_wbi_state: tuple[float, str] | None = None  # (过期时间戳, mix_key)
+_device_lock = threading.Lock()
+_device_id: str | None = None
 
 # 请求间的小间隔，避免对站点接口形成突发压力
 _REQUEST_GAP_S = 0.6
@@ -103,8 +132,13 @@ class BilibiliExtraction:
         return "full_text" if self.segments else "metadata_only"
 
 
-def _browser_headers(url: str, sessdata: str | None = None) -> dict[str, str]:
-    """请求头。SESSDATA 只发往明确允许的 B 站认证接口，绝不发给字幕 CDN。"""
+def _browser_headers(url: str, sessdata: str | None = None,
+                     device_id: str | None = None) -> dict[str, str]:
+    """请求头。SESSDATA 只发往明确允许的 B 站认证接口，绝不发给字幕 CDN。
+
+    device_id 为 buvid3 设备指纹；缺了它平台会返回别的视频的 AI 字幕地址
+    （2026-09-09 实测），因此登录态探测时必须携带。
+    """
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -112,19 +146,82 @@ def _browser_headers(url: str, sessdata: str | None = None) -> dict[str, str]:
         ),
         "Referer": "https://www.bilibili.com/",
     }
+    cookie_parts: list[str] = []
     if sessdata:
         host = (urlparse(url).hostname or "").lower()
         if any(host == h or host.endswith("." + h) for h in _CRED_ALLOWED_HOSTS):
             # 最小凭据：仅 SESSDATA（2026-09-07 实测优于整串 Cookie，见 docs/04 §5）
-            headers["Cookie"] = f"SESSDATA={sessdata}"
+            cookie_parts.append(f"SESSDATA={sessdata}")
+    if device_id:
+        host = (urlparse(url).hostname or "").lower()
+        if any(host == h or host.endswith("." + h) for h in _CRED_ALLOWED_HOSTS):
+            cookie_parts.append(f"buvid3={device_id}")
+    if cookie_parts:
+        headers["Cookie"] = "; ".join(cookie_parts)
     return headers
 
 
+def _wbi_mix_key(sessdata: str | None, limit: int) -> str | None:
+    """取 WBI 签名密钥（nav 接口），进程内缓存 6 小时；取不到返回 None。"""
+    global _wbi_state
+    with _wbi_lock:
+        now = time.time()
+        if _wbi_state and _wbi_state[0] > now:
+            return _wbi_state[1]
+    try:
+        doc = _fetch_json(_NAV_URL, max_bytes=limit, timeout=10.0, sessdata=sessdata)
+    except BilibiliError:
+        return None  # 拿不到密钥就按无签名请求，端点本身仍有效
+    wbi = ((doc.get("data") or {}).get("wbi_img") or {})
+    img = (wbi.get("img_url") or "").rsplit("/", 1)[-1].split(".")[0]
+    sub = (wbi.get("sub_url") or "").rsplit("/", 1)[-1].split(".")[0]
+    if not img or not sub:
+        return None
+    raw = img + sub
+    key = "".join(raw[i] for i in _WBI_MIXIN if i < len(raw))[:32]
+    with _wbi_lock:
+        _wbi_state = (time.time() + _WBI_TTL_S, key)
+    return key
+
+
+def _wbi_sign(params: dict, mix_key: str | None) -> dict:
+    """按站点规则给参数加 wts / w_rid；无密钥时原样返回。"""
+    if not mix_key:
+        return dict(params)
+    signed = {k: v for k, v in params.items()}
+    signed["wts"] = int(time.time())
+    ordered = dict(sorted(signed.items()))
+    filtered = {k: "".join(c for c in str(v) if c not in "!'()*") for k, v in ordered.items()}
+    query = urlencode(filtered)
+    ordered["w_rid"] = hashlib.md5((query + mix_key).encode("utf-8")).hexdigest()
+    return ordered
+
+
+def _device_fingerprint(limit: int) -> str:
+    """取 buvid3 设备指纹；优先向平台申请，失败则用本地生成的固定值。
+
+    同一进程内保持不变：频繁换新设备指纹会让平台降级返回错误的字幕地址。
+    """
+    global _device_id
+    with _device_lock:
+        if _device_id:
+            return _device_id
+        try:
+            doc = _fetch_json(_SPI_URL, max_bytes=limit, timeout=10.0)
+            b3 = str(((doc.get("data") or {}).get("b_3") or "")).strip()
+        except BilibiliError:
+            b3 = ""
+        if not b3:
+            b3 = "KB" + uuid.uuid4().hex.upper()[:32] + "infoc"
+        _device_id = b3
+        return b3
+
+
 def _fetch_json(url: str, *, max_bytes: int, timeout: float = 15.0,
-                sessdata: str | None = None) -> dict:
+                sessdata: str | None = None, device_id: str | None = None) -> dict:
     try:
         result = safe_fetch(url, max_bytes=max_bytes, timeout=timeout,
-                            headers=_browser_headers(url, sessdata))
+                            headers=_browser_headers(url, sessdata, device_id))
     except SafeFetchError as exc:
         if exc.code == "NETWORK_ERROR":
             raise BilibiliError("network_error", f"接口请求失败：{exc}") from exc
@@ -328,14 +425,27 @@ def discover_tracks(ref: VideoRef, page: dict, settings_max_bytes: int,
 
     返回结构化探测结果：保留登录提示、原始轨数与可下载轨数等非秘密元数据，
     避免空列表被等同于“无字幕”。带登录态时仅对 api.bilibili.com 附最小凭据
-    Cookie（SESSDATA），不携带其他 Cookie 字段。
+    Cookie（SESSDATA + buvid3 设备指纹），不携带其他 Cookie 字段。
+
+    登录态走 WBI 端点 /x/player/wbi/v2：普通 v2 端点在只带 SESSDATA 时
+    会返回别的视频的 AI 字幕地址（2026-09-09 实测），不可用于取正文。
     """
+    params = {"cid": page["cid"]}
     if ref.bvid:
-        player_url = f"https://api.bilibili.com/x/player/v2?bvid={ref.bvid}&cid={page['cid']}"
+        params["bvid"] = ref.bvid
     else:
-        player_url = f"https://api.bilibili.com/x/player/v2?aid={ref.aid}&cid={page['cid']}"
+        params["aid"] = ref.aid
+    if sessdata:
+        device_id = _device_fingerprint(settings_max_bytes)
+        player_url = _PLAYER_WBI_URL + "?" + urlencode(
+            _wbi_sign(params, _wbi_mix_key(sessdata, settings_max_bytes))
+        )
+    else:
+        device_id = None
+        player_url = "https://api.bilibili.com/x/player/v2?" + urlencode(params)
     try:
-        data = _api(_fetch_json(player_url, max_bytes=settings_max_bytes, sessdata=sessdata))
+        data = _api(_fetch_json(player_url, max_bytes=settings_max_bytes,
+                                sessdata=sessdata, device_id=device_id))
     except BilibiliError as exc:
         if sessdata and exc.status == "login_required":
             raise BilibiliError(
@@ -375,8 +485,12 @@ def discover_tracks(ref: VideoRef, page: dict, settings_max_bytes: int,
     )
 
 
-def choose_track(pairs: list[tuple[dict, str]]) -> tuple[dict, str]:
-    """按语言偏好选轨：优先中文；同语言优先人工轨（docs/04 §4.4）。"""
+def rank_tracks(pairs: list[tuple[dict, str]]) -> list[tuple[dict, str]]:
+    """按语言偏好排序全部候选轨：优先中文；同语言优先人工轨（docs/04 §4.4）。
+
+    返回全部候选而不是只取第一个：首选轨可能拿到别的视频的字幕，需要依次
+    校验后选第一个真正属于本分 P 的（2026-09-09 实测）。
+    """
     if not pairs:
         raise BilibiliError("no_track", "没有可选字幕轨")
 
@@ -390,7 +504,39 @@ def choose_track(pairs: list[tuple[dict, str]]) -> tuple[dict, str]:
         manual_rank = 0 if auto is False else (1 if auto is None else 2)
         return (0 if is_zh(t) else 1, manual_rank)
 
-    return sorted(pairs, key=sort_key)[0]
+    return sorted(pairs, key=sort_key)
+
+
+def choose_track(pairs: list[tuple[dict, str]]) -> tuple[dict, str]:
+    """取首选轨（保留旧接口，供测试与单轨场景使用）。"""
+    return rank_tracks(pairs)[0]
+
+
+def _belongs_to_part(url: str, cid: str, records: list[dict],
+                     duration_s: float | None) -> str | None:
+    """校验下载到的字幕确实属于本分 P；返回 None 表示通过，否则返回原因。
+
+    平台在凭据或设备指纹缺失时会返回别的视频的 AI 字幕（2026-09-09 实测
+    8/8 全错）。这类内容必须丢弃，不能用标题去“配”一段别人的正文。
+    """
+    if "/ai_subtitle/" in url and cid and cid not in url:
+        return "字幕地址不含本分 P 标识"
+    if not duration_s or not records:
+        return None
+    last_end = 0.0
+    for rec in records:
+        try:
+            last_end = max(last_end, float(rec.get("end_s") or 0))
+        except (TypeError, ValueError):
+            continue
+    if last_end <= 0:
+        return None
+    # 明显长于视频 → 一定是别的视频；明显短于视频 → AI 字幕应覆盖全片，判异常
+    if last_end > duration_s * 1.2:
+        return f"字幕时长（{last_end:.0f}s）超出视频时长（{duration_s:.0f}s）"
+    if "/ai_subtitle/" in url and last_end < duration_s * 0.5:
+        return f"自动字幕只覆盖到 {last_end:.0f}s，视频全长 {duration_s:.0f}s"
+    return None
 
 
 class _SubtitleBodyInvalid(Exception):
@@ -425,6 +571,32 @@ def _download_and_parse(url: str, settings_max_bytes: int) -> tuple[bytes, list[
     except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
         raise _SubtitleBodyInvalid(raw) from exc
     return raw, records
+
+
+def fetch_video_title(target: str) -> str | None:
+    """只取视频标题，不碰字幕（判断用户填的文字是否就是标题本身）。
+
+    取不到返回 None，调用方按“不是标题”处理，不影响主流程。
+    """
+    from ..config import get_settings
+
+    try:
+        ref = resolve_share_url(target)
+        page = resolve_video_part(ref, get_settings().subtitle_download_limit)
+    except BilibiliError:
+        return None
+    return page.get("title")
+
+
+def is_title_text(text: str, title: str | None) -> bool:
+    """用户填的短文字是否就是视频标题（不是正文），用于避免把标题当正文发布。"""
+    if not title:
+        return False
+    norm = lambda s: re.sub(r"[\s\W_]+", "", s or "")
+    a, b = norm(text), norm(title)
+    if len(a) < 6:
+        return False
+    return a == b or a in b or b in a
 
 
 # ---- 总入口 ----
@@ -518,50 +690,61 @@ def extract(url: str, *, share_text: str | None = None,
             "可在设置中托管 B 站登录态自动获取，或补充字幕文件/粘贴摘录。",
         )
 
-    track, track_url = choose_track(pairs)
-    time.sleep(_REQUEST_GAP_S)
-    try:
-        raw, records = _download_and_parse(track_url, limit)
-    except _SubtitleBodyInvalid:
-        # 地址过期或返回异常：重新探测一次同一视频/分 P（docs/04 §4.5），不循环重试
-        time.sleep(_REQUEST_GAP_S)
-        discovery2 = discover_tracks(ref, page, limit, sessdata=sessdata)
-        retry_pair = next((p for p in discovery2.pairs if p[0]["track_id"] == track["track_id"]), None)
-        if retry_pair is None:
-            # 轨道临时消失不能标“视频无字幕”（docs/05 §3.2）
-            raise BilibiliError(
-                "unconfirmed", "字幕地址过期且重新探测未找到所选轨道；请稍后重试或补充字幕文件。"
-            )
-        try:
-            raw, records = _download_and_parse(retry_pair[1], limit)
-        except (_SubtitleBodyInvalid, BilibiliError) as exc:
-            raise BilibiliError(
-                "blocked", "字幕地址重新探测后仍无法取得有效字幕 JSON；原始材料不受影响。"
-            ) from exc
-
     video_duration = page.get("page_duration_s") or page.get("duration_s")
-    segments, warnings = subfmt.normalize_records(
-        records, source="platform_subtitle", video_duration_s=video_duration
-    )
-    if page.get("part_note"):
-        warnings.append(page["part_note"])
+    candidates = rank_tracks(pairs)
+    mismatch: list[str] = []
 
-    return BilibiliExtraction(
-        video=ref,
-        canonical_url=page["canonical_url"],
-        title=page["title"],
-        author=page["author"],
-        published_at=page["published_at"],
-        duration_s=page.get("duration_s"),
-        pages_count=page["pages_count"],
-        part=page["page"],
-        cid=page["cid"],
-        part_note=page.get("part_note"),
-        tracks=[t for t, _u in pairs],
-        track=track,
-        login_state_used=bool(sessdata),
-        raw_subtitle=raw,
-        raw_suffix="json",
-        segments=segments,
-        warnings=warnings,
+    # 依次尝试候选轨：首选轨可能拿到别的视频的字幕，取第一个通过归属校验的。
+    # 全部候选都失败时，重新探测一次（地址会变）再试一轮；仍失败不发布错误正文。
+    for attempt in (0, 1):
+        for track, track_url in candidates:
+            time.sleep(_REQUEST_GAP_S)
+            try:
+                raw, records = _download_and_parse(track_url, limit)
+            except _SubtitleBodyInvalid:
+                mismatch.append("字幕地址返回的内容不是字幕 JSON")
+                continue
+            reason = _belongs_to_part(track_url, page["cid"], records, video_duration)
+            if reason is None:
+                segments, warnings = subfmt.normalize_records(
+                    records, source="platform_subtitle", video_duration_s=video_duration
+                )
+                if page.get("part_note"):
+                    warnings.append(page["part_note"])
+                if attempt or track is not candidates[0][0]:
+                    warnings.append(f"已改用「{track.get('label') or track.get('language')}」字幕轨。")
+                return BilibiliExtraction(
+                    video=ref,
+                    canonical_url=page["canonical_url"],
+                    title=page["title"],
+                    author=page["author"],
+                    published_at=page["published_at"],
+                    duration_s=page.get("duration_s"),
+                    pages_count=page["pages_count"],
+                    part=page["page"],
+                    cid=page["cid"],
+                    part_note=page.get("part_note"),
+                    tracks=[t for t, _u in pairs],
+                    track=track,
+                    login_state_used=bool(sessdata),
+                    raw_subtitle=raw,
+                    raw_suffix="json",
+                    segments=segments,
+                    warnings=warnings,
+                )
+            mismatch.append(reason)
+        if attempt == 0:
+            # 重新探测一次同一视频/分 P（docs/04 §4.5），不循环重试
+            time.sleep(_REQUEST_GAP_S)
+            discovery2 = discover_tracks(ref, page, limit, sessdata=sessdata)
+            if not discovery2.pairs:
+                break
+            candidates = rank_tracks(discovery2.pairs)
+            pairs = discovery2.pairs
+
+    detail = "、".join(dict.fromkeys(mismatch)) or "平台返回的字幕与本视频不匹配"
+    raise BilibiliError(
+        "subtitle_mismatch",
+        f"平台返回的字幕不属于该视频（{detail}），已丢弃未采用。"
+        "请稍后重试，或补充字幕文件/粘贴摘录。",
     )

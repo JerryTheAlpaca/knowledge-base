@@ -139,6 +139,13 @@ def run_extract(db: Session, store: ObjectStore, job: Job, item: Item) -> None:
     is_bili = _is_bilibili_capture(payload, meta)
     web_target = _webpage_target(payload)
     body = user_text or ("" if (is_bili or web_target) else share_text)
+    # 用户把视频标题粘进了正文框：标题不是正文，交给字幕适配器取真正的正文
+    title_note = ""
+    if body and is_bili and len(body) <= 60:
+        target = payload.get("original_url") or bili.extract_first_url(share_text)
+        if target and bili.is_title_text(body, bili.fetch_video_title(target)):
+            title_note = body
+            body = ""
     if body:
         _extract_plain_text(
             db, store, job, item, source, body=body,
@@ -147,7 +154,7 @@ def run_extract(db: Session, store: ObjectStore, job: Job, item: Item) -> None:
         return
     # 4) B 站链接：字幕适配器（docs/04）
     if is_bili:
-        _extract_bilibili(db, store, job, item, source, payload)
+        _extract_bilibili(db, store, job, item, source, payload, title_note=title_note)
         return
     # 5) 普通网页/公众号链接：正文适配器（docs/02 §5.1）
     if web_target:
@@ -330,7 +337,8 @@ def _user_sessdata(db: Session, user_id: str) -> tuple[str | None, str | None]:
 
 
 def _extract_bilibili(db: Session, store: ObjectStore, job: Job, item: Item,
-                      source: SourceRevision, payload: dict) -> None:
+                      source: SourceRevision, payload: dict,
+                      title_note: str = "") -> None:
     """B 站字幕适配器路径（docs/04）。
 
     用户托管了登录态（SESSDATA）则以登录态探测；network_error/blocked 上抛
@@ -367,6 +375,8 @@ def _extract_bilibili(db: Session, store: ObjectStore, job: Job, item: Item,
         relative_path="transcript.srt", role="source_material", mime="application/x-subrip",
     )
     warnings = list(ext.warnings) + ["已从 B 站字幕生成规范文字稿；AI 加工待执行。"]
+    if title_note:
+        warnings.append(f"随采集附上的「{title_note}」是视频标题，未当作正文。")
     _publish_segments_revision(
         db, store, job, item, source,
         segments=ext.segments, warnings=warnings, extra_files=[original_file, srt_file],

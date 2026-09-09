@@ -9,6 +9,7 @@ B 站接口响应用脱敏合成数据，不包含真实 Cookie/Key/私人内容
 from __future__ import annotations
 
 import json
+import time as _time
 from types import SimpleNamespace
 
 import pytest
@@ -109,6 +110,13 @@ SUBTITLE_BODY = {
         {"from": 3.5, "to": 6.0, "content": "P2 第二句。"},
     ]
 }
+# 覆盖 300s 全片：用于 AI 字幕归属校验（时长覆盖）用例
+FULL_BODY = {
+    "body": [
+        {"from": 0.0, "to": 5.0, "content": "开头。"},
+        {"from": 290.0, "to": 299.5, "content": "结尾。"},
+    ]
+}
 
 
 def _view_doc(pages: list[dict]) -> dict:
@@ -169,12 +177,13 @@ class FakeBiliNet:
         if "web-interface/view" in url:
             return FetchResult(url=url, status_code=self.statuses.get("view", 200),
                                mime="application/json", content=json.dumps(self.view).encode("utf-8"))
-        if "player/v2" in url:
-            cid = url.split("cid=")[-1]
+        if "player/v2" in url or "player/wbi/v2" in url:
+            cid = url.split("cid=")[-1].split("&")[0]
             if self.require_cookie:
                 cookie = (headers or {}).get("Cookie")
                 self.cookie_headers_seen.append(cookie)
-                if cookie != self.cookie_value:
+                # 登录态请求必须同时带 SESSDATA 与 buvid3 设备指纹
+                if not cookie or self.cookie_value not in cookie or "buvid3=" not in cookie:
                     doc = {"code": 0, "data": {"subtitle": {"allow_submit": False, "subtitles": []}}}
                 else:
                     doc = self.players.get(cid, _player_doc([]))
@@ -193,7 +202,8 @@ class FakeBiliNet:
 def bili_net(monkeypatch):
     def install(net: FakeBiliNet):
         monkeypatch.setattr(bili, "safe_fetch", net)
-        monkeypatch.setattr(bili, "time", SimpleNamespace(sleep=lambda s: None))
+        # WBI 签名要读 time.time()，只桩掉 sleep
+        monkeypatch.setattr(bili, "time", SimpleNamespace(sleep=lambda s: None, time=_time.time))
         return net
     return install
 
@@ -380,7 +390,7 @@ def test_subtitle_upload_srt_skips_network(client, user_a, session_factory, bili
     def _no_network(*args, **kwargs):
         raise AssertionError("上传字幕路径不应访问网络")
     monkeypatch.setattr(bili, "safe_fetch", _no_network)
-    monkeypatch.setattr(bili, "time", SimpleNamespace(sleep=lambda s: None))
+    monkeypatch.setattr(bili, "time", SimpleNamespace(sleep=lambda s: None, time=_time.time))
 
     srt = "1\n00:00:01,000 --> 00:00:03,000\n上传的第一句。\n\n2\n00:00:03,500 --> 00:00:05,000\n上传的第二句。\n"
     up = client.post(
@@ -508,10 +518,107 @@ def test_bilibili_extract_with_login_state(client, user_a, session_factory, bili
     it = _get_item(client, token, item_id)
     assert it["source_revision"] == 2
     assert it["pipeline_state"] == "waiting_key"
-    # 托管后的 player 调用带最小凭据 Cookie（托管前的匿名调用 Cookie 为空）
+    # 托管后的 player 调用带凭据 Cookie（托管前的匿名调用 Cookie 为空）
     assert net.cookie_headers_seen
-    assert any(h == "SESSDATA=fake-sessdata-value-123456" for h in net.cookie_headers_seen)
-    assert all(h in (None, "SESSDATA=fake-sessdata-value-123456") for h in net.cookie_headers_seen)
+    assert any("SESSDATA=fake-sessdata-value-123456" in h for h in net.cookie_headers_seen if h)
+    assert all(h is None or "SESSDATA=fake-sessdata-value-123456" in h
+               for h in net.cookie_headers_seen)
+    # 登录态必须走 WBI 端点并带 buvid3 设备指纹：缺任一项平台会返回别的视频的字幕
+    assert any("player/wbi/v2" in u for u in net.calls)
+    assert any("buvid3=" in (h or "") for h in net.cookie_headers_seen)
+
+
+def test_bilibili_text_is_title_uses_subtitle(client, user_a, session_factory, bili_net):
+    """用户把视频标题粘进正文框：标题不是正文，仍走字幕路径（否则只拿到标题）。"""
+    bili_net(FakeBiliNet(players={"111": _player_doc([TRACK_MANUAL])}))
+    token = user_a["phone"]["token"]
+    r = client.post(
+        "/v1/captures",
+        json={
+            "client_capture_id": "m4title-1111-2222-3333-444444444444",
+            "input_kind": "url",
+            "original_url": f"https://www.bilibili.com/video/{BV}/",
+            "text": "【测试视频标题】",
+        },
+        headers={**auth(token), "Idempotency-Key": "m4title"},
+    )
+    assert r.status_code == 202
+    item_id = r.json()["item_id"]
+    _drain(session_factory)
+
+    it = _get_item(client, user_a["desktop"]["token"], item_id)
+    assert it["source_revision"] == 2  # 取到字幕，不是只留标题
+    assert it["pipeline_state"] == "waiting_key"
+    manifest = _manifest(client, user_a["desktop"]["token"], it)
+    assert manifest["source"]["coverage"] == "full_text"
+    assert any(f["relative_path"] == "transcript.srt" for f in manifest["files"])
+
+
+def test_bilibili_own_text_still_wins(client, user_a, session_factory, bili_net):
+    """用户真的写了自己的笔记（不是标题）：用户正文优先，不去抓字幕。"""
+    net = bili_net(FakeBiliNet(players={"111": _player_doc([TRACK_MANUAL])}))
+    token = user_a["phone"]["token"]
+    r = client.post(
+        "/v1/captures",
+        json={
+            "client_capture_id": "m4own-1111-2222-3333-444444444444",
+            "input_kind": "url",
+            "original_url": f"https://www.bilibili.com/video/{BV}/",
+            "text": "我自己记的一句话：低空经济的政策窗口比想象中更短。",
+        },
+        headers={**auth(token), "Idempotency-Key": "m4own"},
+    )
+    assert r.status_code == 202
+    item_id = r.json()["item_id"]
+    calls_before = len(net.calls)
+    _drain(session_factory)
+    it = _get_item(client, user_a["desktop"]["token"], item_id)
+    assert it["pipeline_state"] == "waiting_key"
+    # 只在判断标题时请求过 view，没有去取字幕
+    assert not any("player" in u for u in net.calls)
+
+
+def test_bilibili_subtitle_of_other_video_rejected(client, user_a, session_factory, bili_net):
+    """平台返回的 AI 字幕地址不属于本分 P（=别的视频的正文）：丢弃，不发布。
+
+    2026-09-09 实测：只带 SESSDATA 请求旧 player 端点时，B 站会给出别的视频的
+    AI 字幕。这类正文绝不能用标题“配”上去，必须进入补充材料。
+    """
+    bad = {"id": 555, "lan": "ai-zh", "lan_doc": "中文（自动）", "ai_type": 0,
+           "subtitle_url": "//aisubtitle.hdslb.com/bfs/ai_subtitle/prod/deadbeefcafe.json"}
+    bili_net(FakeBiliNet(players={"111": _player_doc([bad])}))
+    c = _capture_url(client, user_a["phone"]["token"], "m4mismatch",
+                     url=f"https://www.bilibili.com/video/{BV}/")
+    item_id = c.json()["item_id"]
+    _drain(session_factory)
+
+    it = _get_item(client, user_a["desktop"]["token"], item_id)
+    assert it["pipeline_state"] == "needs_input"
+    assert "不属于该视频" in (it.get("state_detail") or "")
+    # 原始材料没有被伪造出来
+    assert it["source_revision"] == 1
+
+
+def test_bilibili_ai_subtitle_with_cid_accepted(bili_net):
+    """AI 字幕地址含本分 P 的 cid 且覆盖全片：正常采用。"""
+    good = {"id": 556, "lan": "ai-zh", "lan_doc": "中文（自动）", "ai_type": 1,
+            "subtitle_url": "//aisubtitle.hdslb.com/bfs/ai_subtitle/prod/117111424242.json"}
+    bili_net(FakeBiliNet(players={"111": _player_doc([good])}, subtitle=FULL_BODY))
+    ext = bili.extract(f"https://www.bilibili.com/video/{BV}/")
+    assert ext.track["track_id"] == "556"
+    assert [s["text"] for s in ext.segments] == ["开头。", "结尾。"]
+
+
+def test_bilibili_bad_track_falls_back_to_next(bili_net):
+    """首选轨内容不属于本视频时，改用下一条候选轨，而不是直接失败。"""
+    bad = {"id": 557, "lan": "zh-CN", "lan_doc": "中文（人工）", "ai_type": 0,
+           "subtitle_url": "//aisubtitle.hdslb.com/bfs/ai_subtitle/prod/cafebabe42.json"}
+    good = {"id": 558, "lan": "ai-zh", "lan_doc": "中文（自动）", "ai_type": 1,
+            "subtitle_url": "//aisubtitle.hdslb.com/bfs/ai_subtitle/prod/117111424242.json"}
+    bili_net(FakeBiliNet(players={"111": _player_doc([bad, good])}, subtitle=FULL_BODY))
+    ext = bili.extract(f"https://www.bilibili.com/video/{BV}/")
+    assert ext.track["track_id"] == "558"
+    assert any("改用" in w for w in ext.warnings)
 
 
 def test_bilibili_session_invalid_needs_input(client, user_a, session_factory, bili_net):
@@ -600,7 +707,7 @@ def test_bilibili_credential_never_sent_to_subtitle_cdn(client, user_a, session_
     it = _get_item(client, user_a["desktop"]["token"], item_id)
     assert it["source_revision"] == 2  # 取到了字幕
     # player 请求带凭据；字幕 CDN 请求绝不带 Cookie
-    assert any(h == "SESSDATA=fake-sessdata-value-123456" for h in net.cookie_headers_seen)
+    assert any("SESSDATA=fake-sessdata-value-123456" in (h or "") for h in net.cookie_headers_seen)
     assert net.subtitle_headers_seen
     assert all(h is None for h in net.subtitle_headers_seen)
 
