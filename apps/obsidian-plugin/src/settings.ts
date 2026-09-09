@@ -11,16 +11,21 @@ import { App, Notice, PluginSettingTab, Setting } from "obsidian";
 import type { KbSettings, LocalModelConfig, LocalModelMode } from "./types";
 import { ANALYSIS_SCHEMA_VERSION, LAYOUT_VERSION } from "./types";
 
-export const DEFAULT_LOCAL_MODEL: LocalModelConfig = {
-  mode: "follow_cloud",
-  cloudProfileId: "",
-  local: { name: "", baseUrl: "", model: "", secretRef: "kb-local-llm-key" },
-  pinnedProfileVersion: null,
-  pinnedCredentialVersion: null,
-  pinnedEndpoint: "",
-  pinnedModel: "",
-  awaitingSync: false,
-};
+/** 本地整理默认配置工厂：每次返回新对象，避免模块级常量被运行时修改污染。 */
+export function defaultLocalModel(): LocalModelConfig {
+  return {
+    mode: "follow_cloud",
+    cloudProfileId: "",
+    local: { name: "", baseUrl: "", model: "", secretRef: "kb-local-llm-key" },
+    pinnedProfileVersion: null,
+    pinnedCredentialVersion: null,
+    pinnedEndpoint: "",
+    pinnedModel: "",
+    awaitingSync: false,
+  };
+}
+
+export const DEFAULT_LOCAL_MODEL: LocalModelConfig = defaultLocalModel();
 
 export const DEFAULT_SETTINGS: KbSettings = {
   serverUrl: "",
@@ -104,34 +109,51 @@ export class SecretBridge {
 
   // ---- 模型 API Key：禁止明文降级（docs/08 §8.3） ----
 
-  /** 读取模型 Key：秘密存储优先，其次会话内临时值；两者都没有返回 null。 */
+  /**
+   * 读取模型 Key：秘密存储优先，其次会话内临时值；两者都没有返回 null。
+   *
+   * 注意：Obsidian `SecretStorage.getSecret` 是**同步**方法（返回 string|null），
+   * 这里用 `await` 包一层以兼容可能的异步实现，同步返回值同样被正确取出。
+   */
   async getSecretStrict(ref: string): Promise<string | null> {
     if (this.available && this.store.getSecret) {
       try {
         const v = await this.store.getSecret(ref);
-        if (v) return v;
-      } catch {
-        // 落到会话内通道
+        if (typeof v === "string" && v) return v;
+      } catch (err) {
+        console.error("[kb-inbox] 读取秘密存储失败:", err);
       }
     }
     return this.sessionSecrets.get(ref) ?? null;
   }
 
-  /** 写入模型 Key。返回 true 表示持久化成功；false 表示仅会话内可用。 */
+  /** 写入模型 Key。返回 true 表示持久化成功；false 表示仅会话内可用。
+   *
+   * Obsidian `setSecret` 是同步方法，ID 非法时会同步抛错；此处捕获并降级为
+   * 会话内使用，避免整个绑定流程中断。
+   */
   async setSecretStrict(ref: string, value: string): Promise<boolean> {
     if (this.available && this.store.setSecret) {
-      await this.store.setSecret(ref, value);
-      this.sessionSecrets.set(ref, value);
-      return true;
+      try {
+        await this.store.setSecret(ref, value);
+        this.sessionSecrets.set(ref, value);
+        return true;
+      } catch (err) {
+        console.error("[kb-inbox] 写入秘密存储失败，降级为会话内使用:", err);
+      }
     }
     this.sessionSecrets.set(ref, value);
-    new Notice("当前 Obsidian 版本无 SecretStorage：该 API Key 仅在本次会话内可用，重启后需要重新配置。");
+    new Notice("无法写入本机秘密存储：该 API Key 仅在本次会话内可用，重启后需要重新配置。");
     return false;
   }
 
   async clearSecretStrict(ref: string): Promise<void> {
     if (this.available && this.store.deleteSecret) {
-      await this.store.deleteSecret(ref).catch(() => undefined);
+      try {
+        await this.store.deleteSecret(ref);
+      } catch (err) {
+        console.error("[kb-inbox] 清除秘密失败:", err);
+      }
     }
     this.sessionSecrets.delete(ref);
   }

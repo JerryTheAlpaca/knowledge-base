@@ -9,7 +9,7 @@
 
 import { ItemView, Notice, Plugin, TFile, WorkspaceLeaf } from "obsidian";
 import { KbClient } from "./api";
-import { KbSettingTab, SecretBridge, DEFAULT_SETTINGS, DEFAULT_LOCAL_MODEL } from "./settings";
+import { KbSettingTab, SecretBridge, DEFAULT_SETTINGS, defaultLocalModel } from "./settings";
 import { SyncEngine, type SyncState } from "./sync/engine";
 import { VaultFs } from "./vault/vaultfs";
 import { CommitStore, Suppression } from "./vault/records";
@@ -88,7 +88,8 @@ class StatusView extends ItemView {
 }
 
 export class KbPlugin extends Plugin {
-  settings: KbSettings = DEFAULT_SETTINGS;
+  /** 初始值用副本，loadSettings 会覆盖；不直接引用模块常量，避免运行时污染。 */
+  settings: KbSettings = { ...DEFAULT_SETTINGS, localModel: defaultLocalModel() };
   secrets!: SecretBridge;
   engine!: SyncEngine;
   organize!: OrganizeService;
@@ -328,11 +329,10 @@ export class KbPlugin extends Plugin {
   private async loadCloudProfiles() {
     const client = this.getClient();
     if (!client) throw new Error("尚未登录，无法读取线上配置。");
-    const [profiles, statuses] = await Promise.all([
-      client.listProfiles(),
-      Promise.all((await client.listProfiles()).map((p) =>
-        client.localBindingStatus(p.id).catch(() => null))),
-    ]);
+    // 只取一次列表，再按同一顺序查询各自的本机绑定状态（避免两次调用顺序错位）
+    const profiles = await client.listProfiles();
+    const statuses = await Promise.all(
+      profiles.map((p) => client.localBindingStatus(p.id).catch(() => null)));
     return profiles.map((p, i) => ({
       id: p.id,
       kind: p.kind,
@@ -355,6 +355,10 @@ export class KbPlugin extends Plugin {
     const data = ((await this.loadData()) ?? {}) as PluginData;
     data.importedSecretRefs = [...new Set([...(data.importedSecretRefs ?? []), ref])];
     await this.saveData(data);
+    if (!persisted) {
+      // 只在会话内可用：不固定版本，避免重启后 pinned 值在而密钥丢失
+      return `已配置到本设备，但无法写入本机秘密存储：Key 仅本次会话可用，重启后需重新绑定。`;
+    }
     // 绑定成功即固定该配置版本，供后续批次复用（Key 不写进任务文件）
     this.settings.localModel = pinConfig(this.settings.localModel, {
       mode: this.settings.localModel.mode,
@@ -368,9 +372,7 @@ export class KbPlugin extends Plugin {
       cloudProfileId: binding.profile_id,
     });
     await this.saveSettings();
-    return persisted
-      ? `已把 ${binding.model} 的 Key 配置到本设备（v${binding.profile_version}）。`
-      : `已配置到本设备，但本机无 SecretStorage：Key 仅本次会话可用，重启后需重新绑定。`;
+    return `已把 ${binding.model} 的 Key 配置到本设备（v${binding.profile_version}）。`;
   }
 
   /** 解绑：只删本机绑定与秘密副本，不替用户撤销线上或供应商 Key。 */
@@ -589,11 +591,12 @@ export class KbPlugin extends Plugin {
   private async loadSettings(): Promise<void> {
     const data = ((await this.loadData()) ?? {}) as PluginData;
     this.settings = { ...DEFAULT_SETTINGS, ...data };
-    // 旧数据没有 localModel：补齐默认值，避免深层字段缺失
+    // 旧数据没有 localModel：补齐默认值，避免深层字段缺失。
+    // 每次都构造新对象，防止运行时修改污染模块级 DEFAULT_LOCAL_MODEL。
     this.settings.localModel = {
-      ...DEFAULT_LOCAL_MODEL,
+      ...defaultLocalModel(),
       ...(data.localModel ?? {}),
-      local: { ...DEFAULT_LOCAL_MODEL.local, ...(data.localModel?.local ?? {}) },
+      local: { ...defaultLocalModel().local, ...(data.localModel?.local ?? {}) },
     };
     this.syncState = data.syncState ?? { cursor: 0, pending: {}, lastRunAt: null };
   }
