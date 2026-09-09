@@ -465,7 +465,7 @@
     </div>
   </section>
 
-  <!-- ============ 设置（docs/10 §4.3：模型 / 平台接入 / 高级 / 账号，2026-09-09 走查调整：账号卡置底含退出按钮） ============ -->
+  <!-- ============ 设置（2026-09-09 走查调整：高级卡已移除，顺序：模型 / 平台接入 / 账号） ============ -->
   <section id="settingsTab" hidden>
     <div class="card" id="secModel">
       <div class="list-head">
@@ -492,13 +492,6 @@
         <button class="danger" id="biliRevoke">撤销</button>
       </div>
     </div>
-
-    <details class="disclosure" id="advOcr" hidden>
-      <summary>高级 · 截图识别（vision_ocr）配置</summary>
-      <div class="disclosure-body">
-        <div id="ocrList"></div>
-      </div>
-    </details>
 
     <div class="card" id="secAccount">
       <h2>账号</h2>
@@ -1162,7 +1155,7 @@ function renderDetailPane(d) {
   return renderManagePane(d);
 }
 
-// ---- 原文（C3：单主题；S6 去 role；文件折叠） ----
+// ---- 原文（C3：单主题；S6 去 role；原始文件直接展示，2026-09-09 走查调整） ----
 function renderSourcePane(d) {
   const it = d.item;
   const sm = d.source_material;
@@ -1191,11 +1184,10 @@ function renderSourcePane(d) {
   }
   const downloads = sm.files.filter((f) => f.relative_path !== "normalized.md");
   if (downloads.length) {
-    rows.push('<details class="disclosure"><summary>原始文件（' + downloads.length + '）</summary>' +
-      '<div class="disclosure-body"><div class="filelist">' + downloads.map((f) =>
+    rows.push('<h4>原始文件（' + downloads.length + '）</h4><div class="filelist">' + downloads.map((f) =>
       '<div><a href="' + esc(sm.download_base) + "/" + encodeURIComponent(f.file_id) + '" download>' +
       esc(f.relative_path) + "</a>　" + (f.bytes / 1024).toFixed(1) + " KB</div>"
-    ).join("") + "</div></div></details>");
+    ).join("") + "</div>");
   }
   rows.push('<h4>实际取得的全文</h4>');
   if (sm.normalized_md) {
@@ -1467,7 +1459,7 @@ async function loadSettings() {
   } catch (e) { handleErr(e, "设置加载失败："); }
 }
 
-// 模型卡只含 LLM（S7：删 kind 徽章与版本号）；vision_ocr 存量进「高级」折叠区只读管理
+// 模型卡只含 LLM（S7：删 kind 徽章与版本号）；vision_ocr 卡已移除，存量配置仅在服务端生效
 function profileCard(p) {
   const hostName = (() => { try { return new URL(p.endpoint).host; } catch (e) { return p.endpoint; } })();
   const stateBadgeHtml = p.configured
@@ -1489,35 +1481,14 @@ function profileCard(p) {
     "</div>";
 }
 function renderProfileCards(profiles) {
+  // 高级（vision_ocr）卡已按 2026-09-09 走查反馈移除；存量 vision_ocr 配置仍在服务端生效，仅不在 UI 展示
   const llm = profiles.filter((p) => p.kind === "llm");
-  const ocr = profiles.filter((p) => p.kind !== "llm");
-  const host = $("profileList");
-  host.innerHTML = llm.length
+  $("profileList").innerHTML = llm.length
     ? llm.map(profileCard).join("")
     : '<div class="muted" style="padding:8px 0">还没有模型配置——点右上角「新建配置」开始。</div>';
-  const adv = $("advOcr");
-  if (ocr.length) { adv.hidden = false; $("ocrList").innerHTML = ocr.map(profileCard).join(""); }
-  else { adv.hidden = true; $("ocrList").innerHTML = ""; }
 }
 
 $("profileList").addEventListener("click", async (e) => {
-  const menuBtn = e.target.closest("[data-menu]");
-  if (menuBtn) {
-    const menu = menuBtn.parentElement.querySelector(".menu");
-    const open = menu.hidden;
-    closeMenus();
-    menu.hidden = !open;
-    return;
-  }
-  const item = e.target.closest("[data-act]");
-  if (!item) return;
-  const act = item.dataset.act, id = item.dataset.id;
-  closeMenus();
-  if (act === "test") testProfile(id);
-  else if (act === "rotate") rotateKey(id);
-  else if (act === "revoke") revokeKey(id);
-});
-$("ocrList").addEventListener("click", async (e) => {
   const menuBtn = e.target.closest("[data-menu]");
   if (menuBtn) {
     const menu = menuBtn.parentElement.querySelector(".menu");
