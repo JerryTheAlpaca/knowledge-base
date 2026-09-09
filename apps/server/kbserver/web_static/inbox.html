@@ -254,8 +254,7 @@
                                          transition: transform var(--t-slow) var(--ease); }
   details.disclosure[open] > summary::before { transform: rotate(90deg); }
   details.disclosure > summary:hover { color: var(--accent); }
-  details.disclosure.danger-disc > summary { color: var(--bad); }
-  details.disclosure.danger-disc > summary::before { color: var(--bad); }
+  .dangerblock { border-top: 1px dashed var(--border); margin-top: 18px; padding-top: 14px; }
   .disclosure-body { padding: 0 14px 14px; }
   details.disclosure.slim { margin-top: 6px; }
   details.disclosure.slim > summary { min-height: 32px; padding: 4px 8px; font-weight: 500;
@@ -1160,7 +1159,7 @@ function renderDetailPane(d) {
   return renderManagePane(d);
 }
 
-// ---- 原文（C3：单主题；S3 定位入技术细节；S6 去 role；文件折叠） ----
+// ---- 原文（C3：单主题；S6 去 role；文件折叠） ----
 function renderSourcePane(d) {
   const it = d.item;
   const sm = d.source_material;
@@ -1217,18 +1216,7 @@ function renderSourceLine(line) {
   return '<div class="seg" id="' + esc(m[2]) + '"><span class="segid">' + esc(m[2]) + "</span>" +
     esc(m[1]) + "</div>";
 }
-function locatorText(loc) {
-  if (!loc || typeof loc !== "object") return "—";
-  const parts = [];
-  if (loc.part) parts.push("分P " + loc.part);
-  if (loc.cid) parts.push("cid " + loc.cid);
-  if (loc.bvid) parts.push(loc.bvid);
-  if (loc.index) parts.push("第 " + loc.index + " 段");
-  if (loc.type) parts.push(loc.type);
-  return parts.length ? parts.join(" · ") : "—";
-}
-
-// ---- 提炼（S4：版本串移入技术细节；证据锚点保留、弱化样式） ----
+// ---- 提炼（证据锚点保留、弱化样式） ----
 function renderDigestPane(d) {
   const g = d.cloud_digest;
   const rows = [];
@@ -1302,7 +1290,7 @@ function jumpToSegment(sid) {
   if (el) { el.scrollIntoView({ block: "center" }); el.classList.add("highlight"); }
 }
 
-// ---- 管理（C2：操作区 / 补充材料 / 导出 / 技术细节 / 危险区，后四者折叠） ----
+// ---- 管理（操作区 / 补充材料与导出折叠；时间与删除区直接展示，2026-09-09 走查调整） ----
 function renderManagePane(d) {
   const it = d.item;
   const hasUrl = !!it.original_url;
@@ -1329,32 +1317,17 @@ function renderManagePane(d) {
     '<summary>导出文件</summary><div class="disclosure-body">' +
     '<div id="exportBody" class="filelist"><span class="muted">展开时加载…</span></div>' +
     "</div></details>");
-  rows.push('<details class="disclosure"><summary>技术细节</summary><div class="disclosure-body">' +
-    renderTechRows(d) + "</div></details>");
-  rows.push('<details class="disclosure danger-disc"><summary>危险操作</summary><div class="disclosure-body">' +
+  const g = d.cloud_digest;
+  rows.push('<div class="grid2">' +
+    '<div class="kv"><b>创建时间</b><span class="num">' + fmtTime(it.created_at) + "</span></div>" +
+    '<div class="kv"><b>提炼时间</b>' + (g && g.created_at ? '<span class="num">' + fmtTime(g.created_at) + "</span>" : "尚未提炼") + "</div>" +
+    '<div class="kv"><b>云端保留至</b>' + (it.expires_at ? '<span class="num">' + fmtTime(it.expires_at) + "</span>" : "—") + "</div>" +
+    "</div>");
+  rows.push('<div class="dangerblock">' +
     '<p class="small" style="margin:0 0 10px">删除该条目在服务器上的全部材料与加工结果；本地已入库的笔记不受影响，删除后不可恢复。</p>' +
     '<div class="row"><button class="danger" onclick="doDelete()">删除服务器材料</button></div>' +
-    "</div></details>");
+    "</div>");
   return rows.join("");
-}
-
-// 技术细节（S1/S3/S4/S5：版本、定位、保留期、item_id 集中收纳）
-function renderTechRows(d) {
-  const it = d.item;
-  const g = d.cloud_digest;
-  return '<div class="grid2">' +
-    '<div class="kv"><b>item_id</b><span class="num">' + esc(it.item_id) + "</span></div>" +
-    '<div class="kv"><b>来源版本</b><span class="num">r' + it.source_revision + "</span></div>" +
-    '<div class="kv"><b>成品版本</b><span class="num">bundle r' + it.bundle_revision + "</span></div>" +
-    '<div class="kv"><b>提炼基于</b>' + (it.analysis_source_revision
-      ? '<span class="num">来源 r' + it.analysis_source_revision + "（提炼 r" + it.analysis_bundle_revision + "）</span>" : "尚无提炼") + "</div>" +
-    (g && g.bundle_revision
-      ? '<div class="kv"><b>提炼生成</b><span class="num">来源 r' + g.source_revision + " · 提炼 r" + g.bundle_revision +
-        (g.created_at ? " · " + fmtTime(g.created_at) : "") + "</span></div>" : "") +
-    '<div class="kv"><b>定位</b>' + esc(locatorText(it.source_locator)) + "</div>" +
-    '<div class="kv"><b>创建时间</b>' + fmtTime(it.created_at) + "</div>" +
-    '<div class="kv"><b>云端保留至</b>' + (it.expires_at ? fmtTime(it.expires_at) : "—") + "</div>" +
-    "</div>";
 }
 
 // 主操作条入口：切到管理页签并展开对应折叠区 + 滚动 + flash（docs/10 §4.2）
