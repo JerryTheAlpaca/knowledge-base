@@ -677,17 +677,18 @@ def extract(url: str, *, share_text: str | None = None,
                 f"{len(view_tracks)} 条轨道但无法确认本分 P 是否有字幕。"
                 "可补充字幕文件/粘贴摘录，或在浏览器确认后重试。",
             )
-        # player 与 view 皆无轨道：可能确实无字幕，也可能是仅自动字幕。如实提示（docs/04 §5）。
+        # player 与 view 皆无轨道：如实告知平台未提供字幕（docs/04 §5）。
+        # 绝大多数 UP 主投稿没有 AI/CC 字幕，并非系统故障。
         if sessdata:
             raise BilibiliError(
                 "no_track",
-                "登录态下仍未取得字幕轨：视频可能没有独立字幕。"
-                "若你在浏览器中能看到可开关字幕，请补充字幕文件或粘贴摘录。",
+                "B 站对这个视频没有提供字幕轨（view 与 player 接口的字幕列表均为空）。"
+                "如在浏览器中看到可开关字幕，请补充字幕文件或粘贴摘录。",
             )
         raise BilibiliError(
             "no_track",
-            "匿名访问未取得字幕轨：视频可能没有独立字幕，或自动字幕需要登录。"
-            "可在设置中托管 B 站登录态自动获取，或补充字幕文件/粘贴摘录。",
+            "B 站对这个视频没有提供字幕轨（匿名访问 view 与 player 接口的字幕列表均为空）。"
+            "可在设置中托管 B 站登录态再次确认（凭据可解锁部分翻译轨），或补充字幕文件/粘贴摘录。",
         )
 
     video_duration = page.get("page_duration_s") or page.get("duration_s")
