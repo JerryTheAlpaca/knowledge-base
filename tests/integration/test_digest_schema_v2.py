@@ -2,7 +2,8 @@
 
 覆盖：
 - Schema 2.0 通过校验并保存结构化 evidence_map；不产出 topics/双链/标签；
-- claim_id 格式与唯一性、摘录逐字一致性、evidence_ids 存在性；
+- key_points 的 claim_id 格式与唯一性、excerpts 的 claim_id 引用观点、
+  摘录逐字一致性、evidence_ids 存在性；
 - 1.0 旧产物仍可读取（旧版读取兼容）。
 """
 from __future__ import annotations
@@ -28,7 +29,7 @@ def base_doc(**overrides) -> dict:
         "summary": "演示摘要。",
         "key_points": [{"claim_id": "c0001", "text": "采集与总结应分开。",
                         "conditions": "适用于多来源采集。", "evidence_ids": ["s0001"]}],
-        "excerpts": [{"claim_id": "c0002", "text": SEGMENTS[0]["text"],
+        "excerpts": [{"claim_id": "c0001", "text": SEGMENTS[0]["text"],
                       "evidence_ids": ["s0001"]}],
         "methods": [],
         "insights": [{"text": "候选启发。", "kind": "ai_suggestion", "basis_ids": ["s0002"]}],
@@ -63,6 +64,9 @@ def test_prompt_requests_schema_2_without_knowledge_outputs():
     assert "promotion" not in json.dumps(schema)
     rules = "".join(prompt["output_rules"])
     assert "不要输出主题、标签、知识关联、晋升判断或 Obsidian 链接" in rules
+    # 校验规则必须写进提示词，否则模型必然产出被拒的结果
+    assert "excerpts 每条必须带 claim_id" in rules
+    assert "引用某条 key_points 已出现的 claim_id" in rules
 
 
 def test_merge_prompt_carries_source_revision_and_excerpts():
@@ -74,6 +78,7 @@ def test_merge_prompt_carries_source_revision_and_excerpts():
     assert prompt["output_schema"]["source_revision"] == 3
     assert "excerpts" in prompt["output_schema"]
     assert "claim_id" in prompt["output_schema"]["key_points"][0]
+    assert "excerpts 每条必须带 claim_id" in "".join(prompt["output_rules"])
 
 
 # ---- 校验 ----
@@ -83,21 +88,43 @@ def test_valid_schema_2_document_passes():
 
 
 def test_claim_id_format_and_uniqueness_enforced():
+    """key_points 的 claim_id 必须 c + 4 位且不重复（docs/08 §6.1）。"""
     bad = base_doc(key_points=[{"claim_id": "c1", "text": "x", "evidence_ids": ["s0001"]}])
     assert any("claim_id" in e for e in validate(bad))
 
-    dup = base_doc(excerpts=[{"claim_id": "c0001", "text": SEGMENTS[0]["text"],
-                              "evidence_ids": ["s0001"]}])
+    dup = base_doc(key_points=[
+        {"claim_id": "c0001", "text": "x", "evidence_ids": ["s0001"]},
+        {"claim_id": "c0001", "text": "y", "evidence_ids": ["s0002"]},
+    ])
     assert any("重复" in e for e in validate(dup))
+
+
+def test_excerpt_claim_id_references_existing_key_point():
+    """摘录的 claim_id 引用观点，可重复；引用不存在的 id 要拒绝。
+
+    evidence_map 按 claim_id 把摘录合并进观点条目（docs/08 §6.1），因此摘录
+    不能占用独立 id——否则观点与摘录在证据链上被拆成两条。
+    """
+    ok = base_doc(excerpts=[{"claim_id": "c0001", "text": SEGMENTS[0]["text"],
+                             "evidence_ids": ["s0001"]}])
+    assert validate(ok) == []
+
+    dangling = base_doc(excerpts=[{"claim_id": "c0009", "text": SEGMENTS[0]["text"],
+                                   "evidence_ids": ["s0001"]}])
+    assert any("必须引用某条 key_points 已有的 claim_id" in e for e in validate(dangling))
+
+    malformed = base_doc(excerpts=[{"claim_id": "e1", "text": SEGMENTS[0]["text"],
+                                    "evidence_ids": ["s0001"]}])
+    assert any("claim_id" in e for e in validate(malformed))
 
 
 def test_excerpt_must_be_verbatim_from_cited_segment():
     """摘录改写/拼接/引用错片段都拒绝（docs/08 §3.2、§6.1）。"""
-    rewritten = base_doc(excerpts=[{"claim_id": "c0002", "text": "采集与总结要分开。",
+    rewritten = base_doc(excerpts=[{"claim_id": "c0001", "text": "采集与总结要分开。",
                                     "evidence_ids": ["s0001"]}])
     assert any("未在被引用的原文片段中逐字出现" in e for e in validate(rewritten))
 
-    wrong_segment = base_doc(excerpts=[{"claim_id": "c0002", "text": SEGMENTS[1]["text"],
+    wrong_segment = base_doc(excerpts=[{"claim_id": "c0001", "text": SEGMENTS[1]["text"],
                                         "evidence_ids": ["s0001"]}])
     assert any("未在被引用的原文片段中逐字出现" in e for e in validate(wrong_segment))
 
@@ -134,7 +161,9 @@ def test_evidence_map_is_structured_ids_only():
     mapping = analysis.evidence_map(base_doc())
     assert mapping["c0001"]["evidence_ids"] == ["s0001"]
     assert mapping["c0001"]["conditions"] == "适用于多来源采集。"
-    assert mapping["c0002"]["excerpt"] == SEGMENTS[0]["text"]
+    # 摘录并入被引用的观点条目，不占独立 claim_id
+    assert mapping["c0001"]["excerpt"] == SEGMENTS[0]["text"]
+    assert "c0002" not in mapping
     assert "[[" not in json.dumps(mapping)
 
 

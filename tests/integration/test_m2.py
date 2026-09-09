@@ -79,7 +79,7 @@ def doc_from_prompt(user_prompt: str) -> dict:
         "summary": "演示摘要。",
         "key_points": [{"claim_id": "c0001", "text": "采集与总结应分开处理。",
                         "conditions": None, "evidence_ids": [seg_id]}],
-        "excerpts": [{"claim_id": "c0002", "text": seg_text, "evidence_ids": [seg_id]}],
+        "excerpts": [{"claim_id": "c0001", "text": seg_text, "evidence_ids": [seg_id]}],
         "methods": [],
         "insights": [{"text": "候选启发。", "kind": "ai_suggestion", "basis_ids": [seg_id]}],
         "limitations": [],

@@ -124,6 +124,8 @@ def build_user_prompt(
             "key_points 每条必须带 claim_id（c + 4 位数字，如 c0001，按顺序且不重复）和 evidence_ids；"
             "evidence_ids 必须来自输入片段；每条最多 20 个，优先选最有代表性的片段；材料不足时宁可少写。",
             "excerpts 只放逐字原文片段，evidence_ids 指向该片段；没有合适摘录就留空数组；不要改写原文。",
+            "excerpts 每条必须带 claim_id（c + 4 位数字），且必须引用某条 key_points 已出现的 claim_id"
+            "（同一 claim_id 可在 excerpts 中重复出现，表示为该观点补充摘录）；不引用观点就别写这条摘录。",
             "key_points 的 conditions 只写来源明确说明的适用条件，没有就填 null。",
             "insights 是你的延伸建议，kind 固定为 ai_suggestion；不要与原文主张混淆。",
             "不要输出主题、标签、知识关联、晋升判断或 Obsidian 链接。",
@@ -188,6 +190,8 @@ def build_merge_user_prompt(
             "key_points 每条必须带 claim_id（c + 4 位数字，按顺序不重复）和 evidence_ids；"
             "evidence_ids 只能使用候选要点中出现过的片段 ID；每条最多 20 个。",
             "excerpts 只放候选要点中出现的逐字原文片段；没有就留空数组。",
+            "excerpts 每条必须带 claim_id（c + 4 位数字），且必须引用某条 key_points 已出现的 claim_id"
+            "（同一 claim_id 可在 excerpts 中重复出现）。",
             "不要输出主题、标签、知识关联、晋升判断或 Obsidian 链接。",
             "key_points 最多 7 条，excerpts 最多 7 条，methods 最多 5 条，insights 最多 3 条。",
             "材料没有依据的作者/日期/最终决策一律留空。",
@@ -211,7 +215,8 @@ def build_repair_user_prompt(original_prompt: str, raw_output: str, errors: list
         "previous_output": raw_output[:8000],
         "source_data": original.get("source_data"),
         "output_schema": original.get("output_schema"),
-        "output_rules": ["只输出修正后的完整 JSON 对象，不要输出其他文字。"],
+        "output_rules": (original.get("output_rules") or [])
+        + ["只输出修正后的完整 JSON 对象，不要输出其他文字。"],
     }
     return json.dumps(payload, ensure_ascii=False)
 

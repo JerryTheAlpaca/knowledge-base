@@ -1,7 +1,8 @@
 """AI 输出 Schema 校验与 Markdown 渲染（docs/02 §11.2、§11.3；docs/08 §3.2、§9）。
 
 - 校验只认代码规则：数组长度、文本长度、evidence_ids 必须存在于来源片段、
-  claim_id 格式与唯一性、摘录必须是原文片段。
+  key_points 的 claim_id 格式与唯一性、excerpts 的 claim_id 引用已有观点、
+  摘录必须是原文片段。
 - 新版 Schema 2.0 是单篇提炼契约；1.0 旧产物仍可读取（旧版读取兼容）。
 - insights 必须是 ai_suggestion；workflow 的 accepted/rejected 必须有证据。
 - 云端产物只保存结构化证据 ID，不生成 Obsidian 双链（docs/08 §3.2）。
@@ -83,6 +84,16 @@ def _claim_id_errors(item: dict, *, field: str, seen: set[str]) -> list[str]:
     return []
 
 
+def _excerpt_claim_id_errors(item: dict, *, field: str, claim_ids: set[str]) -> list[str]:
+    """摘录的 claim_id 引用某条核心观点（evidence_map 按同一 id 合并，不另分配）。"""
+    cid = item.get("claim_id")
+    if not isinstance(cid, str) or not CLAIM_ID_RE.match(cid):
+        return [f"{field}.claim_id 必须是 c + 4 位数字（如 c0001）"]
+    if claim_ids and cid not in claim_ids:
+        return [f"{field}.claim_id 必须引用某条 key_points 已有的 claim_id"]
+    return []
+
+
 def validate_analysis(
     doc: dict,
     *,
@@ -142,7 +153,9 @@ def validate_analysis(
                     continue
                 errors += _evidence_check(ex, field=f"excerpts[{i}]",
                                           segment_ids=segment_ids, required=True)
-                errors += _claim_id_errors(ex, field=f"excerpts[{i}]", seen=seen_claim_ids)
+                errors += _excerpt_claim_id_errors(
+                    ex, field=f"excerpts[{i}]", claim_ids=seen_claim_ids
+                )
                 if texts:
                     errors += _excerpt_check(ex, field=f"excerpts[{i}]", segment_texts=texts)
 
