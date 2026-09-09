@@ -47,9 +47,9 @@
 - **发布标识**：`source=asr`、`engine=sherpa-onnx`、完整模型 ID、`quantization=int8`、`acquisition=player_audio_stream`、`audio_retained=false`、`timestamp_kind=estimated`、`original_media_retained=false`；warnings 含「机器转写，未经人工校对」；segments `source="machine_asr"`、`origin="asr"`；空段区间记录为 `failed_ranges`（部分转写时 coverage=partial_text）；全片无有效语音进补充材料。
 - **时间换算**：识别输入 = 前段尾部 1s 上下文 + 当前段；模型 token 时间 + 输入实际起点 = 视频绝对时间，按 core 区间裁剪重叠带；无 token 时间时退化为段级粗粒度，不伪造逐字时间。
 
-## 3. 部署配置（未应用，占位）
+## 3. 部署配置（2026-09-09 晚已部分应用，进度见 §7）
 
-`deploy/docker-compose.yml` 已写入配置但**生产尚未部署**：`ASR_ENABLED=false`（默认关）、模型只读挂载注释状态。上线前需按 docs/11 §8 第一步在服务器完成：模型包下载与 SHA-256 校验、`sherpa-onnx-offline` 固定版本放置 `/opt/sherpa/bin/`、`alembic upgrade head`、`ASR_ENABLED=true` + 挂载取消注释后重建容器。
+`deploy/docker-compose.yml` 于 85e45c0 启用：`ASR_ENABLED=true`、只读挂载 `/opt/models` 与 `/opt/sherpa`、`LD_LIBRARY_PATH=/opt/sherpa/lib`、空闲内存门槛调至 512MiB（宿主机 2GB 实测 MemAvailable ~693MiB，原值 800 会让自动转写永远排队）。引擎与模型制品已放置宿主机（见 §7.1）；容器重建、迁移与验证未完成（§7.2）。
 
 ## 4. 已完成的验证（本地集成，135 passed 全量）
 
@@ -91,3 +91,33 @@
 2. `git pull` → 重建镜像（含 ffmpeg）→ `alembic upgrade head` → 先保持 `ASR_ENABLED=false` 验证部署无损。
 3. 用 `scripts/probe_bilibili_asr.py` 对 3–5 条确无字幕的常看视频（含多 P 的 P2）做真实探测：记录准备耗时、每段 RTF、cgroup 峰值、样本转写文本人工对照（开头/中间/结尾各 30–60s）。
 4. 质量可接受 → 部署开关开启后真机走查 UI（自动入队、进度、让出、取消）；质量不达标 → 按 §8 第 6 条用 SenseVoice 同样本复测（届时再部署备用模型）。
+
+## 7. 生产部署暂停点（2026-09-09 深夜暂停，次日按 §7.2 收尾）
+
+### 7.1 已完成
+
+- **分支**：`feat-bilibili-asr` @ `85e45c0`（含 origin/main 合并 `a03f0b1` + compose 启用 ASR）已推送 origin；服务器 `~/kb-inbox` 已检出。注意：服务器 remote 的 fetch refspec 只有 main（`+refs/heads/main:...`），拉分支要显式 `git fetch origin feat-bilibili-asr`。
+- **引擎**：sherpa-onnx **v1.13.7** `linux-x64-shared-no-tts` → 宿主机 `/opt/sherpa/{bin,lib}`；`ldd` 全解析（需 `LD_LIBRARY_PATH=/opt/sherpa/lib`）；模型自带测试音频冒烟通过（中文识别正确、带 token 时间戳，1.17s）。
+- **模型**：`sherpa-onnx-dolphin-base-ctc-multi-lang-int8-2025-04-02`（model.int8.onnx 103.7MB + tokens.txt）→ `/opt/models/<模型ID>/`。SHA-256 清单：`/opt/models/MANIFEST-sha256.txt`（model.int8.onnx `a3aa46c9…`、tokens.txt `c3788261…`、引擎二进制 `19ef6179…`）。
+- **下载通道**：服务器直连 GitHub ~1KB/s 不可用；用 `https://ghfast.top/<原始URL>` 镜像（gh-proxy.com 为备选）。
+- **服务器状态**：`kb-auto-deploy.timer` 已 `systemctl stop`（分支期间避免每分钟 pull 失败刷日志；enable 未撤销，恢复用 `sudo systemctl enable --now kb-auto-deploy.timer`）。
+
+### 7.2 次日收尾清单（按序）
+
+0. **构建收尾**：昨晚有一个脱离会话的构建进程在跑（日志 `/tmp/kb-asr-build.log`，最后停在 ffmpeg 的 apt 依赖下载，~133MB 归档/466MB 解压）。先 `pgrep -f "docker compose -f deploy/docker-compose.yml build"` 判断：还在跑→等完看日志；已退出→确认日志末尾 `writing image`/`naming to` 成功；失败则重跑 build（层缓存续传，非从头构建）。
+1. **确认镜像**：`sudo docker images` 中 deploy-api/deploy-worker 应变为新构建时间。
+2. **备份数据卷**（既有习惯，~/kb-backups tar 打包）。
+3. **迁移**：`sudo docker compose -f deploy/docker-compose.yml run --rm api alembic upgrade head`（新迁移 `d6b8a2c4e9f7` 建 asr_runs 表）。
+4. **重建容器**：`up -d` → `curl localhost:8000/health/ready` 应全 true。
+5. **容器内验证**：`/opt/models`、`/opt/sherpa` 可见；`docker exec -e PYTHONPATH=/app deploy-worker-1 python -c "from kbserver.workers import asr; print(asr.model_available('dolphin'))"` 应 True；`free -m` 观察 MemAvailable（门槛 512MiB）。
+6. **probe 真实样本**：`docker cp scripts/probe_bilibili_asr.py deploy-worker-1:/tmp/` → `docker exec -e PYTHONPATH=/app deploy-worker-1 python /tmp/probe_bilibili_asr.py --url <无字幕视频>`。候选：BV1bG7J6mEbB、BV12Ybn6GEab（2026-09-09 已实测无字幕轨），先查时长选短的；匿名先行，需登录态时在容器内用托管 SESSDATA 的包装脚本注入 `KB_PROBE_SESSDATA`（凭据不落日志/命令行/输出）。
+7. **质量人工判定**（用户对照音频听文本）→ 保留 dolphin 或换 SenseVoice 复测。
+8. **UI 真机走查**：设置页「无字幕时自动转写」开关、详情管理页签「音频转写」卡片、手动触发/取消/进度。
+9. **文档**：本节改写为最终部署记录（§5 划掉已验证项）并提交推送。
+10. **收尾决策（需用户拍板）**：`feat-bilibili-asr` 是否合入 main；合入后服务器 `git checkout main && git pull`，`sudo systemctl enable --now kb-auto-deploy.timer` 恢复自动部署（**勿忘**，当前 timer 停着）。
+
+### 7.3 过夜安全状态
+
+- 生产容器仍运行 main @`1b3490c` 旧镜像，健康正常；切分支不影响运行中容器（restart 沿用既有配置，旧镜像 + 旧环境变量）。
+- 即使容器意外被 `up -d` 重建：镜像仍是旧代码，忽略 ASR 环境变量，无行为变化；asr_runs 表另有 worker 启动时 create_all 兜底。
+- 未做任何 main 变更；SenseVoice 备用模型按用户决定未下载未部署。
