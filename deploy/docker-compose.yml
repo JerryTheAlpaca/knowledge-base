@@ -56,21 +56,25 @@ services:
       MASTER_KEY_VERSION: "1"
       WORKER_POLL_SECONDS: "2"
       PYTHONUNBUFFERED: "1"
-      # 本地 ASR（docs/11 §9.3）：默认关闭；部署验收后置 true 并挂载模型目录
-      ASR_ENABLED: "false"
+      # 本地 ASR（docs/11 §9.3）：引擎与模型已部署（制品 SHA-256 见 /opt/models/MANIFEST-sha256.txt）
+      ASR_ENABLED: "true"
       ASR_MODEL: "dolphin"
       ASR_MODEL_DIR: /opt/models
       ASR_ENGINE_BIN: /opt/sherpa/bin/sherpa-onnx-offline
+      # 引擎为动态链接（sherpa-onnx v1.13.7 linux-x64 shared-no-tts），运行时库在同包 lib/ 下
+      LD_LIBRARY_PATH: /opt/sherpa/lib
       ASR_IDLE_CPU_START: "0.25"
       ASR_IDLE_CPU_STOP: "0.70"
-      ASR_IDLE_MIN_AVAILABLE_MIB: "800"
+      # 宿主机 2GB 实测 MemAvailable 常态约 700MiB；按 docs/11 §9.3 的 800 会让自动转写永远排队
+      ASR_IDLE_MIN_AVAILABLE_MIB: "512"
     volumes:
       # 单一卷挂 /data（docs/02 §15.1）：db/objects/tmp/deletions 是同一持久化区的子目录。
       # 代码依赖 tmp → objects 同卷 rename 的原子性（docs/02 §7.4），拆成多个卷会因
       # 跨设备 rename 报 EXDEV (Invalid cross-device link)，导致存储探针和上传全部失败。
       - data:/data
-      # ASR 模型只读挂载（docs/11 §9.3）：部署模型到宿主机 /opt/models 后取消注释
-      # - /opt/models:/opt/models:ro
+      # ASR 模型与引擎只读挂载（docs/11 §9.3）：部署时放置于宿主机 /opt/models 与 /opt/sherpa
+      - /opt/models:/opt/models:ro
+      - /opt/sherpa:/opt/sherpa:ro
     secrets:
       - master_key
       - session_secret
