@@ -106,8 +106,9 @@
   <section id="inboxTab">
     <div class="card">
       <h2>新采集</h2>
-      <label for="capUrl">链接（可选）</label>
-      <input id="capUrl" placeholder="https://…　（公众号 / B 站 / 普通网页）">
+      <label for="capUrl">链接（可选，可一次粘贴多个链接或文字+链接）</label>
+      <input id="capUrl" placeholder="https://…　（公众号 / B 站 / 普通网页；多链接自动拆分，框内文字自动忽略）">
+      <div class="muted" id="capUrlHint" style="margin-top:4px"></div>
       <label for="capText">文字或分享内容（可选）</label>
       <textarea id="capText" placeholder="粘贴正文、AI 对话导出、小红书分享文字…"></textarea>
       <label for="capNote">备注（可选）</label>
@@ -305,30 +306,76 @@ async function uploadFiles(fileList, progressHost) {
   return ids;
 }
 
+// 链接提取：支持粘贴多链接或文字+链接混合，只取链接，框内其余文字忽略
+function extractUrls(raw) {
+  const out = [];
+  const seen = new Set();
+  const re = /https?:\/\/[^\s"'<>，。；！？、：（）【】《》「」『』…]+/gi;
+  let m;
+  while ((m = re.exec(raw)) !== null) {
+    let u = m[0];
+    while (u.length) {
+      const last = u.slice(-1);
+      if (last === ")") {
+        // 只在右括号多于左括号（如 Markdown 链接或包裹括号）时剥掉
+        if ((u.match(/\)/g) || []).length > (u.match(/\(/g) || []).length) { u = u.slice(0, -1); continue; }
+        break;
+      }
+      if (/[.,;:!?'"]/.test(last)) { u = u.slice(0, -1); continue; }
+      break;
+    }
+    if (u.length > 8 && !seen.has(u)) { seen.add(u); out.push(u); }
+  }
+  return out;
+}
+
+function updateUrlHint() {
+  const n = extractUrls($("capUrl").value).length;
+  $("capUrlHint").textContent = n > 1 ? "检测到 " + n + " 个链接，提交后将分别创建 " + n + " 个条目。" : "";
+}
+
 async function submitCapture() {
   msg("capMsg", "");
-  const url = $("capUrl").value.trim();
+  const rawUrl = $("capUrl").value.trim();
   const text = $("capText").value.trim();
   const note = $("capNote").value.trim();
   const files = Array.from($("capFiles").files || []);
-  if (!url && !text && !files.length) { msg("capMsg", "至少提供链接、文字或附件之一", false); return; }
+  const urls = extractUrls(rawUrl);
+  if (!urls.length && !text && !files.length) { msg("capMsg", "至少提供链接、文字或附件之一", false); return; }
   $("capSubmit").disabled = true;
   try {
     const uploadIds = await uploadFiles(files, "capProgress");
-    const inputKind = url ? "url" : (text ? "text" : "file");
-    const r = await api("/v1/captures", { method: "POST", idempotencyKey: crypto.randomUUID(), body: {
-      schema_version: "1.0", client_capture_id: crypto.randomUUID(),
-      input_kind: inputKind, source_hint: "web_inbox",
-      original_url: url || null, text: text || null, share_text: null,
-      user_note: note || null, upload_ids: uploadIds,
-      content_scope: "unknown", archive_policy: "source_materials",
-      processing_profile_id: ($("defaultProfile") || {}).value || null,
-      captured_at: null,
-    }});
-    msg("capMsg", "已接收（条目 " + r.item_id + "），后台开始提取与加工。", true);
+    // 多链接时每条一个链接分别采集；文字/备注/附件挂第一条，其余条目纯链接
+    const jobs = urls.length ? urls.map((u, i) => ({ url: u, primary: i === 0 })) : [{ url: null, primary: true }];
+    const ids = [];
+    try {
+      for (let i = 0; i < jobs.length; i++) {
+        const j = jobs[i];
+        const jText = j.primary ? text : "";
+        const jNote = j.primary ? note : "";
+        const jFiles = j.primary ? uploadIds : [];
+        if (jobs.length > 1) $("capProgress").textContent = "提交链接 " + (i + 1) + "/" + jobs.length + "…";
+        const r = await api("/v1/captures", { method: "POST", idempotencyKey: crypto.randomUUID(), body: {
+          schema_version: "1.0", client_capture_id: crypto.randomUUID(),
+          input_kind: j.url ? "url" : (jText ? "text" : "file"), source_hint: "web_inbox",
+          original_url: j.url || null, text: jText || null, share_text: null,
+          user_note: jNote || null, upload_ids: jFiles,
+          content_scope: "unknown", archive_policy: "source_materials",
+          processing_profile_id: ($("defaultProfile") || {}).value || null,
+          captured_at: null,
+        }});
+        ids.push(r.item_id);
+      }
+    } catch (e) {
+      if (ids.length) { msg("capMsg", "已成功提交 " + ids.length + " 条（条目 " + ids.join("、") + "），其余提交失败：" + e.message, true); loadItems(); return; }
+      throw e;
+    }
+    $("capProgress").textContent = "";
+    msg("capMsg", "已接收 " + ids.length + " 条采集（条目 " + ids.join("、") + "），后台开始提取与加工。", true);
     $("capUrl").value = ""; $("capText").value = ""; $("capNote").value = ""; $("capFiles").value = "";
+    updateUrlHint();
     loadItems();
-  } catch (e) { msg("capMsg", e.message, false); }
+  } catch (e) { $("capProgress").textContent = ""; msg("capMsg", e.message, false); }
   $("capSubmit").disabled = false;
 }
 
@@ -566,6 +613,7 @@ $("logoutBtn").addEventListener("click", doLogout);
 $("tabInbox").addEventListener("click", () => switchTab("inbox"));
 $("tabSettings").addEventListener("click", () => switchTab("settings"));
 $("capSubmit").addEventListener("click", submitCapture);
+$("capUrl").addEventListener("input", updateUrlHint);
 $("refreshBtn").addEventListener("click", () => loadItems(true));
 $("stateFilter").addEventListener("change", () => loadItems(true));
 $("moreBtn").addEventListener("click", () => loadItems(false));
