@@ -1,0 +1,11 @@
+[Unit]
+Description=Poll KB repo for new commits on main every minute
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+AccuracySec=5s
+Unit=kb-auto-deploy.service
+
+[Install]
+WantedBy=timers.target

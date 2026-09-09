@@ -1,0 +1,10 @@
+[Unit]
+Description=KB auto deploy: pull main and rebuild containers if updated
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+ExecStart=/home/ubuntu/kb-inbox/deploy/auto-deploy.sh
+TimeoutStartSec=15min
