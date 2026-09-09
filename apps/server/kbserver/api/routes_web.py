@@ -29,6 +29,13 @@ def authorize_page() -> FileResponse:
                         headers={"Cache-Control": "no-cache"})
 
 
+# 共享设计令牌（docs/09 §4.6）：两页 <link> 引入，白名单避免路径穿越
+@router.get("/tokens.css", include_in_schema=False)
+def tokens_css() -> FileResponse:
+    return FileResponse(WEB_STATIC_DIR / "tokens.css", media_type="text/css",
+                        headers={"Cache-Control": "no-cache"})
+
+
 @router.get("/", include_in_schema=False)
 def root() -> RedirectResponse:
     return RedirectResponse(url="/inbox", status_code=307)
