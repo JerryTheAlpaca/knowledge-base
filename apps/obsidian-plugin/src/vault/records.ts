@@ -1,10 +1,15 @@
 /**
- * 本地 commit 标记与 suppression（docs/02 §13.2、§8.2）。
+ * 本地 commit 标记、suppression 与历史快照
+ * （docs/02 §13.2、§8.2；docs/08 §2、§7.2、§9）。
  * 依赖注入极小的文件系统接口，纯逻辑可在 Node 下测试。
+ *
+ * 一个 Bundle 可能产出 Source + Digest 两篇笔记：commit 记录升级为多笔记布局，
+ * 每篇独立路径与哈希；失败不标记已全部完成（docs/08 §7.2、§9）。
  */
 
-import { commitMarkerName } from "./paths";
-import type { CommitRecord } from "../types";
+import { commitMarkerName, revisionDir, revisionFileName } from "./paths";
+import type { CommitNoteRecord, CommitRecord } from "../types";
+import { LAYOUT_VERSION } from "../types";
 
 export interface FsLike {
   exists(path: string): Promise<boolean>;
@@ -12,6 +17,8 @@ export interface FsLike {
   write(path: string, data: string): Promise<void>;
   remove(path: string): Promise<void>;
   list(path: string): Promise<string[]>;
+  /** 子目录列表（本地索引扫描 03 Knowledge 用，docs/08 §5）。 */
+  listDirs(path: string): Promise<string[]>;
 }
 
 export class CommitStore {
@@ -32,11 +39,43 @@ export class CommitStore {
     return { itemId: m[1], revision: Number(m[2]) };
   }
 
+  /** 读取并升级旧格式记录：layout_version=1 只有 note_path。 */
+  private normalize(raw: unknown): CommitRecord | null {
+    if (!raw || typeof raw !== "object") return null;
+    const rec = raw as Partial<CommitRecord> & { note_path?: string };
+    if (!rec.item_id || rec.bundle_revision === undefined || !rec.manifest_sha256) return null;
+    const layout = rec.layout_version ?? 1;
+    let notes: CommitNoteRecord[] = Array.isArray(rec.notes) ? rec.notes : [];
+    if (!notes.length && rec.note_path) {
+      // 旧记录：单篇 Source 笔记，状态由 conflicts 推断
+      notes = [{
+        role: "source",
+        note_path: rec.note_path,
+        managed_digest: rec.generated_digest ?? null,
+        state: (rec.conflicts ?? []).length > 0 ? "merge_needed" : "written",
+        conflicts: rec.conflicts ?? [],
+      }];
+    }
+    return {
+      item_id: rec.item_id,
+      bundle_revision: rec.bundle_revision,
+      manifest_sha256: rec.manifest_sha256,
+      layout_version: layout,
+      note_path: rec.note_path ?? notes[0]?.note_path ?? "",
+      generated_digest: rec.generated_digest ?? notes[0]?.managed_digest ?? null,
+      notes,
+      local_commit_id: rec.local_commit_id ?? "",
+      committed_at: rec.committed_at ?? new Date().toISOString(),
+      ack_sent: Boolean(rec.ack_sent),
+      conflicts: rec.conflicts ?? [],
+    };
+  }
+
   async get(itemId: string, revision: number): Promise<CommitRecord | null> {
     const p = this.path(itemId, revision);
     if (!(await this.fs.exists(p))) return null;
     try {
-      return JSON.parse(await this.fs.read(p)) as CommitRecord;
+      return this.normalize(JSON.parse(await this.fs.read(p)));
     } catch {
       return null;
     }
@@ -55,9 +94,10 @@ export class CommitStore {
   }
 
   async put(record: CommitRecord): Promise<void> {
+    const normalized: CommitRecord = { ...record, layout_version: LAYOUT_VERSION };
     await this.fs.write(
       this.path(record.item_id, record.bundle_revision),
-      JSON.stringify(record, null, 2),
+      JSON.stringify(normalized, null, 2),
     );
   }
 
@@ -82,6 +122,59 @@ export class CommitStore {
       if (rec) out.push(rec);
     }
     return out;
+  }
+
+  /** 某篇笔记当前是否已写入（用于「失败不标记已全部完成」）。 */
+  static noteState(record: CommitRecord, role: string): CommitNoteRecord | null {
+    return record.notes.find((n) => n.role === role) ?? null;
+  }
+}
+
+// ---- 历史快照（docs/08 §2、§6.1） ----
+
+/** 被引用过的 Digest／Knowledge 历史快照；不按普通缓存清理。 */
+export class RevisionStore {
+  constructor(private fs: FsLike, private systemFolder: string) {}
+
+  dir(kind: "digests" | "knowledge", id: string): string {
+    return revisionDir(this.systemFolder, kind, id);
+  }
+
+  path(kind: "digests" | "knowledge", id: string, revision: number): string {
+    return `${this.dir(kind, id)}/${revisionFileName(revision)}`;
+  }
+
+  /** 写入快照（幂等：同版本同内容不重写）。 */
+  async save(kind: "digests" | "knowledge", id: string, revision: number, content: string): Promise<void> {
+    const p = this.path(kind, id, revision);
+    if (await this.fs.exists(p)) {
+      try {
+        if ((await this.fs.read(p)) === content) return;
+      } catch {
+        // 读取失败按需要重写处理
+      }
+    }
+    await this.fs.write(p, content);
+  }
+
+  async read(kind: "digests" | "knowledge", id: string, revision: number): Promise<string | null> {
+    const p = this.path(kind, id, revision);
+    if (!(await this.fs.exists(p))) return null;
+    try {
+      return await this.fs.read(p);
+    } catch {
+      return null;
+    }
+  }
+
+  /** 已有快照版本号（升序）。 */
+  async revisions(kind: "digests" | "knowledge", id: string): Promise<number[]> {
+    const out: number[] = [];
+    for (const entry of await this.fs.list(this.dir(kind, id))) {
+      const m = /r(\d{6})\.md$/.exec(entry.split("/").pop() ?? entry);
+      if (m) out.push(Number(m[1]));
+    }
+    return out.sort((a, b) => a - b);
   }
 }
 
@@ -137,5 +230,28 @@ export class Suppression {
     doc.items = {};
     await this.save(doc);
     return removed;
+  }
+}
+
+// ---- 通用 JSON 存储（任务、候选、索引） ----
+
+export class JsonStore<T> {
+  constructor(
+    private fs: FsLike,
+    private path: string,
+    private fallback: () => T,
+  ) {}
+
+  async read(): Promise<T> {
+    if (!(await this.fs.exists(this.path))) return this.fallback();
+    try {
+      return JSON.parse(await this.fs.read(this.path)) as T;
+    } catch {
+      return this.fallback();
+    }
+  }
+
+  async write(value: T): Promise<void> {
+    await this.fs.write(this.path, JSON.stringify(value, null, 2));
   }
 }

@@ -1,9 +1,9 @@
 {
   "id": "kb-inbox",
   "name": "KB Inbox",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "minAppVersion": "1.11.4",
-  "description": "知识摄入系统本地入库：统一账号浏览器登录、增量下载、校验落盘、编辑保护与回执。",
+  "description": "知识摄入系统：三层知识库（Sources/Digests/Knowledge）、本地整理与融合、增量下载、校验落盘与编辑保护。",
   "author": "JerryTheAlpaca",
   "isDesktopOnly": true
 }

@@ -1,19 +1,39 @@
 /**
- * Source 模板、kb_* frontmatter 外科式更新与生成区冲突检测（docs/02 §12.2、§12.3）。
+ * 三层模板、分区管理、frontmatter 外科式更新与冲突检测
+ * （docs/02 §12.2、§12.3；docs/08 §3、§5、§6、§9）。
+ *
+ * 分区（docs/08 §3.2、§3.3）：
+ * - Source：无机器生成区；正文只放原始证据与链接。
+ * - Digest：`kb:cloud-digest`（云端更新）+ `kb:local-organize`（本地整理更新）
+ *   + 人工区（用户管理）；三者单独记录哈希。
+ * - Knowledge：`kb:knowledge`（AI 融合更新）+ 人工区（自动融合不改写）。
+ *
  * 纯逻辑模块：不依赖 obsidian，可独立测试。
  */
 
-import type { KbFileEntry, KbManifest } from "../types";
+import type {
+  KbFileEntry,
+  KbManifest,
+  KnowledgeIndexEntry,
+  PromotionDecision,
+} from "../types";
 
-export const GEN_START = "<!-- kb:generated:start -->";
-export const GEN_END = "<!-- kb:generated:end -->";
+/** 分区标记：Source 不再有生成区；保留旧标记用于旧库识别与迁移。 */
+export const LEGACY_GEN_START = "<!-- kb:generated:start -->";
+export const LEGACY_GEN_END = "<!-- kb:generated:end -->";
+export const CLOUD_DIGEST_START = "<!-- kb:cloud-digest:start -->";
+export const CLOUD_DIGEST_END = "<!-- kb:cloud-digest:end -->";
+export const LOCAL_ORGANIZE_START = "<!-- kb:local-organize:start -->";
+export const LOCAL_ORGANIZE_END = "<!-- kb:local-organize:end -->";
+export const KNOWLEDGE_START = "<!-- kb:knowledge:start -->";
+export const KNOWLEDGE_END = "<!-- kb:knowledge:end -->";
 
-const COVERAGE_NOTES: Record<string, string> = {
+export const COVERAGE_NOTES: Record<string, string> = {
   full_text: "已取得本次正文范围全文",
   partial_text: "仅取得部分正文",
   user_excerpt: "仅用户摘录",
   screenshots_only: "仅有截图（原文未取得）",
-  transcript_only: "仅字幕/文字稿，不含视频画面",
+  transcript_only: "已取得该分 P 字幕，不含视频画面",
   metadata_only: "仅元数据，正文未取得",
 };
 
@@ -40,11 +60,60 @@ function yamlValue(v: unknown): string {
   return yamlString(String(v));
 }
 
-/** kb_* frontmatter 行；只包含本插件管理的键（docs/02 §12.3）。 */
-export function kbFrontmatterLines(manifest: KbManifest, status: string): string[] {
+// ---- 分区读写 ----
+
+export interface Partition {
+  inner: string;
+  hash: string;
+}
+
+/** 取出标记之间的内容（不含标记本身）；没有标记时返回 null。 */
+export function extractPartition(text: string, startMark: string, endMark: string): string | null {
+  const start = text.indexOf(startMark);
+  const end = text.indexOf(endMark);
+  if (start === -1 || end === -1 || end < start) return null;
+  let inner = text.slice(start + startMark.length, end);
+  if (inner.startsWith("\n")) inner = inner.slice(1);
+  if (inner.endsWith("\n")) inner = inner.slice(0, -1);
+  return inner;
+}
+
+/** 替换分区内容，保留标记之外的原文（人工区与未知内容不动）。
+ *
+ * 标记缺失时**追加**一个完整分区而不是丢弃内容：旧库笔记或用户重写过结构时，
+ * 静默丢掉模型结果会让用户以为整理成功（docs/08 §3.2、§7.2）。
+ */
+export function replacePartition(text: string, startMark: string, endMark: string, inner: string): string {
+  const start = text.indexOf(startMark);
+  const end = text.indexOf(endMark);
+  if (start === -1 || end === -1 || end < start) {
+    const trimmed = text.replace(/\s+$/, "");
+    return `${trimmed}\n\n${startMark}\n${inner}\n${endMark}\n`;
+  }
+  return `${text.slice(0, start + startMark.length)}\n${inner}\n${text.slice(end)}`;
+}
+
+/** 三个分区各自的哈希；缺失的分区为 null（docs/08 §3.2「三者单独记录哈希」）。 */
+export async function partitionHashes(text: string): Promise<{
+  cloud_digest: string | null;
+  local_organize: string | null;
+  knowledge: string | null;
+}> {
+  const cloud = extractPartition(text, CLOUD_DIGEST_START, CLOUD_DIGEST_END);
+  const local = extractPartition(text, LOCAL_ORGANIZE_START, LOCAL_ORGANIZE_END);
+  const kn = extractPartition(text, KNOWLEDGE_START, KNOWLEDGE_END);
+  return {
+    cloud_digest: cloud === null ? null : await sha256Hex(cloud),
+    local_organize: local === null ? null : await sha256Hex(local),
+    knowledge: kn === null ? null : await sha256Hex(kn),
+  };
+}
+
+// ---- frontmatter ----
+
+function commonKbLines(manifest: KbManifest, status: string): string[] {
   const s = manifest.source;
   const lines: Array<[string, unknown]> = [
-    ["kb_id", manifest.item_id],
     ["kb_bundle_revision", manifest.bundle_revision],
     ["kb_source_revision", manifest.source_revision],
     ["kb_source_type", s.platform],
@@ -52,120 +121,17 @@ export function kbFrontmatterLines(manifest: KbManifest, status: string): string
     ["kb_coverage", s.coverage],
     ["kb_captured_at", s.captured_at ?? null],
     ["kb_source_url", s.original_url ?? s.canonical_url ?? null],
-    ["kb_topics", []],
   ];
   return lines
     .filter(([, v]) => v !== null && v !== undefined)
     .map(([k, v]) => `${k}: ${yamlValue(v)}`);
 }
 
-/** 把 preview.md 中的相对链接改写为本地资产路径，并剥掉重复的「用户备注」段。 */
-export function rewritePreviewLinks(previewMd: string, assetsBase: string): string {
-  const withoutNote = previewMd.replace(/\n## 用户备注\n[\s\S]*?(?=\n## |\s*$)/, "");
-  return withoutNote.replace(
-    /\[\[normalized#([A-Za-z0-9_-]+)(\|([^\]]*))?\]\]/g,
-    (_m, sid: string, _lab, label: string | undefined) =>
-      `[[${assetsBase}/normalized#^${sid}|${label ?? sid}]]`,
-  );
-}
-
-function fileLabel(f: KbFileEntry): string {
-  const p = f.relative_path;
-  if (p === "normalized.md") return "完整文字稿";
-  if (p === "capture.json") return "原始提交记录";
-  if (p === "analysis.json") return "AI 结构化结果";
-  if (p === "preview.md") return "";
-  if (p.startsWith("uploads/")) return `原始附件：${p.split("/").pop() ?? p}`;
-  if (/\.srt$|\.vtt$|subtitle/.test(p)) return "原始字幕";
-  return p;
-}
-
-/** 未完成加工时的生成区占位（诚实标注状态，不伪造结果）。 */
-export function renderGeneratedPending(manifest: KbManifest): string {
-  const lines: string[] = ["## AI 加工", "", `服务器尚未完成 AI 加工（状态：${manifest.processing.state}）。`, ""];
-  lines.push("原始材料已入库；成品发布后同步时会合并到此区域。");
-  for (const w of manifest.warnings ?? []) lines.push(`> [!warning] ${w}`);
-  const missing = manifest.missing_materials ?? [];
-  if (missing.length > 0) {
-    lines.push("", "缺失材料：" + missing.join("、"));
-  }
-  return lines.join("\n");
-}
-
-export function renderGenerated(manifest: KbManifest, previewMd: string | null, assetsBase: string): string {
-  if (!previewMd) return renderGeneratedPending(manifest);
-  let md = rewritePreviewLinks(previewMd, assetsBase).trim();
-  const missing = manifest.missing_materials ?? [];
-  if (missing.length > 0) {
-    md += `\n\n> [!warning] 缺失材料：${missing.join("、")}`;
-  }
-  return md;
-}
-
-/** 完整 Source 笔记（新建场景，docs/02 §12.2）。 */
-export function renderSourceNote(
-  manifest: KbManifest,
-  generatedMd: string,
-  userNote: string | null,
-  assetsBase: string,
-  status: string,
-): string {
-  const s = manifest.source;
-  const title = s.title?.trim() || "未命名";
-  const fm = kbFrontmatterLines(manifest, status).join("\n");
-  const date = (s.captured_at ?? "").slice(0, 10) || "未知日期";
-  const author = s.author?.trim() || "未取得";
-  const coverageNote = COVERAGE_NOTES[s.coverage] ?? s.coverage;
-  const noteLines = [
-    "---",
-    fm,
-    "---",
-    "",
-    `# ${title}`,
-    "",
-    `来源：${s.platform} · 作者：${author} · 采集于 ${date}`,
-    "",
-    `> [!info] 完整性：${coverageNote}。`,
-    "",
-    "## 我的备注",
-    "",
-    userNote?.trim() ? userNote.trim() : "（无）",
-    "",
-    GEN_START,
-    generatedMd,
-    GEN_END,
-    "",
-    "## 原始材料",
-    "",
-  ];
-  const links: string[] = [];
-  for (const f of manifest.files) {
-    const label = fileLabel(f);
-    if (!label) continue;
-    links.push(`- [[${assetsBase}/${f.relative_path}|${label}]]`);
-  }
-  if (links.length === 0) links.push("（无）");
-  noteLines.push(...links, "", "## 我的后续思考", "");
-  return noteLines.join("\n");
-}
-
-/** 取出生成区内容（不含标记本身）；没有标记时返回 null。 */
-export function extractGenerated(text: string): string | null {
-  const start = text.indexOf(GEN_START);
-  const end = text.indexOf(GEN_END);
-  if (start === -1 || end === -1 || end < start) return null;
-  let inner = text.slice(start + GEN_START.length, end);
-  if (inner.startsWith("\n")) inner = inner.slice(1);
-  if (inner.endsWith("\n")) inner = inner.slice(0, -1);
-  return inner;
-}
-
-/**
- * 只替换 kb_* frontmatter 行，未知字段与注释原样保留（docs/02 §12.3）。
- * 不改动正文；生成区由调用方单独处理。
+/** 只替换 kb_* frontmatter 行，未知字段与注释原样保留（docs/02 §12.3；docs/08 §3.3）。
+ *
+ * 不整块重写 frontmatter：用户自定义字段、aliases、tags 必须保留。
  */
-export function mergeKbFrontmatter(existing: string, manifest: KbManifest, status: string): string {
-  const newKb = kbFrontmatterLines(manifest, status);
+export function mergeKbFrontmatter(existing: string, kbLines: string[]): string {
   const trimmed = existing.replace(/^\uFEFF/, "");
   if (trimmed.startsWith("---\n")) {
     const endIdx = trimmed.indexOf("\n---", 4);
@@ -173,13 +139,320 @@ export function mergeKbFrontmatter(existing: string, manifest: KbManifest, statu
       const fmBody = trimmed.slice(4, endIdx);
       const rest = trimmed.slice(endIdx + 4);
       const kept = fmBody.split("\n").filter((line) => !/^kb_[a-z_]+:/.test(line));
-      return `---\n${[...newKb, ...kept].join("\n")}\n---${rest}`;
+      return `---\n${[...kbLines, ...kept].join("\n")}\n---${rest}`;
     }
   }
-  return `---\n${newKb.join("\n")}\n---\n${trimmed}`;
+  return `---\n${kbLines.join("\n")}\n---\n${trimmed}`;
 }
 
-/** 00 Inbox 索引页（整页由插件管理）。 */
+/** 读取 frontmatter 中某个键的原始文本值（不解析完整 YAML）。 */
+export function readFrontmatterValue(text: string, key: string): string | null {
+  const m = new RegExp(`^${key}:\\s*(.*)$`, "m").exec(text);
+  if (!m) return null;
+  let v = m[1].trim();
+  if (v.startsWith('"') && v.endsWith('"') && v.length >= 2) v = v.slice(1, -1);
+  return v || null;
+}
+
+/** 读取 frontmatter 数组值（支持 [a, b] 与 - a 两种写法）。 */
+export function readFrontmatterList(text: string, key: string): string[] {
+  const inline = new RegExp(`^${key}:\\s*\\[(.*)\\]\\s*$`, "m").exec(text);
+  if (inline) {
+    return inline[1].split(",").map((s) => s.trim().replace(/^"|"$/g, "")).filter(Boolean);
+  }
+  const block = new RegExp(`^${key}:\\s*\\n((?:[ \\t]*-\\s*.*\\n?)+)`, "m").exec(text);
+  if (block) {
+    return block[1].split("\n").map((l) => l.replace(/^[ \t]*-[ \t]*/, "").trim().replace(/^"|"$/g, "")).filter(Boolean);
+  }
+  return [];
+}
+
+// ---- 标签（docs/08 §5） ----
+
+/** 系统管理的标签命名空间：`type/*` 与 `status/*`。 */
+const MANAGED_TAG_PREFIXES = ["type/", "status/"];
+
+export function isManagedTag(tag: string): boolean {
+  return MANAGED_TAG_PREFIXES.some((p) => tag.startsWith(p));
+}
+
+/** 系统管理标签：类型 + 处理状态展示（`status/*` 由 `kb_*` 派生，不独立维护）。 */
+export function managedTags(kind: "source" | "digest" | "knowledge", state: string | null): string[] {
+  const tags = [`type/${kind}`];
+  if (state) tags.push(`status/${state}`);
+  return tags;
+}
+
+/**
+ * 只增删系统管理的标签，保留用户其他标签（docs/08 §5）。
+ *
+ * 写入 `tags: [...]` 单行；用户自定义标签原样保留，系统标签按当前状态重建，
+ * 避免 `kb_*` 与 `status/*` 双向独立维护而逐渐不一致。
+ */
+export function mergeManagedTags(existing: string, managed: string[]): string {
+  const userTags = readFrontmatterList(existing, "tags").filter((t) => !isManagedTag(t));
+  const all = [...new Set([...managed, ...userTags])];
+  const line = `tags: [${all.join(", ")}]`;
+  const inline = /^tags:\s*\[.*\]\s*$/m;
+  if (inline.test(existing)) return existing.replace(inline, line);
+  // 块状写法或无 tags：在 frontmatter 内替换/插入
+  const block = /^tags:\s*\n(?:[ \t]*-[ \t]*.*\n?)+/m;
+  if (block.test(existing)) return existing.replace(block, `${line}\n`);
+  const endIdx = existing.startsWith("---\n") ? existing.indexOf("\n---", 4) : -1;
+  if (endIdx !== -1) return `${existing.slice(0, endIdx)}\n${line}${existing.slice(endIdx)}`;
+  return existing;
+}
+
+// ---- Source 模板 ----
+
+function fileLabel(f: KbFileEntry): string {
+  const p = f.relative_path;
+  if (p === "normalized.md") return "完整文字稿";
+  if (p === "capture.json") return "原始提交记录";
+  if (p === "analysis.json") return "云端结构化结果";
+  if (p === "preview.md") return "";
+  if (p === "segments.json") return "原文片段索引";
+  if (p.startsWith("uploads/")) return `原始附件：${p.split("/").pop() ?? p}`;
+  if (/\.srt$|\.vtt$|subtitle/.test(p)) return "原字幕";
+  return p;
+}
+
+/** 可读原文里去掉块 ID 后的纯文本，用于嵌入 Source（docs/08 §3.1）。 */
+export function stripSegmentIds(normalizedMd: string): string {
+  return normalizedMd.replace(/\s+\^s\d{4}\s*$/gm, "");
+}
+
+/** Source 笔记（docs/08 §3.1）：来源元数据、完整性说明、对应 Digest 链接、原件链接、可读原文。
+ *
+ * Source 正文不含 AI 总结；长字幕嵌入本地 normalized.md，不把摘要当正文。
+ */
+export function renderSourceNote(
+  manifest: KbManifest,
+  opts: {
+    assetsBase: string;
+    digestLink: string | null;
+    status: string;
+    normalizedText: string | null;
+  },
+): string {
+  const s = manifest.source;
+  const title = s.title?.trim() || "未命名";
+  const date = (s.captured_at ?? "").slice(0, 10) || "未知日期";
+  const author = s.author?.trim() || "未取得";
+  const coverageNote = COVERAGE_NOTES[s.coverage] ?? s.coverage;
+  const fm = mergeKbFrontmatter("", [
+    `kb_id: ${yamlValue(`src-${manifest.item_id}`)}`,
+    `kb_item_id: ${yamlValue(manifest.item_id)}`,
+    "kb_type: source",
+    ...commonKbLines(manifest, opts.status),
+  ]);
+  const fmWithTags = mergeManagedTags(fm, managedTags("source", opts.status));
+
+  const lines: string[] = [
+    fmWithTags,
+    "",
+    `# ${title}`,
+    "",
+    `来源：${s.platform}；作者：${author}；采集于 ${date}。`,
+  ];
+  const locator = s.source_locator ?? {};
+  const locParts: string[] = [];
+  if (locator.part) locParts.push(`分 P ${String(locator.part)}`);
+  if (locator.cid) locParts.push(`cid ${String(locator.cid)}`);
+  if (locator.bvid) locParts.push(String(locator.bvid));
+  if (s.original_url) locParts.push(s.original_url);
+  if (locParts.length) lines.push(`定位：${locParts.join(" · ")}。`);
+  lines.push("", `完整性：${coverageNote}。`);
+  const missing = manifest.missing_materials ?? [];
+  if (missing.length) lines.push(`缺失材料：${missing.join("、")}。`);
+  lines.push(
+    "",
+    `提炼：${opts.digestLink ? opts.digestLink : "（尚未生成 Digest）"}`,
+    "",
+    "## 原始材料",
+    "",
+  );
+
+  const links: string[] = [];
+  for (const f of manifest.files) {
+    const label = fileLabel(f);
+    if (!label) continue;
+    links.push(`- [[${opts.assetsBase}/${f.relative_path}|${label}]]`);
+  }
+  if (links.length === 0) links.push("（无）");
+  lines.push(...links, "", "## 完整文字稿", "");
+  if (opts.normalizedText && opts.normalizedText.trim()) {
+    lines.push(stripSegmentIds(opts.normalizedText).trim(), "");
+  } else {
+    lines.push("（未取得可读正文；覆盖说明如实反映缺失，不用标题补写。）", "");
+  }
+  return lines.join("\n");
+}
+
+// ---- Digest 模板 ----
+
+/** 云端提炼区内容（docs/08 §3.2）：来自 preview.md，链接改写为本地资产路径。 */
+export function rewriteCloudDigestLinks(previewMd: string, assetsBase: string): string {
+  const withoutNote = previewMd.replace(/\n> 采集备注：\n[\s\S]*$/, "").trim();
+  return withoutNote.replace(
+    /\[\[normalized#\^?([A-Za-z0-9_-]+)(\|([^\]]*))?\]\]/g,
+    (_m, sid: string, _lab, label: string | undefined) =>
+      `[[${assetsBase}/normalized#^${sid}|${label ?? sid}]]`,
+  );
+}
+
+/** 云端尚未完成时的诚实占位（docs/08 §9：不能生成看似有效的空摘要）。 */
+export function renderCloudPending(manifest: KbManifest): string {
+  const lines = ["## 一句话总结", "", `云端提炼尚未完成（状态：${manifest.processing.state}）。`, ""];
+  lines.push("原始资料已保存；提炼完成后同步时会替换本区域。");
+  for (const w of manifest.warnings ?? []) lines.push(`> [!warning] ${w}`);
+  const missing = manifest.missing_materials ?? [];
+  if (missing.length) lines.push("", "缺失材料：" + missing.join("、"));
+  return lines.join("\n");
+}
+
+/** 本地整理区初始内容（docs/08 §3.2）：首次投递显示「尚未本地整理」。 */
+export function renderLocalOrganizeInitial(): string {
+  return [
+    "## 与已有知识的关系",
+    "",
+    "尚未本地整理。",
+    "",
+    "## 晋升建议",
+    "",
+    "尚未本地整理。",
+  ].join("\n");
+}
+
+/** 本地整理区（已整理）：关系说明与晋升建议（docs/08 §3.2、§4、§5）。
+ *
+ * 模型只输出候选 Knowledge ID；`resolveLink` 把已解析到真实笔记的 ID 渲染为链接，
+ * 未解析到的新概念先用普通文字写入建议（docs/08 §5）。
+ */
+export function renderLocalOrganize(
+  decisions: PromotionDecision[],
+  relationNote: string | null,
+  resolveLink?: (kbId: string) => string | null,
+): string {
+  const lines = ["## 与已有知识的关系", ""];
+  lines.push(relationNote?.trim() || "尚未本地整理。");
+  lines.push("", "## 晋升建议", "");
+  if (!decisions.length) {
+    lines.push("尚未本地整理。");
+  } else {
+    for (const d of decisions) {
+      let target = "";
+      if (d.target_knowledge_id) {
+        const link = resolveLink?.(d.target_knowledge_id);
+        target = link ? `→ ${link}` : `→ ${d.target_knowledge_id}（未解析到笔记）`;
+      } else if (d.new_topic) {
+        target = `→ 建议新建主题「${d.new_topic.name}」`;
+      }
+      const label = d.decision === "review" ? "建议晋升"
+        : d.decision === "keep_digest" ? "留在 Digest"
+        : d.decision === "deferred" ? "暂缓"
+        : "跳过";
+      lines.push(`- \`${d.claim_id}\` ${label}${target ? " " + target : ""}：${d.reason}`);
+    }
+  }
+  return lines.join("\n");
+}
+
+/** Digest 笔记（docs/08 §3.2）：来源链接 + 云端区 + 本地整理区 + 人工区。 */
+export function renderDigestNote(
+  manifest: KbManifest,
+  opts: {
+    sourceLink: string | null;
+    cloudMd: string | null;
+    status: string;
+  },
+): string {
+  const s = manifest.source;
+  const title = s.title?.trim() || "未命名";
+  const kbId = `dig-${manifest.item_id}`;
+  const fm = mergeKbFrontmatter("", [
+    `kb_id: ${yamlValue(kbId)}`,
+    `kb_item_id: ${yamlValue(manifest.item_id)}`,
+    "kb_type: digest",
+    `kb_source_revision: ${manifest.source_revision}`,
+    `kb_digest_revision: ${manifest.bundle_revision}`,
+    "kb_promotion: not_evaluated",
+  ]);
+  // `status/*` 是 kb_promotion 的展示，不独立维护（docs/08 §5）
+  const fmWithTags = mergeManagedTags(fm, managedTags("digest", "not_evaluated"));
+  return [
+    fmWithTags,
+    "",
+    `# ${title}：提炼`,
+    "",
+    `来源：${opts.sourceLink ? opts.sourceLink : "（原始资料尚未入库）"}`,
+    "",
+    CLOUD_DIGEST_START,
+    opts.cloudMd?.trim() || renderCloudPending(manifest),
+    CLOUD_DIGEST_END,
+    "",
+    LOCAL_ORGANIZE_START,
+    renderLocalOrganizeInitial(),
+    LOCAL_ORGANIZE_END,
+    "",
+    "## 我的备注与判断",
+    "",
+    "此区域归用户管理。",
+    "",
+  ].join("\n");
+}
+
+// ---- Knowledge 模板 ----
+
+/** Knowledge 笔记（docs/08 §3.3）：主题说明 + 机器区 + 人工区。 */
+export function renderKnowledgeNote(opts: {
+  kbId: string;
+  title: string;
+  aliases: string[];
+  scope: string;
+  managedBody: string;
+  revision: number;
+  reviewedAt: string | null;
+}): string {
+  const fm = [
+    "---",
+    `kb_id: ${yamlValue(opts.kbId)}`,
+    "kb_type: knowledge",
+    `kb_revision: ${opts.revision}`,
+    `kb_reviewed_at: ${opts.reviewedAt ?? new Date().toISOString().slice(0, 10)}`,
+    `aliases: ${yamlValue(opts.aliases)}`,
+    "---",
+  ].join("\n");
+  const fmWithTags = mergeManagedTags(fm, managedTags("knowledge", null));
+  return [
+    fmWithTags,
+    "",
+    `# ${opts.title}`,
+    "",
+    "## 这个主题解决什么问题",
+    "",
+    opts.scope?.trim() || "边界、适用对象，以及不在本篇展开的问题。",
+    "",
+    KNOWLEDGE_START,
+    opts.managedBody.trim(),
+    KNOWLEDGE_END,
+    "",
+    "## 我的实践与补充",
+    "",
+    "用户经验、偏好和手动记录，自动融合不改写。",
+    "",
+  ].join("\n");
+}
+
+/** 主题范围说明（frontmatter 之外的「这个主题解决什么问题」小节）。 */
+export function extractKnowledgeScope(text: string): string {
+  const m = /## 这个主题解决什么问题\s*\n+([\s\S]*?)(?=\n<!-- kb:knowledge:start|\n## |\s*$)/.exec(text);
+  return (m?.[1] ?? "").trim();
+}
+
+// ---- 00 Inbox 索引 ----
+
+/** 00 Inbox/待回顾.md（docs/08 §2、§5：插件输出普通 Markdown，无需 Dataview）。 */
 export function renderInboxIndex(
   entries: Array<{ notePath: string; title: string; status: string; capturedAt: string | null }>,
 ): string {
@@ -197,4 +470,38 @@ export function renderInboxIndex(
     rows || "| — | （暂无条目） | — |",
     "",
   ].join("\n");
+}
+
+/** 00 Inbox/知识更新候选.md（docs/08 §2、§8.1）。 */
+export function renderProposalIndex(
+  entries: Array<{
+    proposalId: string;
+    title: string;
+    knowledgeTitle: string | null;
+    state: string;
+    changeSummary: string;
+    createdAt: string;
+  }>,
+): string {
+  const rows = [...entries]
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    .map((e) =>
+      `| ${e.createdAt.slice(0, 10)} | ${e.knowledgeTitle ?? "（新建主题）"} | ${e.changeSummary || "—"} | ${e.state} |`,
+    )
+    .join("\n");
+  return [
+    "# 知识更新候选",
+    "",
+    "由本地整理生成；采纳前不会写入 Knowledge。使用命令「查看知识更新候选」逐条查看差异与证据。",
+    "",
+    "| 生成日期 | 目标主题 | 变化摘要 | 状态 |",
+    "| --- | --- | --- | --- |",
+    rows || "| — | （暂无候选） | — | — |",
+    "",
+  ].join("\n");
+}
+
+/** 索引条目 -> 检索用纯文本（docs/08 §5：标题、kb_id、aliases、范围说明、检索关键词）。 */
+export function indexEntrySearchText(e: KnowledgeIndexEntry): string {
+  return [e.kb_id, e.title, ...e.aliases, e.scope, ...e.keywords].join("\n").toLowerCase();
 }

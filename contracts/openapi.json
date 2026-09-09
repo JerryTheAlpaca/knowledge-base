@@ -604,6 +604,49 @@
         }
       }
     },
+    "/v1/items/{item_id}/reading": {
+      "get": {
+        "tags": [
+          "items"
+        ],
+        "summary": "Get Reading",
+        "description": "条目详情阅读页签数据：原始资料 + 云端提炼（docs/08 §8.4）。\n\n只读已登记文件；不执行原始 HTML，不渲染模型生成的脚本与命令。",
+        "operationId": "get_reading_v1_items__item_id__reading_get",
+        "parameters": [
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Item Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadingOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/items/{item_id}/supplements": {
       "post": {
         "tags": [
@@ -1225,6 +1268,170 @@
         }
       }
     },
+    "/v1/provider-profiles/{profile_id}/local-binding": {
+      "get": {
+        "tags": [
+          "profiles"
+        ],
+        "summary": "Local Binding Status",
+        "description": "查询本设备是否已绑定该配置；不返回 Key。",
+        "operationId": "local_binding_status_v1_provider_profiles__profile_id__local_binding_get",
+        "parameters": [
+          {
+            "name": "profile_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Profile Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LocalBindingStatus"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "profiles"
+        ],
+        "summary": "Bind Local",
+        "description": "把线上配置的 Key 下发到本人当前设备，用于本地直接调用模型服务。\n\n这是对「凭据只进不出」的受控变更：普通读取仍不返回密钥，只有本接口\n在专用权限与设备校验通过时下发一次。",
+        "operationId": "bind_local_v1_provider_profiles__profile_id__local_binding_post",
+        "parameters": [
+          {
+            "name": "profile_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Profile Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LocalBindingOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "profiles"
+        ],
+        "summary": "Unbind Local",
+        "description": "解绑：只删除本机绑定，不替用户撤销线上或供应商 Key（docs/08 §8.3）。",
+        "operationId": "unbind_local_v1_provider_profiles__profile_id__local_binding_delete",
+        "parameters": [
+          {
+            "name": "profile_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Profile Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/provider-profiles/{profile_id}/local-binding/revoke": {
+      "post": {
+        "tags": [
+          "profiles"
+        ],
+        "summary": "Revoke Local Binding",
+        "description": "服务端撤销绑定：阻止该设备再次领取（docs/08 §8.3）。\n\n无法远程收回已经下发的供应商 Key；彻底失效需在供应商处撤销。",
+        "operationId": "revoke_local_binding_v1_provider_profiles__profile_id__local_binding_revoke_post",
+        "parameters": [
+          {
+            "name": "profile_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Profile Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/provider-profiles/{profile_id}/test": {
       "post": {
         "tags": [
@@ -1600,6 +1807,168 @@
         ],
         "title": "CaptureInput"
       },
+      "CloudDigestOut": {
+        "properties": {
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "state_detail": {
+            "type": "string",
+            "title": "State Detail"
+          },
+          "source_revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Revision"
+          },
+          "bundle_revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bundle Revision"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "schema_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Schema Version"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary"
+          },
+          "key_points": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Key Points"
+          },
+          "excerpts": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Excerpts"
+          },
+          "methods": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Methods"
+          },
+          "insights": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Insights"
+          },
+          "limitations": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Limitations"
+          },
+          "workflow": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workflow"
+          },
+          "evidence_map": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Evidence Map"
+          },
+          "segments": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Segments"
+          },
+          "stale_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stale Note"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "state",
+          "state_detail",
+          "source_revision",
+          "bundle_revision",
+          "created_at",
+          "schema_version",
+          "summary",
+          "key_points",
+          "excerpts",
+          "methods",
+          "insights",
+          "limitations",
+          "workflow",
+          "evidence_map",
+          "segments",
+          "stale_note"
+        ],
+        "title": "CloudDigestOut"
+      },
       "DeviceApproveInput": {
         "properties": {
           "request_id": {
@@ -1697,6 +2066,13 @@
             "maxLength": 120,
             "minLength": 1,
             "title": "Device Name"
+          },
+          "requested_scopes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Requested Scopes"
           }
         },
         "additionalProperties": false,
@@ -1727,6 +2103,13 @@
           "interval_seconds": {
             "type": "integer",
             "title": "Interval Seconds"
+          },
+          "granted_scopes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Granted Scopes"
           }
         },
         "type": "object",
@@ -1735,7 +2118,8 @@
           "poll_secret",
           "browser_url",
           "expires_at",
-          "interval_seconds"
+          "interval_seconds",
+          "granted_scopes"
         ],
         "title": "DeviceStartResult"
       },
@@ -1810,6 +2194,28 @@
             "type": "string",
             "title": "Platform"
           },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "author": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Author"
+          },
           "original_url": {
             "anyOf": [
               {
@@ -1821,9 +2227,51 @@
             ],
             "title": "Original Url"
           },
+          "canonical_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Canonical Url"
+          },
+          "published_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Published At"
+          },
+          "source_locator": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Source Locator"
+          },
           "coverage": {
             "type": "string",
             "title": "Coverage"
+          },
+          "content_scope": {
+            "type": "string",
+            "title": "Content Scope"
+          },
+          "user_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User Note"
           },
           "missing_materials": {
             "items": {
@@ -1846,6 +2294,54 @@
           "created_at": {
             "type": "string",
             "title": "Created At"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "expired": {
+            "type": "boolean",
+            "title": "Expired"
+          },
+          "analysis_source_revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Analysis Source Revision"
+          },
+          "analysis_bundle_revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Analysis Bundle Revision"
+          },
+          "analysis_created_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Analysis Created At"
           }
         },
         "additionalProperties": false,
@@ -1857,13 +2353,158 @@
           "source_revision",
           "bundle_revision",
           "platform",
+          "title",
+          "author",
           "original_url",
+          "canonical_url",
+          "published_at",
+          "source_locator",
           "coverage",
+          "content_scope",
+          "user_note",
           "missing_materials",
           "captured_at",
-          "created_at"
+          "created_at",
+          "expires_at",
+          "expired",
+          "analysis_source_revision",
+          "analysis_bundle_revision",
+          "analysis_created_at"
         ],
         "title": "ItemOut"
+      },
+      "LocalBindingOut": {
+        "properties": {
+          "binding_id": {
+            "type": "string",
+            "title": "Binding Id"
+          },
+          "profile_id": {
+            "type": "string",
+            "title": "Profile Id"
+          },
+          "profile_version": {
+            "type": "integer",
+            "title": "Profile Version"
+          },
+          "credential_version": {
+            "type": "integer",
+            "title": "Credential Version"
+          },
+          "endpoint": {
+            "type": "string",
+            "title": "Endpoint"
+          },
+          "model": {
+            "type": "string",
+            "title": "Model"
+          },
+          "capabilities": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Capabilities"
+          },
+          "secret": {
+            "type": "string",
+            "title": "Secret"
+          },
+          "bound_at": {
+            "type": "string",
+            "title": "Bound At"
+          },
+          "note": {
+            "type": "string",
+            "title": "Note",
+            "default": "此 Key 已配置到本设备用于本地直接调用模型服务；服务端撤销绑定会阻止再次领取，但无法远程收回已下发的供应商 Key，彻底失效需在供应商处撤销。"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "binding_id",
+          "profile_id",
+          "profile_version",
+          "credential_version",
+          "endpoint",
+          "model",
+          "capabilities",
+          "secret",
+          "bound_at"
+        ],
+        "title": "LocalBindingOut",
+        "description": "绑定响应：只此接口返回 secret，且禁止缓存。\n\n经 HTTPS 返回，网关与应用日志不得记录响应体或 secret。"
+      },
+      "LocalBindingStatus": {
+        "properties": {
+          "profile_id": {
+            "type": "string",
+            "title": "Profile Id"
+          },
+          "bound": {
+            "type": "boolean",
+            "title": "Bound"
+          },
+          "device_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Device Id"
+          },
+          "profile_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Version"
+          },
+          "credential_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Credential Version"
+          },
+          "bound_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bound At"
+          },
+          "note": {
+            "type": "string",
+            "title": "Note",
+            "default": ""
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "profile_id",
+          "bound",
+          "device_id",
+          "profile_version",
+          "credential_version",
+          "bound_at"
+        ],
+        "title": "LocalBindingStatus"
       },
       "ProfileCreate": {
         "properties": {
@@ -2049,6 +2690,56 @@
         "type": "object",
         "title": "ProfileUpdate"
       },
+      "ReadingOut": {
+        "properties": {
+          "item": {
+            "$ref": "#/components/schemas/ItemOut"
+          },
+          "source_material": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SourceMaterialOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "cloud_digest": {
+            "$ref": "#/components/schemas/CloudDigestOut"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "expired": {
+            "type": "boolean",
+            "title": "Expired"
+          },
+          "note": {
+            "type": "string",
+            "title": "Note",
+            "default": ""
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "item",
+          "source_material",
+          "cloud_digest",
+          "expires_at",
+          "expired"
+        ],
+        "title": "ReadingOut"
+      },
       "ReceiptInput": {
         "properties": {
           "item_id": {
@@ -2199,6 +2890,82 @@
         "additionalProperties": false,
         "type": "object",
         "title": "SettingsUpdate"
+      },
+      "SourceMaterialOut": {
+        "properties": {
+          "source_revision": {
+            "type": "integer",
+            "title": "Source Revision"
+          },
+          "bundle_revision": {
+            "type": "integer",
+            "title": "Bundle Revision"
+          },
+          "normalized_md": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Normalized Md"
+          },
+          "normalized_available": {
+            "type": "boolean",
+            "title": "Normalized Available"
+          },
+          "truncated": {
+            "type": "boolean",
+            "title": "Truncated"
+          },
+          "files": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Files"
+          },
+          "coverage": {
+            "type": "string",
+            "title": "Coverage"
+          },
+          "missing_materials": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Missing Materials"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Warnings"
+          },
+          "download_base": {
+            "type": "string",
+            "title": "Download Base"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "source_revision",
+          "bundle_revision",
+          "normalized_md",
+          "normalized_available",
+          "truncated",
+          "files",
+          "coverage",
+          "missing_materials",
+          "warnings",
+          "download_base"
+        ],
+        "title": "SourceMaterialOut"
       },
       "SupplementInput": {
         "properties": {

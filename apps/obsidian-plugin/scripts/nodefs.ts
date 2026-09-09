@@ -44,6 +44,13 @@ export class NodeFs implements VaultFs {
       return entries.filter((e) => e.isFile()).map((e) => `${p.replace(/\/$/, "")}/${e.name}`);
     } catch { return []; }
   }
+  async listDirs(p: string): Promise<string[]> {
+    try {
+      const dir = this.p(p);
+      const entries = await fsp.readdir(dir, { withFileTypes: true });
+      return entries.filter((e) => e.isDirectory()).map((e) => `${p.replace(/\/$/, "")}/${e.name}`);
+    } catch { return []; }
+  }
   async rename(from: string, to: string): Promise<void> {
     await this.ensureFolder(to.split("/").slice(0, -1).join("/"));
     await fsp.rename(this.p(from), this.p(to));

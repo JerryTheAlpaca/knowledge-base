@@ -58,6 +58,15 @@ export class VaultFs implements FsLike {
     }
   }
 
+  async listDirs(path: string): Promise<string[]> {
+    try {
+      const res = await this.app.vault.adapter.list(this.p(path));
+      return res.folders ?? [];
+    } catch {
+      return [];
+    }
+  }
+
   async rename(from: string, to: string): Promise<void> {
     await this.ensureFolder(dirnameOf(to));
     await this.app.vault.adapter.rename(this.p(from), this.p(to));

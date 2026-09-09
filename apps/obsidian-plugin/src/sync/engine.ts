@@ -1,25 +1,50 @@
 /**
- * 同步引擎（docs/02 §13）：事件 → 本地待办 → 游标推进 → 下载校验 → 原子落盘 →
- * Source 笔记/冲突 → commit 标记 → 回执 → 清理。
+ * 同步引擎（docs/02 §13；docs/08 §2、§3、§7.2、§9）：事件 → 本地待办 → 游标推进 →
+ * 下载校验 → 原子落盘 → Source + Digest 两篇笔记 → commit 标记 → 回执 → 清理。
+ *
  * 本地状态：发现（pending）→ downloading → verified → committed → ack_pending → synced。
+ *
+ * 多笔记提交（docs/08 §9）：一个 Bundle 默认产出 Source 与 Digest 两篇，
+ * 每篇独立哈希与冲突检测；任一失败不标记已全部完成，下次同步续做。
  */
 
-import { assertSafeRelativePath, bundleDirName, joinUnder, sourceNotePath } from "../vault/paths";
 import {
-  GEN_END,
-  GEN_START,
-  extractGenerated,
+  assertSafeRelativePath,
+  bundleDirName,
+  digestNotePath,
+  joinUnder,
+  sourceAssetsDir,
+  sourceNotePath,
+} from "../vault/paths";
+import {
+  CLOUD_DIGEST_END,
+  CLOUD_DIGEST_START,
+  LOCAL_ORGANIZE_END,
+  LOCAL_ORGANIZE_START,
+  extractPartition,
   mergeKbFrontmatter,
-  renderGenerated,
+  mergeManagedTags,
+  managedTags,
+  readFrontmatterValue,
+  renderDigestNote,
   renderInboxIndex,
   renderSourceNote,
+  replacePartition,
+  rewriteCloudDigestLinks,
   sha256Hex,
 } from "../vault/template";
 import { CommitStore, Suppression } from "../vault/records";
 import type { VaultFs } from "../vault/vaultfs";
 import type { KbClient } from "../api";
 import { ApiError } from "../api";
-import type { EngineStatus, KbSettings, PendingEntry } from "../types";
+import type {
+  CommitNoteRecord,
+  CommitRecord,
+  EngineStatus,
+  KbManifest,
+  KbSettings,
+  PendingEntry,
+} from "../types";
 
 export interface SyncState {
   cursor: number;
@@ -37,6 +62,8 @@ export interface EngineDeps {
   saveState: (s: SyncState) => Promise<void>;
   onStatus: (s: EngineStatus) => void;
   log: (msg: string) => void;
+  /** 新 Digest 入库后自动准备整理候选（docs/08 §8.1）；默认不启用。 */
+  onDigestWritten?: (itemId: string, digestPath: string) => Promise<void>;
 }
 
 const SUPPORTED_SCHEMA = "1.0";
@@ -56,6 +83,15 @@ function backoffMs(attempts: number): number {
 async function sha256HexOfBinary(data: ArrayBuffer): Promise<string> {
   const buf = await crypto.subtle.digest("SHA-256", new Uint8Array(data));
   return Array.from(new Uint8Array(buf), (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** 笔记写入结果：每篇独立记录状态，失败不影响另一篇的已写入事实。 */
+interface NoteWriteResult {
+  role: string;
+  note_path: string;
+  managed_digest: string | null;
+  state: string;
+  conflicts: string[];
 }
 
 export class SyncEngine {
@@ -139,7 +175,6 @@ export class SyncEngine {
         res = await client.listEvents(cursor);
       } catch (err) {
         if (err instanceof ApiError && (err.code === "CURSOR_EXPIRED" || err.status === 410)) {
-          // 游标过期：对账本地 commit 后重置游标重新拉取
           this.deps.log("游标过期，重置为 0 重新对账");
           cursor = 0;
           state.cursor = 0;
@@ -231,7 +266,9 @@ export class SyncEngine {
       if (!latest.ack_sent) await this.ackRecord(client, commits, latest);
       return; // 已提交更新或相同版本：跳过旧快照（docs/02 §13.1）
     }
-    if (latest && !(await fs.exists(latest.note_path))) {
+    // 只有 Source 笔记被删除才算用户主动删除；Digest 缺失可重建
+    const sourceNote = latest ? CommitStore.noteState(latest, "source") : null;
+    if (sourceNote && !(await fs.exists(sourceNote.note_path))) {
       await suppression.suppress(entry.item_id, "用户删除了 Source 笔记");
       return;
     }
@@ -267,11 +304,11 @@ export class SyncEngine {
       }
     }
 
-    // 3. 移入最终不可变目录
-    const finalBase = `${s.assetsFolder}/KnowledgeInbox/${entry.item_id}/${bundleDirName(entry.revision)}`;
+    // 3. 移入最终不可变目录：01 Sources/_assets/<item_id>/source-000001/（docs/08 §2）
+    const assetsBase = sourceAssetsDir(s.sourcesFolder, entry.item_id, manifest.source_revision);
     for (let i = 0; i < manifest.files.length; i++) {
       const stagePath = joinUnder(stagingBase, relPaths[i]);
-      const finalPath = joinUnder(finalBase, relPaths[i]);
+      const finalPath = joinUnder(assetsBase, relPaths[i]);
       if (await fs.exists(finalPath)) {
         await fs.remove(stagePath);
         continue;
@@ -280,96 +317,197 @@ export class SyncEngine {
     }
     for (const leftover of await fs.list(stagingBase)) await fs.remove(leftover);
 
-    // 4. 渲染生成区
-    const assetsBase = finalBase;
-    let previewText: string | null = null;
+    // 4. 读取已下载内容
+    let normalizedText: string | null = null;
+    const normalizedPath = joinUnder(assetsBase, "normalized.md");
+    if (await fs.exists(normalizedPath)) normalizedText = await fs.read(normalizedPath);
+
+    let cloudMd: string | null = null;
     if (manifest.processing.result_file_id) {
-      const previewPath = joinUnder(finalBase, "preview.md");
-      if (await fs.exists(previewPath)) previewText = await fs.read(previewPath);
-    }
-    const generatedMd = renderGenerated(manifest, previewText, assetsBase);
-    const generatedDigest = await sha256Hex(generatedMd);
-
-    // 5. 创建/安全更新 Source 笔记
-    let userNote: string | null = null;
-    const capturePath = joinUnder(finalBase, "capture.json");
-    if (await fs.exists(capturePath)) {
-      try {
-        // 服务端 capture.json 结构为 {"capture": <原始 payload>, "received_at": ...}（pipeline.py §接收）
-        const cap = JSON.parse(await fs.read(capturePath)) as {
-          user_note?: string | null;
-          capture?: { user_note?: string | null } | null;
-        };
-        userNote = cap.capture?.user_note ?? cap.user_note ?? null;
-      } catch { userNote = null; }
-    }
-
-    const notePath = latest?.note_path
-      ?? sourceNotePath(s.sourcesFolder, manifest.source.captured_at, manifest.source.title, entry.item_id);
-    const status = manifest.processing.state;
-    let conflicts = latest?.conflicts ?? [];
-    let digestForRecord: string | null = generatedDigest;
-
-    if (await fs.exists(notePath)) {
-      let conflicted = false;
-      // processNote 回调是同步的，无法在回调内做异步哈希：先读一遍算生成区摘要，
-      // 回调内用原文比对确认期间无外部修改（真机验收 A11 发现：原文与哈希直接比较恒不相等，导致每次更新都误判冲突）。
-      const preText = await fs.read(notePath);
-      const preInner = extractGenerated(preText);
-      const preDigest = preInner === null ? null : await sha256Hex(preInner);
-      await fs.processNote(notePath, (current) => {
-        const innerNow = extractGenerated(current);
-        const userEdited = innerNow === null
-          || (latest?.generated_digest != null && preDigest !== latest.generated_digest)
-          || (preInner !== null && innerNow !== preInner);
-        if (userEdited) {
-          // 用户改过生成区：新结果进冲突文件，笔记不动生成区（docs/02 §8.2 / A12）
-          conflicted = true;
-          return mergeFrontmatterOnly(current, manifest, "merge_needed");
-        }
-        return mergeNoteContent(current, manifest, generatedMd, status);
-      });
-      if (conflicted) {
-        const conflictPath = `${s.systemFolder}/KnowledgeInbox/conflicts/${entry.item_id}--${String(entry.revision).padStart(6, "0")}.md`;
-        await fs.write(conflictPath, [
-          `# 待合并：${manifest.source.title ?? entry.item_id}（bundle r${entry.revision}）`,
-          "",
-          "新版本 AI 结果如下；请手动合并到 Source 笔记的生成区，然后可删除本文件。",
-          "",
-          GEN_START,
-          generatedMd,
-          GEN_END,
-          "",
-        ].join("\n"));
-        conflicts = [...conflicts, conflictPath];
-        digestForRecord = latest?.generated_digest ?? null;
+      const previewPath = joinUnder(assetsBase, "preview.md");
+      if (await fs.exists(previewPath)) {
+        cloudMd = rewriteCloudDigestLinks(await fs.read(previewPath), assetsBase);
       }
-    } else {
-      await fs.write(notePath, renderSourceNote(manifest, generatedMd, userNote, assetsBase, status));
     }
 
-    // 6. 写入本地 commit 标记（可恢复完成点）
-    const record = {
+    const status = manifest.processing.state;
+    const sourcePath = (sourceNote?.note_path)
+      ?? sourceNotePath(s.sourcesFolder, manifest.source.captured_at, manifest.source.title, entry.item_id);
+    const digestPath = digestNotePath(s.digestsFolder, manifest.source.captured_at, manifest.source.title, entry.item_id);
+    const sourceLink = `[[${sourcePath}|原始资料]]`;
+    const digestLink = `[[${digestPath}|查看提炼]]`;
+
+    // 5. 写 Source 与 Digest：每篇独立冲突检测（docs/08 §3、§7.2）
+    const sourceResult = await this.writeSourceNote(manifest, sourcePath, assetsBase, normalizedText, digestLink, status, latest);
+    const digestResult = await this.writeDigestNote(manifest, digestPath, sourceLink, cloudMd, status, latest);
+
+    // 6. 写入本地 commit 标记（可恢复完成点）：失败不标记已全部完成
+    const notes: CommitNoteRecord[] = [sourceResult, digestResult];
+    const allWritten = notes.every((n) => n.state === "written");
+    const record: CommitRecord = {
       item_id: entry.item_id,
       bundle_revision: entry.revision,
       manifest_sha256: manifestSha,
-      note_path: notePath,
-      generated_digest: digestForRecord,
+      layout_version: 2,
+      note_path: sourceResult.note_path,
+      generated_digest: sourceResult.managed_digest,
+      notes,
       local_commit_id: crypto.randomUUID(),
       committed_at: new Date().toISOString(),
       ack_sent: false,
-      conflicts,
+      conflicts: notes.flatMap((n) => n.conflicts),
     };
     await commits.put(record);
 
-    // 7. 回执；成功后才算 synced
-    await this.ackRecord(client, commits, record);
+    // 7. 回执；成功后才算 synced。未全部写入时不发回执，下次续做。
+    if (allWritten) {
+      await this.ackRecord(client, commits, record);
+    } else {
+      this.deps.log(`条目 ${entry.item_id} 部分笔记未写入，保留待办下次重试`);
+    }
 
-    // 8. 重建 00 Inbox 索引
+    // 8. 重建 00 Inbox 索引；新 Digest 入库后按开关准备整理候选
     await this.rebuildInboxIndex(s, commits);
+    if (digestResult.state === "written" && this.deps.onDigestWritten) {
+      await this.deps.onDigestWritten(entry.item_id, digestResult.note_path).catch((err) => {
+        this.deps.log(`准备整理候选失败：${err instanceof Error ? err.message : String(err)}`);
+      });
+    }
   }
 
-  private async ackRecord(client: KbClient, commits: CommitStore, record: Awaited<ReturnType<CommitStore["get"]>> & object): Promise<void> {
+  /** Source 笔记：正文只放原始证据；机器可写部分只有 frontmatter 与固定链接。 */
+  private async writeSourceNote(
+    manifest: KbManifest,
+    notePath: string,
+    assetsBase: string,
+    normalizedText: string | null,
+    digestLink: string,
+    status: string,
+    latest: CommitRecord | null,
+  ): Promise<NoteWriteResult> {
+    const fs = this.deps.fs;
+    const s = this.deps.settings();
+    const previous = latest ? CommitStore.noteState(latest, "source") : null;
+    if (!(await fs.exists(notePath))) {
+      const body = renderSourceNote(manifest, { assetsBase, digestLink, status, normalizedText });
+      await fs.write(notePath, body);
+      return {
+        role: "source", note_path: notePath,
+        managed_digest: await sha256Hex(body), state: "written", conflicts: [],
+      };
+    }
+    // 已存在：只更新 frontmatter 的 kb_* 行与系统标签，正文（用户可能编辑过）不动
+    const current = await fs.read(notePath);
+    const withFm = mergeKbFrontmatter(current, [
+      `kb_id: "src-${manifest.item_id}"`,
+      `kb_item_id: "${manifest.item_id}"`,
+      "kb_type: source",
+      `kb_bundle_revision: ${manifest.bundle_revision}`,
+      `kb_source_revision: ${manifest.source_revision}`,
+      `kb_source_type: "${manifest.source.platform}"`,
+      `kb_status: "${status}"`,
+      `kb_coverage: "${manifest.source.coverage}"`,
+      `kb_captured_at: ${manifest.source.captured_at ? `"${manifest.source.captured_at}"` : ""}`.trimEnd(),
+      `kb_source_url: ${manifest.source.original_url ? `"${manifest.source.original_url}"` : ""}`.trimEnd(),
+    ].filter((l) => !l.endsWith(":")));
+    const updated = mergeManagedTags(withFm, managedTags("source", status));
+    if (updated !== current) await fs.write(notePath, updated);
+    return {
+      role: "source", note_path: notePath,
+      managed_digest: previous?.managed_digest ?? null, state: "written", conflicts: [],
+    };
+  }
+
+  /** Digest 笔记：只替换 kb:cloud-digest 区，本地整理区与人工区保留（docs/08 §3.2）。 */
+  private async writeDigestNote(
+    manifest: KbManifest,
+    notePath: string,
+    sourceLink: string,
+    cloudMd: string | null,
+    status: string,
+    latest: CommitRecord | null,
+  ): Promise<NoteWriteResult> {
+    const fs = this.deps.fs;
+    const s = this.deps.settings();
+    const previous = latest ? CommitStore.noteState(latest, "digest") : null;
+
+    if (!(await fs.exists(notePath))) {
+      const body = renderDigestNote(manifest, { sourceLink, cloudMd, status });
+      await fs.write(notePath, body);
+      const cloudInner = extractPartition(body, CLOUD_DIGEST_START, CLOUD_DIGEST_END) ?? "";
+      return {
+        role: "digest", note_path: notePath,
+        managed_digest: await sha256Hex(cloudInner), state: "written", conflicts: [],
+      };
+    }
+
+    const current = await fs.read(notePath);
+    const currentInner = extractPartition(current, CLOUD_DIGEST_START, CLOUD_DIGEST_END);
+    if (currentInner === null) {
+      // 没有分区标记：可能是旧库笔记或用户重写过结构；不猜测，交冲突文件处理
+      const conflictPath = `${s.systemFolder}/KnowledgeInbox/conflicts/${manifest.item_id}--${String(manifest.bundle_revision).padStart(6, "0")}--digest.md`;
+      await fs.write(conflictPath, [
+        `# 待合并：${manifest.source.title ?? manifest.item_id}（Digest，bundle r${manifest.bundle_revision}）`,
+        "",
+        "该 Digest 笔记缺少 kb:cloud-digest 分区标记（可能被重写过结构）；请手动加入标记。",
+        "",
+        CLOUD_DIGEST_START,
+        cloudMd ?? "",
+        CLOUD_DIGEST_END,
+        "",
+      ].join("\n"));
+      return {
+        role: "digest", note_path: notePath,
+        managed_digest: previous?.managed_digest ?? null, state: "merge_needed", conflicts: [conflictPath],
+      };
+    }
+
+    // 用户改过云端区：不静默覆盖，新结果进冲突文件（docs/08 §3.2）
+    const currentHash = await sha256Hex(currentInner);
+    const userEdited = previous?.managed_digest != null && currentHash !== previous.managed_digest;
+    if (userEdited) {
+      const conflictPath = `${s.systemFolder}/KnowledgeInbox/conflicts/${manifest.item_id}--${String(manifest.bundle_revision).padStart(6, "0")}--digest.md`;
+      await fs.write(conflictPath, [
+        `# 待合并：${manifest.source.title ?? manifest.item_id}（Digest，bundle r${manifest.bundle_revision}）`,
+        "",
+        "检测到你在云端提炼区有编辑。新版本结果如下，请手动合并；本插件不会覆盖你的修改。",
+        "",
+        CLOUD_DIGEST_START,
+        cloudMd ?? "",
+        CLOUD_DIGEST_END,
+        "",
+      ].join("\n"));
+      return {
+        role: "digest", note_path: notePath,
+        managed_digest: previous?.managed_digest ?? null,
+        state: "merge_needed", conflicts: [conflictPath],
+      };
+    }
+
+    // 更新 frontmatter 与云端区，保留本地整理区与人工区
+    const newInner = cloudMd?.trim() || currentInner;
+    const withFm = mergeKbFrontmatter(current, [
+      `kb_id: "dig-${manifest.item_id}"`,
+      `kb_item_id: "${manifest.item_id}"`,
+      "kb_type: digest",
+      `kb_bundle_revision: ${manifest.bundle_revision}`,
+      `kb_source_revision: ${manifest.source_revision}`,
+      `kb_digest_revision: ${manifest.bundle_revision}`,
+      `kb_status: "${status}"`,
+      `kb_source_url: ${manifest.source.original_url ? `"${manifest.source.original_url}"` : ""}`.trimEnd(),
+    ].filter((l) => !l.endsWith(":")));
+    const rebuilt = replacePartition(withFm, CLOUD_DIGEST_START, CLOUD_DIGEST_END, newInner);
+    // `status/*` 由 kb_promotion 派生（云端更新不改本地整理结论，docs/08 §5）
+    const promotion = readFrontmatterValue(current, "kb_promotion") ?? "not_evaluated";
+    const tagged = mergeManagedTags(rebuilt, managedTags("digest", promotion));
+    await fs.write(notePath, tagged);
+    return {
+      role: "digest", note_path: notePath,
+      managed_digest: await sha256Hex(newInner), state: "written", conflicts: [],
+    };
+  }
+
+  private async ackRecord(client: KbClient, commits: CommitStore, record: CommitRecord): Promise<void> {
     if (!record || record.ack_sent) return;
     try {
       await client.sendReceipt(record.item_id, record.bundle_revision, record.manifest_sha256, record.local_commit_id);
@@ -394,11 +532,18 @@ export class SyncEngine {
     const records = await commits.all();
     const entries = [] as Array<{ notePath: string; title: string; status: string; capturedAt: string | null }>;
     for (const r of records) {
-      const base = r.note_path.split("/").pop() ?? r.note_path;
-      const title = base.replace(/\.md$/, "").split("--")[0];
-      entries.push({ notePath: r.note_path, title, status: r.conflicts.length > 0 ? "merge_needed" : "synced", capturedAt: null });
+      for (const note of r.notes) {
+        if (note.role !== "source") continue;
+        const base = note.note_path.split("/").pop() ?? note.note_path;
+        const title = base.replace(/\.md$/, "").split("--")[0];
+        entries.push({
+          notePath: note.note_path, title,
+          status: note.state === "merge_needed" ? "merge_needed" : "synced",
+          capturedAt: null,
+        });
+      }
     }
-    await this.deps.fs.write(`${s.inboxFolder}/Knowledge Inbox.md`, renderInboxIndex(entries));
+    await this.deps.fs.write(`${s.inboxFolder}/待回顾.md`, renderInboxIndex(entries));
   }
 
   /** 启动恢复：补发尚未确认的回执（docs/02 §13.2 重启扫描）。 */
@@ -410,6 +555,8 @@ export class SyncEngine {
     let n = 0;
     for (const record of await commits.all()) {
       if (record.ack_sent) continue;
+      // 部分笔记未写入时不补发回执：下次同步会续做（docs/08 §7.2 第 6 条）
+      if (record.notes.some((x) => x.state !== "written")) continue;
       try {
         await this.ackRecord(client, commits, record);
         n += 1;
@@ -424,16 +571,4 @@ export class SyncEngine {
     }
     return n;
   }
-}
-
-function mergeFrontmatterOnly(current: string, manifest: import("../types").KbManifest, status: string): string {
-  return mergeKbFrontmatter(current, manifest, status);
-}
-
-function mergeNoteContent(current: string, manifest: import("../types").KbManifest, generatedMd: string, status: string): string {
-  const withFm = mergeKbFrontmatter(current, manifest, status);
-  const start = withFm.indexOf(GEN_START);
-  const end = withFm.indexOf(GEN_END);
-  if (start === -1 || end === -1) return withFm;
-  return `${withFm.slice(0, start + GEN_START.length)}\n${generatedMd}\n${withFm.slice(end)}`;
 }

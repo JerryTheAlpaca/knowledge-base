@@ -1,6 +1,9 @@
 /**
- * 路径安全与文件命名（docs/02 §12.3、验收 A16）。
+ * 路径安全、三层目录与文件命名（docs/02 §12.3；docs/08 §2、§9）。
  * 纯逻辑模块：不依赖 obsidian，可独立测试。
+ *
+ * 三层：01 Sources 保存原始证据，02 Digests 提炼单个来源，
+ * 03 Knowledge 按主题持续维护；附件放 Sources 下以便一起归档。
  */
 
 const RESERVED_NAMES = new Set(
@@ -70,12 +73,37 @@ function datePart(iso: string | null | undefined): string {
   return `${now.getFullYear()}-${mm}-${dd}`;
 }
 
-/** Source 笔记路径：10 Sources/YYYY/MM/YYYY-MM-DD 标题--<item_id>.md */
-export function sourceNotePath(sourcesFolder: string, capturedAt: string | null | undefined, title: string | null, itemId: string): string {
-  const d = datePart(capturedAt);
+function dateFolder(folder: string, iso: string | null | undefined): { dir: string; date: string } {
+  const d = datePart(iso);
   const [y, m] = d.split("-");
-  const name = `${d} ${sanitizeTitle(title ?? "")}--${itemId}`;
-  return `${sourcesFolder}/${y}/${m}/${name}.md`.replace(/\\/g, "/");
+  return { dir: `${folder}/${y}/${m}`, date: d };
+}
+
+/** Source 笔记路径：01 Sources/YYYY/MM/YYYY-MM-DD 标题--<item_id>.md（docs/08 §2）。 */
+export function sourceNotePath(sourcesFolder: string, capturedAt: string | null | undefined, title: string | null, itemId: string): string {
+  const { dir, date } = dateFolder(sourcesFolder, capturedAt);
+  const name = `${date} ${sanitizeTitle(title ?? "")}--${itemId}`;
+  return `${dir}/${name}.md`.replace(/\\/g, "/");
+}
+
+/** Digest 笔记路径：02 Digests/YYYY/MM/YYYY-MM-DD 标题--<item_id>.md（docs/08 §2）。
+ *
+ * 与 Source 同日期同标题，仅目录不同；`kb_id` 为 dig-<item_id> 以区分。
+ */
+export function digestNotePath(digestsFolder: string, capturedAt: string | null | undefined, title: string | null, itemId: string): string {
+  const { dir, date } = dateFolder(digestsFolder, capturedAt);
+  const name = `${date} ${sanitizeTitle(title ?? "")}--${itemId}`;
+  return `${dir}/${name}.md`.replace(/\\/g, "/");
+}
+
+/** Source 附件目录：01 Sources/_assets/<item_id>/source-000001/（docs/08 §2）。 */
+export function sourceAssetsDir(sourcesFolder: string, itemId: string, sourceRevision: number): string {
+  return `${sourcesFolder}/_assets/${itemId}/source-${String(sourceRevision).padStart(6, "0")}`;
+}
+
+/** Knowledge 笔记路径：03 Knowledge/<主题名>.md，用稳定主题名，不加日期（docs/08 §2）。 */
+export function knowledgeNotePath(knowledgeFolder: string, title: string): string {
+  return `${knowledgeFolder}/${sanitizeTitle(title)}.md`.replace(/\\/g, "/");
 }
 
 /** bundle 目录名：bundle-000003 */
@@ -86,4 +114,63 @@ export function bundleDirName(revision: number): string {
 /** commit 标记文件名：<item_id>--000003.json */
 export function commitMarkerName(itemId: string, revision: number): string {
   return `${itemId}--${String(revision).padStart(6, "0")}.json`;
+}
+
+/** 历史快照目录：99 System/KnowledgeInbox/revisions/<kind>/<id>/（docs/08 §2、§6.1）。 */
+export function revisionDir(systemFolder: string, kind: "digests" | "knowledge", id: string): string {
+  return `${systemFolder}/KnowledgeInbox/revisions/${kind}/${sanitizeTitle(id, 80)}`;
+}
+
+/** 快照文件名：r000003.md（零填充，便于排序与引用）。 */
+export function revisionFileName(revision: number): string {
+  return `r${String(revision).padStart(6, "0")}.md`;
+}
+
+/** 迁移清单目录：99 System/KnowledgeInbox/migrations/（docs/08 §2、§10）。 */
+export function migrationDir(systemFolder: string): string {
+  return `${systemFolder}/KnowledgeInbox/migrations`;
+}
+
+/** 整理任务目录：99 System/KnowledgeInbox/organize/（docs/08 §8.1）。 */
+export function organizeDir(systemFolder: string): string {
+  return `${systemFolder}/KnowledgeInbox/organize`;
+}
+
+/** 候选目录：99 System/KnowledgeInbox/proposals/（docs/08 §2）。 */
+export function proposalsDir(systemFolder: string): string {
+  return `${systemFolder}/KnowledgeInbox/proposals`;
+}
+
+/** 本地知识索引：99 System/KnowledgeInbox/knowledge-index.json（docs/08 §2、§5）。 */
+export function knowledgeIndexPath(systemFolder: string): string {
+  return `${systemFolder}/KnowledgeInbox/knowledge-index.json`;
+}
+
+/** 生成稳定的 Knowledge `kb_id`：kn-<slug>；含非 ASCII 时附稳定短哈希。
+ *
+ * 纯 ASCII 标题直接转 slug（`Agent Operations` → `kn-agent-operations`）；
+ * 含中文等非 ASCII 字符时附上标题哈希，避免「Agent 操作技巧」与
+ * 「Agent 上下文管理」都退化成 `kn-agent` 而撞同一个 ID（docs/08 §2）。
+ */
+export function knowledgeIdFromTitle(title: string): string {
+  const ascii = title.normalize("NFKD").replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  if (ascii && !/[^\x00-\x7F]/.test(title)) return `kn-${ascii.slice(0, 40)}`;
+  // 非 ASCII：用稳定短哈希，保证同名得同 ID、不同名不撞
+  let h = 0x811c9dc5;
+  for (let i = 0; i < title.length; i++) {
+    h ^= title.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  const suffix = h.toString(16).padStart(8, "0");
+  return ascii ? `kn-${ascii.slice(0, 24)}-${suffix}` : `kn-zh-${suffix}`;
+}
+
+/** 生成稳定的 Source/Digest `kb_id`（docs/08 §3.1、§3.2）。 */
+export function sourceKbId(itemId: string): string {
+  return `src-${itemId}`;
+}
+
+export function digestKbId(itemId: string): string {
+  return `dig-${itemId}`;
 }
