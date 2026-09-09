@@ -1767,7 +1767,8 @@ function saveDraftSoon() {
   try {
     const me = await api("/v1/auth/me");
     showApp(me);
-    switchTab("inbox");
+    const tabParam = new URLSearchParams(location.search).get("tab");
+    switchTab(tabParam === "settings" ? "settings" : "inbox");
     restoreDraft();
     loadItems(true);
     checkModelKey();

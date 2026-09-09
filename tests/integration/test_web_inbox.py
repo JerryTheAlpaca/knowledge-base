@@ -82,7 +82,10 @@ def test_central_session_maps_local_user(wc, central, db):
     assert me["central_username"] == "老账号"
     assert me["auth_method"] == "central_session"
     assert me["is_admin"] is True  # role=admin（管理员入口依据）
-    assert me["admin_url"] == "https://auth.example.com/admin/invitations"
+    assert me["admin_url"] == (
+        "https://auth.example.com/admin/invitations"
+        "?return_to=http%3A%2F%2Ftestserver%2Finbox%3Ftab%3Dsettings"
+    )
 
     from kbserver.models import User
 
