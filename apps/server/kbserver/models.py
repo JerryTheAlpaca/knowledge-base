@@ -15,6 +15,7 @@ from sqlalchemy import (
     JSON,
     Boolean,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -380,3 +381,41 @@ class SuppressedItem(Base):
     item_id: Mapped[str] = mapped_column(ForeignKey("items.id"), index=True)
     device_id: Mapped[str] = mapped_column(ForeignKey("devices.id"))
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+
+
+class AsrRun(Base, TimestampMixin):
+    """本地 ASR 任务级检查点（docs/11 §6.1）。
+
+    - 唯一键 (user,item,revision,recipe)：切换模型产生新 recipe/run，
+      两种模型的输出不混作同一次识别。
+    - next_chunk_index 只在逐段结果原子落盘后的短事务中推进；恢复时校验
+      文件摘要，仅重做未提交的段。
+    - 处理清单一经提交（manifest_json）不可变。
+    """
+
+    __tablename__ = "asr_runs"
+    __table_args__ = (
+        UniqueConstraint("user_id", "item_id", "source_revision", "recipe_hash", name="uq_asr_run"),
+        Index("ix_asr_runs_user_item", "user_id", "item_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    item_id: Mapped[str] = mapped_column(ForeignKey("items.id"), index=True)
+    source_revision: Mapped[int] = mapped_column(Integer)
+    recipe_hash: Mapped[str] = mapped_column(String(64))
+    model_alias: Mapped[str] = mapped_column(String(40))   # dolphin | sense_voice
+    model_id: Mapped[str] = mapped_column(String(120))     # 完整模型制品 ID
+    state: Mapped[str] = mapped_column(String(20), default="queued")
+    # queued|preparing|transcribing|paused|succeeded|failed|cancelled
+    pause_reason: Mapped[str] = mapped_column(String(40), default="")
+    # idle_wait|resource_busy|disabled|metrics_unavailable|""
+    next_chunk_index: Mapped[int] = mapped_column(Integer, default=0)
+    chunk_count: Mapped[int] = mapped_column(Integer, default=0)
+    failed_count: Mapped[int] = mapped_column(Integer, default=0)
+    processed_seconds: Mapped[float] = mapped_column(Float, default=0.0)  # 已处理音频秒（累计）
+    requested_by: Mapped[str] = mapped_column(String(20), default="manual")  # auto|manual
+    work_dir: Mapped[str] = mapped_column(String(300), default="")  # 相对 tmp 的受控目录
+    manifest_json: Mapped[dict] = mapped_column(JSON, default=dict)  # 已提交的 PCM 清单摘要
+    last_error: Mapped[str] = mapped_column(Text, default="")
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)

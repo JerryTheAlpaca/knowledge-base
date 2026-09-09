@@ -497,6 +497,11 @@
         <button id="biliCheck">检测登录态</button>
         <button class="danger" id="biliRevoke">撤销</button>
       </div>
+      <div class="row" id="asrAutoRow" style="margin-top:14px; align-items:flex-start" hidden>
+        <input type="checkbox" id="asrAuto" style="margin-top:3px">
+        <span class="small" style="flex:1"><label for="asrAuto" style="display:inline">无字幕时自动转写</label><br>
+        <span class="muted">B 站确认没有字幕轨的条目，会在服务器空闲时用本地语音识别转写（机器转写、未经人工校对，耗时较长，不占用你的电脑）。</span></span>
+      </div>
     </div>
 
     <details class="disclosure" id="advOcr" hidden>
@@ -1329,6 +1334,13 @@ function renderManagePane(d) {
     '<summary>导出文件</summary><div class="disclosure-body">' +
     '<div id="exportBody" class="filelist"><span class="muted">展开时加载…</span></div>' +
     "</div></details>");
+  if (it.platform === "bilibili") {
+    rows.push('<details class="disclosure" id="asrDisc"' +
+      ' ontoggle="if(this.open&amp;&amp;!this.dataset.loaded){this.dataset.loaded=1;loadAsrStatus();}">' +
+      '<summary>音频转写（视频没有字幕轨时）</summary>' +
+      '<div class="disclosure-body" id="asrBody"><span class="muted">展开时加载…</span></div>' +
+      "</details>");
+  }
   rows.push('<details class="disclosure"><summary>技术细节</summary><div class="disclosure-body">' +
     renderTechRows(d) + "</div></details>");
   rows.push('<details class="disclosure danger-disc"><summary>危险操作</summary><div class="disclosure-body">' +
@@ -1408,6 +1420,60 @@ async function doRefetch() {
     refreshItems();
   } catch (e) { handleErr(e, "重新提取失败："); }
 }
+
+// ---- 音频转写（docs/11 §9.2：状态由持久化记录产生；服务器空闲时执行） ----
+async function loadAsrStatus() {
+  if (!detailId) return;
+  const body = $("asrBody");
+  if (!body) return;
+  let st;
+  try { st = await api("/v1/items/" + encodeURIComponent(detailId) + "/asr"); }
+  catch (e) { body.innerHTML = '<span class="muted">状态加载失败。</span>'; return; }
+  const stateText = {
+    queued: "排队等待", preparing: "正在读取音频", transcribing: "正在转写",
+    paused: "已暂停（服务器空闲后自动继续）", succeeded: "转写完成", failed: "转写失败",
+    cancelled: "已取消",
+  };
+  let line;
+  if (!st.exists) {
+    line = '<p class="small" style="margin:0 0 10px">这个视频在 B 站没有可下载的字幕轨时，' +
+      "可以让服务器在空闲时读取音频并本地转写（机器转写、未经人工校对，通常较慢）。</p>";
+  } else {
+    const progress = st.chunk_count
+      ? "，已完成 " + st.done_chunks + "/" + st.chunk_count + " 段" : "";
+    line = '<div class="kv"><b>状态</b><span>' + esc(stateText[st.state] || st.state) +
+      esc(progress) + "</span></div>" +
+      '<div class="kv"><b>模型</b><span class="small">' + esc(st.model_id || "") + "</span></div>" +
+      (st.last_error ? '<div class="errnote">' + esc(st.last_error) + "</div>" : "") +
+      (st.state === "succeeded" ? "" : '<p class="small muted" style="margin:4px 0 10px">' +
+        "排队或暂停时可以关闭电脑，服务器会在空闲时继续。</p>");
+  }
+  const busy = st.exists && ["queued", "preparing", "transcribing", "paused"].includes(st.state);
+  body.innerHTML = line +
+    '<div class="row">' +
+    '<button class="primary" onclick="doAsrTrigger()">' + (st.exists ? "重新转写" : "尝试音频转写") + "</button>" +
+    (busy ? '<button onclick="doAsrCancel()">取消转写</button>' : "") +
+    "</div>";
+}
+async function doAsrTrigger() {
+  if (!detailId) return;
+  try {
+    await api("/v1/items/" + encodeURIComponent(detailId) + "/asr", { method: "POST", body: {} });
+    toast("已加入转写队列（服务器空闲时执行）", { type: "ok" });
+    $("asrBody") && ($("asrBody").dataset.loaded = "");
+    loadAsrStatus();
+    refreshItems();
+  } catch (e) { handleErr(e, "转写请求失败："); }
+}
+async function doAsrCancel() {
+  if (!detailId) return;
+  try {
+    await api("/v1/items/" + encodeURIComponent(detailId) + "/asr/cancel", { method: "POST", body: {} });
+    toast("已请求取消转写", { type: "ok" });
+    loadAsrStatus();
+    refreshItems();
+  } catch (e) { handleErr(e, "取消失败："); }
+}
 async function doDelete() {
   if (!detailId) return;
   const ok = await confirmModal({
@@ -1472,8 +1538,9 @@ const VERIFY_LABELS = {
 
 async function loadSettings() {
   try {
-    const [profiles, settings, bili] = await Promise.all([
+    const [profiles, settings, bili, asrSettings] = await Promise.all([
       api("/v1/provider-profiles"), api("/v1/settings"), api("/v1/bilibili-session"),
+      api("/v1/asr-settings").catch(() => null),
     ]);
     if (meInfo) {
       $("accountLine").innerHTML = esc(meInfo.central_username || meInfo.display_name || "") +
@@ -1488,7 +1555,24 @@ async function loadSettings() {
         esc(p.model) + "</option>").join("");
     renderProfileCards(profiles);
     renderBili(bili);
+    renderAsrSettings(asrSettings);
   } catch (e) { handleErr(e, "设置加载失败："); }
+}
+
+// ASR 偏好（docs/11 §9.2）：部署开关关闭时隐藏入口，不提供打开部署开关的途径
+function renderAsrSettings(asr) {
+  const row = $("asrAutoRow");
+  if (!asr || !asr.deployment_enabled) { row.hidden = true; return; }
+  row.hidden = false;
+  const cb = $("asrAuto");
+  cb.checked = !!asr.auto_when_no_track;
+  cb.disabled = false;
+  cb.onchange = async () => {
+    try {
+      await api("/v1/asr-settings", { method: "PUT", body: { auto_when_no_track: cb.checked } });
+      toast(cb.checked ? "已开启：无字幕条目将自动排队转写" : "已关闭自动转写", { type: "ok" });
+    } catch (e) { handleErr(e, "保存失败："); cb.checked = !cb.checked; }
+  };
 }
 
 // 模型卡只含 LLM（S7：删 kind 徽章与版本号）；vision_ocr 存量进「高级」折叠区只读管理

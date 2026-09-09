@@ -1,10 +1,13 @@
-"""独立 Worker：持久化任务调度（docs/02 §7.3、§8.1）。
+"""独立 Worker：持久化任务调度（docs/02 §7.3、§8.1；docs/11 §6 ASR 接入）。
 
 - BEGIN IMMEDIATE 领取到期任务；随机 lease_token、120s 租约；完成只允许当前租约提交。
-- 启动恢复：过期 running 租约回到 queued。
+- 领取按 stage 过滤：普通任务（extract/enrich）优先；ASR 片段仅在整机空闲时领取。
+- 启动恢复：过期 running 租约回到 queued；主循环周期恢复过期租约。
 - extract：字幕文件上传或 B 站链接走字幕适配器，普通网页/公众号链接走
   正文适配器（M4）；有正文 → 生成 normalized.md + segments.json 并发布
   新 Bundle，随后入 enrich；其余只有链接或附件 → needs_input，绝不伪造正文。
+  B 站确认无字幕轨且开关开启 → 自动转入本地 ASR 路径（docs/11）。
+- asr_prepare / asr_transcribe：workers/asr.py 执行（空闲准入、检查点、逐段转写）。
 - enrich：由 workers/enrich.py 执行（预算预留、模型调用、校验、发布成品 Bundle）。
 """
 from __future__ import annotations
@@ -27,6 +30,7 @@ from ..extractors import bilibili as bili
 from ..extractors import subtitles as subfmt
 from ..extractors import webpages as webpage
 from ..models import (
+    AsrRun,
     BundleRevision,
     Capture,
     Credential,
@@ -43,32 +47,50 @@ from ..models import (
     utcnow,
 )
 from ..security import credentials as cred_crypto
+from ..security.safe_fetch import SafeFetchError, safe_fetch
 from ..storage.objects import ObjectStore
+from . import asr as asr_stage
 from . import enrich as enrich_stage
+from . import idle as idle_mod
+from .publish import bundle_files as _bundle_files
+from .publish import publish_segments_revision as _publish_segments_revision
+
+NORMAL_STAGES = ("extract", "enrich")
+ASR_STAGES = ("asr_prepare", "asr_transcribe")
 
 
-def claim_job(session_factory) -> Job | None:
-    """原子领取一个到期任务。SQLite RETURNING 保证单写者下不重复领取。"""
+def claim_job(session_factory, stages: tuple[str, ...] | None = None) -> Job | None:
+    """原子领取一个到期任务；按 stage 过滤（ASR 不得抢先普通任务导致饥饿）。
+
+    SQLite RETURNING 保证单写者下不重复领取。
+    """
     now = utcnow().replace(tzinfo=None)  # 原生 SQL 参数不经过 TypeDecorator，需去掉 tzinfo
     lease_token = secrets.token_hex(16)
     lease_until = now + timedelta(seconds=get_settings().job_lease_seconds)
+    stage_filter = ""
+    params = {"lt": lease_token, "lu": lease_until, "now": now}
+    if stages is not None:
+        names = tuple(stages)
+        stage_filter = f" AND stage IN ({','.join(f':s{i}' for i in range(len(names)))})"
+        for i, name in enumerate(names):
+            params[f"s{i}"] = name
     with session_factory() as db:
         db.execute(text("BEGIN IMMEDIATE"))
         row = db.execute(
             text(
-                """
+                f"""
                 UPDATE jobs
                 SET state='running', lease_token=:lt, lease_until=:lu, attempt=attempt+1
                 WHERE id = (
                     SELECT id FROM jobs
-                    WHERE state IN ('queued','retry_wait') AND not_before <= :now
+                    WHERE state IN ('queued','retry_wait') AND not_before <= :now{stage_filter}
                     ORDER BY not_before
                     LIMIT 1
                 )
                 RETURNING id
                 """
             ),
-            {"lt": lease_token, "lu": lease_until, "now": now},
+            params,
         ).fetchone()
         db.commit()
         if row is None:
@@ -110,11 +132,6 @@ def _latest_source(db: Session, item: Item) -> SourceRevision:
         .filter(SourceRevision.item_id == item.id, SourceRevision.revision == item.source_revision)
         .one()
     )
-
-
-def _bundle_files(db: Session, item: Item) -> list[StoredFile]:
-    rows = list(db.query(StoredFile).filter(StoredFile.item_id == item.id, StoredFile.user_id == item.user_id))
-    return pipeline.latest_files_per_path(rows)
 
 
 def run_extract(db: Session, store: ObjectStore, job: Job, item: Item) -> None:
@@ -342,7 +359,8 @@ def _extract_bilibili(db: Session, store: ObjectStore, job: Job, item: Item,
     """B 站字幕适配器路径（docs/04）。
 
     用户托管了登录态（SESSDATA）则以登录态探测；network_error/blocked 上抛
-    走任务级有限退避；其余状态进入补充材料，不伪造全文，不启动 ASR。
+    走任务级有限退避；其余状态进入补充材料，不伪造全文。
+    确认 no_track 且部署/用户开关均开启时，自动转入本地 ASR 路径（docs/11 §4）。
     """
     sessdata, sess_err = _user_sessdata(db, item.user_id)
     if sess_err:
@@ -354,6 +372,13 @@ def _extract_bilibili(db: Session, store: ObjectStore, job: Job, item: Item,
     except bili.BilibiliError as exc:
         if exc.status in ("network_error", "blocked"):
             raise  # 有限退避重试，由 run_once 顶层落到任务表
+        if exc.status == "no_track" and _auto_asr_ready(db, item.user_id):
+            # 登录错误/其余原因不自动触发；只有明确的「平台无字幕轨」才转 ASR
+            settings = get_settings()
+            asr_stage.start_asr(db, item=item, source=source,
+                                model_alias=settings.asr_model, requested_by="auto")
+            job.state = "succeeded"
+            return
         _needs_input(db, job, item, exc.message, exc.status)
         return
 
@@ -470,86 +495,6 @@ def _extract_webpage(db: Session, store: ObjectStore, job: Job, item: Item,
     )
 
 
-def _publish_segments_revision(db: Session, store: ObjectStore, job: Job, item: Item,
-                               source: SourceRevision, *, segments: list[dict],
-                               warnings: list[str], extra_files: list,
-                               meta_updates: dict,
-                               missing_materials: list[str] | None = None) -> None:
-    """适配器产出了新材料/新规范正文 → 新增不可变来源版本并发布，随后入 enrich。
-
-    旧版本不修改（docs/02 §6.1）；enrich 按 item.source_revision 校验片段（A13）。
-    重新提取时内容与缺失情况均无变化则不新增版本（docs/02 §10.1 refetch 语义）。
-    """
-    missing = missing_materials if missing_materials is not None else []
-    content_hash = pipeline.sha256_hex(
-        pipeline.canonical_json({"segments": segments, "meta_updates": meta_updates})
-    )
-    if content_hash == source.content_hash and source.metadata_json.get("missing_materials", []) == missing:
-        job.state = "succeeded"
-        bundle = None
-        if item.bundle_revision:
-            bundle = db.query(BundleRevision).filter(
-                BundleRevision.user_id == item.user_id,
-                BundleRevision.item_id == item.id,
-                BundleRevision.revision == item.bundle_revision,
-            ).one_or_none()
-        if item.pipeline_state == "failed" or (bundle is not None and bundle.processing_state != "ready"):
-            # 提取结果没变：在同一版本上重新加工（failed 重试；等待 Key/预算的会在
-            # enrich 预备阶段回到原等待状态，不产生模型调用）
-            pipeline.enqueue_stage(
-                db, user_id=item.user_id, item_id=item.id, source_revision=source.revision,
-                stage="enrich", reset_attempt=True,
-            )
-            item.pipeline_state = "queued"
-            item.state_detail = "重新提取：内容无变化，重新加工"
-        else:
-            item.pipeline_state = "ready"
-            item.state_detail = "重新提取：来源内容无变化"
-        pipeline.emit_event(db, item.user_id, item_id=item.id, bundle_revision=item.bundle_revision,
-                            event_type="refetch_unchanged", payload={"revision": source.revision})
-        return
-
-    new_revision = source.revision + 1
-    meta2 = dict(source.metadata_json)
-    meta2.update(meta_updates)
-    meta2["missing_materials"] = missing
-    source2 = SourceRevision(
-        item_id=item.id, user_id=item.user_id, revision=new_revision,
-        content_hash=content_hash,
-        metadata_json=meta2, artifacts_json={},
-    )
-    db.add(source2)
-    db.flush()
-    item.source_revision = new_revision
-
-    # extra_files 是本次最新登记（可能覆盖同 path 旧版本），按 path 去重合并
-    merged = {f.relative_path: f for f in _bundle_files(db, item)}
-    for f in extra_files:
-        merged[f.relative_path] = f
-    files = list(merged.values())
-    files.append(pipeline.register_file(
-        db, store, user_id=item.user_id, item_id=item.id,
-        data=subfmt.segments_to_normalized_md(segments).encode("utf-8"),
-        relative_path="normalized.md", role="source_material", mime="text/markdown",
-    ))
-    files.append(pipeline.register_file(
-        db, store, user_id=item.user_id, item_id=item.id,
-        data=pipeline.canonical_json({"source_revision": new_revision, "segments": segments}),
-        relative_path="segments.json", role="source_material", mime="application/json",
-    ))
-    db.flush()
-
-    pipeline.publish_bundle(
-        db, store, item=item, source=source2, files=files,
-        processing_state="original_only", pipeline_state="enriching",
-        warnings=warnings,
-    )
-    job.state = "succeeded"
-    pipeline.enqueue_stage(
-        db, user_id=item.user_id, item_id=item.id, source_revision=new_revision, stage="enrich"
-    )
-
-
 def recover_expired_leases(session_factory) -> int:
     now = utcnow()
     with session_factory() as db:
@@ -643,8 +588,25 @@ def retention_sweep(session_factory, store: ObjectStore) -> dict[str, int]:
     return stats
 
 
-def run_once(session_factory) -> bool:
-    job = claim_job(session_factory)
+def _auto_asr_ready(db: Session, user_id: str) -> bool:
+    """no_track 自动转写的前置条件：部署开关开启 + 用户开启 + 默认模型已部署。"""
+    settings = get_settings()
+    if not asr_stage.asr_enabled(settings):
+        return False
+    if not asr_stage.user_auto_enabled(db, user_id):
+        return False
+    return asr_stage.model_available(settings.asr_model)
+
+
+def run_once(session_factory, gate: idle_mod.AsrGate | None = None) -> bool:
+    # 先领取普通任务；没有普通任务且整机空闲时才领取 ASR 工作片段（docs/11 §6.2）。
+    # 按可执行 stage 过滤领取，避免抢到 ASR 任务后反复退回导致普通任务饥饿。
+    job = claim_job(session_factory, NORMAL_STAGES)
+    if job is None and gate is not None:
+        allowed, _reason = gate.can_start(
+            get_settings(), normal_busy=_normal_jobs_active(session_factory))
+        if allowed:
+            job = claim_job(session_factory, ASR_STAGES)
     if job is None:
         return False
     job_id = job.id
@@ -653,6 +615,19 @@ def run_once(session_factory) -> bool:
         try:
             enrich_stage.execute(session_factory, job_id, lease_token)
         except Exception as exc:  # noqa: BLE001 —— enrich 未分类异常按可重试处理
+            with session_factory() as db2:
+                job2 = db2.get(Job, job_id)
+                if job2 is not None and job2.lease_token == lease_token and job2.state == "running":
+                    retry_or_fail(db2, job2, f"{type(exc).__name__}: {exc}")
+                    db2.commit()
+        return True
+    if job.stage in ASR_STAGES:
+        try:
+            if job.stage == "asr_prepare":
+                asr_stage.execute_prepare(session_factory, job_id, lease_token, gate)
+            else:
+                asr_stage.execute_transcribe(session_factory, job_id, lease_token, gate)
+        except Exception as exc:  # noqa: BLE001 —— Worker 顶层边界，必须把失败落到任务表
             with session_factory() as db2:
                 job2 = db2.get(Job, job_id)
                 if job2 is not None and job2.lease_token == lease_token and job2.state == "running":
@@ -688,6 +663,18 @@ def run_once(session_factory) -> bool:
     return True
 
 
+def _normal_jobs_active(session_factory) -> bool:
+    """有普通任务正在执行或已到期待领取（ASR 空闲准入的普通任务条件）。"""
+    now = utcnow()
+    with session_factory() as db:
+        row = db.query(Job).filter(
+            Job.stage.in_(NORMAL_STAGES),
+            (Job.state == "running")
+            | (Job.state.in_(("queued", "retry_wait")) & (Job.not_before <= now)),
+        ).first()
+        return row is not None
+
+
 def main() -> None:
     settings = get_settings()
     settings.ensure_dirs()
@@ -700,12 +687,17 @@ def main() -> None:
     recovered = recover_expired_leases(session_factory)
     if recovered:
         print(f"[worker] 恢复过期租约 {recovered} 个任务")
+    if asr_stage.asr_enabled(settings):
+        print("[worker] ASR 已启用（仅服务器空闲时执行；空闲准入按宿主机整机指标）")
     print("[worker] 已启动，轮询任务队列…")
     store = ObjectStore()
+    gate = idle_mod.AsrGate()
     last_sweep = 0.0
+    last_lease_recover = 0.0
     while True:
         try:
-            if time.time() - last_sweep >= settings.cleanup_sweep_seconds:
+            now = time.time()
+            if now - last_sweep >= settings.cleanup_sweep_seconds:
                 try:
                     stats = retention_sweep(session_factory, store)
                     if any(stats.values()):
@@ -713,7 +705,13 @@ def main() -> None:
                 except Exception as exc:  # noqa: BLE001 —— 清理失败不阻塞任务处理
                     print(f"[worker] 清理异常：{type(exc).__name__}: {exc}")
                 last_sweep = time.time()
-            worked = run_once(session_factory)
+            # 周期恢复过期租约，不只依赖重启（docs/11 §6.3）
+            if now - last_lease_recover >= 60.0:
+                last_lease_recover = now
+                recovered = recover_expired_leases(session_factory)
+                if recovered:
+                    print(f"[worker] 周期恢复过期租约 {recovered} 个任务")
+            worked = run_once(session_factory, gate)
             if not worked:
                 time.sleep(settings.worker_poll_seconds)
         except KeyboardInterrupt:

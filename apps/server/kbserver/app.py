@@ -4,9 +4,9 @@ from __future__ import annotations
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from .api import (routes_auth, routes_bilibili, routes_captures, routes_devices,
-                  routes_health, routes_items, routes_profiles, routes_sync,
-                  routes_uploads, routes_web)
+from .api import (routes_asr, routes_auth, routes_bilibili, routes_captures,
+                  routes_devices, routes_health, routes_items, routes_profiles,
+                  routes_sync, routes_uploads, routes_web)
 from .api.deps import CSRF_COOKIE
 from .config import get_settings
 from .domain.errors import ApiError, status_for
@@ -69,6 +69,7 @@ def create_app() -> FastAPI:
     app.include_router(routes_devices.router)
     app.include_router(routes_profiles.router)
     app.include_router(routes_bilibili.router)
+    app.include_router(routes_asr.router)
     app.include_router(routes_web.router)
     return app
 

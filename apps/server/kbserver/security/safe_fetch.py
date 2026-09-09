@@ -29,9 +29,10 @@ _SENSITIVE_HEADERS = frozenset({
 
 
 class SafeFetchError(Exception):
-    def __init__(self, code: str, message: str):
+    def __init__(self, code: str, message: str, status_code: int | None = None):
         super().__init__(message)
         self.code = code
+        self.status_code = status_code
 
 
 def _check_url_allowed(url: str) -> None:
@@ -136,3 +137,78 @@ def safe_fetch(url: str, *, max_bytes: int | None = None, timeout: float = 20.0,
         raise SafeFetchError("PAYLOAD_TOO_LARGE", f"响应超过 {limit} 字节上限")
 
     return FetchResult(url=str(resp.url), status_code=resp.status_code, mime=mime, content=content)
+
+
+@dataclass
+class StreamResult:
+    """流式读取结果：最终地址、HTTP 状态与实际字节数；不持有响应体。"""
+    url: str
+    status_code: int
+    bytes_read: int
+
+
+def stream_to_sink(
+    url: str,
+    *,
+    sink,
+    max_bytes: int,
+    timeout: float = 20.0,
+    headers: dict[str, str] | None = None,
+    should_cancel=None,
+    on_progress=None,
+) -> StreamResult:
+    """有界流式 GET（docs/11 §5.2）：逐块写 sink，不在内存持有完整响应。
+
+    - 每跳重定向重新校验 DNS/IP，跨主机跳转剥离敏感头（与 safe_fetch 同规则）。
+    - 累计字节超过 max_bytes 抛 PAYLOAD_TOO_LARGE；连接/读取超时按超时抛出。
+    - should_cancel() 返回真时抛 CANCELLED，立即关闭连接（调用方用于让出/取消）。
+    - on_progress(bytes_read) 在每块写入后回调，用于续租与空闲检查；回调异常向上传播。
+    """
+    settings = get_settings()
+    _check_url_allowed(url)
+
+    transport = httpx.HTTPTransport(retries=0)
+    with httpx.Client(
+        transport=transport,
+        timeout=httpx.Timeout(timeout, connect=10.0, read=timeout),
+        follow_redirects=False,
+        headers={"User-Agent": "KnowledgeInbox/0.1 (+restricted-fetcher)"},
+    ) as client:
+        current = url
+        current_host = (urlparse(current).hostname or "").lower()
+        for _ in range(MAX_REDIRECTS + 1):
+            try:
+                hop_headers = {
+                    k: v for k, v in (headers or {}).items()
+                    if not (current_host != (urlparse(url).hostname or "").lower()
+                            and k.lower() in _SENSITIVE_HEADERS)
+                }
+                # 流式读取：先拿响应头，确认非重定向后逐块消费 body
+                with client.stream("GET", current, headers=hop_headers) as resp:
+                    if resp.is_redirect:
+                        next_url = _verify_redirect(current, resp)
+                        if next_url is None:
+                            raise SafeFetchError("SOURCE_BLOCKED", "重定向缺少 Location")
+                        current = next_url
+                        current_host = (urlparse(current).hostname or "").lower()
+                        continue
+                    status_code = resp.status_code
+                    if status_code >= 400:
+                        resp.read()
+                        raise SafeFetchError(
+                            "HTTP_ERROR", f"响应状态码 HTTP {status_code}", status_code=status_code
+                        )
+                    total = 0
+                    for chunk in resp.iter_bytes(chunk_size=settings.stream_chunk_bytes):
+                        if should_cancel is not None and should_cancel():
+                            raise SafeFetchError("CANCELLED", "读取已被取消")
+                        total += len(chunk)
+                        if total > max_bytes:
+                            raise SafeFetchError("PAYLOAD_TOO_LARGE", f"流超过 {max_bytes} 字节上限")
+                        sink(chunk)
+                        if on_progress is not None:
+                            on_progress(total)
+                    return StreamResult(url=str(resp.url), status_code=status_code, bytes_read=total)
+            except httpx.HTTPError as exc:
+                raise SafeFetchError("NETWORK_ERROR", f"流读取失败：{exc}") from exc
+        raise SafeFetchError("SOURCE_BLOCKED", f"重定向超过 {MAX_REDIRECTS} 跳")

@@ -29,6 +29,30 @@ class Settings:
     html_download_limit: int = int(os.environ.get("HTML_DOWNLOAD_LIMIT", str(5 * 1024 * 1024)))
     subtitle_download_limit: int = int(os.environ.get("SUBTITLE_DOWNLOAD_LIMIT", str(10 * 1024 * 1024)))
 
+    # 流式读取（docs/11 §5.2）：HTTP→FFmpeg 管道的块大小
+    stream_chunk_bytes: int = int(os.environ.get("STREAM_CHUNK_BYTES", str(64 * 1024)))
+
+    # 本地 ASR（docs/11 §9.3）：默认关闭，验收后由部署显式开启
+    asr_enabled: bool = os.environ.get("ASR_ENABLED", "false").lower() in ("1", "true", "yes")
+    asr_model: str = os.environ.get("ASR_MODEL", "dolphin")  # dolphin | sense_voice（部署级默认）
+    asr_model_dir: Path = Path(os.environ.get("ASR_MODEL_DIR", "/opt/models"))
+    asr_engine_bin: str = os.environ.get("ASR_ENGINE_BIN", "/opt/sherpa/bin/sherpa-onnx-offline")
+    asr_ffmpeg_bin: str = os.environ.get("ASR_FFMPEG_BIN", "ffmpeg")
+    asr_threads: int = int(os.environ.get("ASR_THREADS", "1"))
+    asr_chunk_seconds: int = int(os.environ.get("ASR_CHUNK_SECONDS", "20"))
+    asr_chunk_context_seconds: float = float(os.environ.get("ASR_CHUNK_CONTEXT_SECONDS", "1"))
+    asr_max_duration_seconds: int = int(os.environ.get("ASR_MAX_DURATION_SECONDS", "3600"))
+    asr_max_input_bytes: int = int(os.environ.get("ASR_MAX_INPUT_BYTES", str(128 * 1024 * 1024)))
+    asr_tmp_ttl_hours: int = int(os.environ.get("ASR_TMP_TTL_HOURS", "24"))
+    asr_chunk_timeout_seconds: int = int(os.environ.get("ASR_CHUNK_TIMEOUT_SECONDS", "900"))
+    # 服务器空闲准入（docs/11 §6.2）：整机 CPU 忙碌比例阈值与可用内存（MiB）
+    asr_idle_cpu_start: float = float(os.environ.get("ASR_IDLE_CPU_START", "0.25"))
+    asr_idle_cpu_stop: float = float(os.environ.get("ASR_IDLE_CPU_STOP", "0.70"))
+    asr_idle_hold_seconds: int = int(os.environ.get("ASR_IDLE_HOLD_SECONDS", "60"))
+    asr_busy_cooldown_seconds: int = int(os.environ.get("ASR_BUSY_COOLDOWN_SECONDS", "120"))
+    asr_idle_min_available_mib: int = int(os.environ.get("ASR_IDLE_MIN_AVAILABLE_MIB", "800"))
+    asr_busy_min_available_mib: int = int(os.environ.get("ASR_BUSY_MIN_AVAILABLE_MIB", "256"))
+
     # 保留与清理（docs/02 §14.3）
     unreferenced_upload_ttl_hours: int = int(os.environ.get("UNREFERENCED_UPLOAD_TTL_HOURS", "24"))
     unacked_bundle_retention_days: int = int(os.environ.get("UNACKED_BUNDLE_RETENTION_DAYS", "30"))
@@ -114,8 +138,8 @@ class Settings:
 
 
 def get_settings() -> Settings:
-    # 中心认证与对外地址在调用时读取环境变量：部署配置可随时调整，测试也能注入替身；
-    # 其余字段沿用模块加载时的值（与既有行为一致）。
+    # 中心认证、对外地址与 ASR 配置在调用时读取环境变量：部署配置可随时调整，
+    # 测试也能注入替身；其余字段沿用模块加载时的值（与既有行为一致）。
     return Settings(
         public_base_url=os.environ.get("PUBLIC_BASE_URL", "http://localhost:8000"),
         auth_session_url=os.environ.get("AUTH_SESSION_URL", ""),
@@ -124,4 +148,22 @@ def get_settings() -> Settings:
         auth_cookie_name=os.environ.get("AUTH_COOKIE_NAME", "__Secure-session"),
         auth_cookie_domain=os.environ.get("AUTH_COOKIE_DOMAIN", ""),
         auth_forward_origin=os.environ.get("AUTH_FORWARD_ORIGIN", ""),
+        asr_enabled=os.environ.get("ASR_ENABLED", "false").lower() in ("1", "true", "yes"),
+        asr_model=os.environ.get("ASR_MODEL", "dolphin"),
+        asr_model_dir=Path(os.environ.get("ASR_MODEL_DIR", "/opt/models")),
+        asr_engine_bin=os.environ.get("ASR_ENGINE_BIN", "/opt/sherpa/bin/sherpa-onnx-offline"),
+        asr_ffmpeg_bin=os.environ.get("ASR_FFMPEG_BIN", "ffmpeg"),
+        asr_threads=int(os.environ.get("ASR_THREADS", "1")),
+        asr_chunk_seconds=int(os.environ.get("ASR_CHUNK_SECONDS", "20")),
+        asr_chunk_context_seconds=float(os.environ.get("ASR_CHUNK_CONTEXT_SECONDS", "1")),
+        asr_max_duration_seconds=int(os.environ.get("ASR_MAX_DURATION_SECONDS", "3600")),
+        asr_max_input_bytes=int(os.environ.get("ASR_MAX_INPUT_BYTES", str(128 * 1024 * 1024))),
+        asr_tmp_ttl_hours=int(os.environ.get("ASR_TMP_TTL_HOURS", "24")),
+        asr_chunk_timeout_seconds=int(os.environ.get("ASR_CHUNK_TIMEOUT_SECONDS", "900")),
+        asr_idle_cpu_start=float(os.environ.get("ASR_IDLE_CPU_START", "0.25")),
+        asr_idle_cpu_stop=float(os.environ.get("ASR_IDLE_CPU_STOP", "0.70")),
+        asr_idle_hold_seconds=int(os.environ.get("ASR_IDLE_HOLD_SECONDS", "60")),
+        asr_busy_cooldown_seconds=int(os.environ.get("ASR_BUSY_COOLDOWN_SECONDS", "120")),
+        asr_idle_min_available_mib=int(os.environ.get("ASR_IDLE_MIN_AVAILABLE_MIB", "800")),
+        asr_busy_min_available_mib=int(os.environ.get("ASR_BUSY_MIN_AVAILABLE_MIB", "256")),
     )

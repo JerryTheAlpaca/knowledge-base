@@ -1625,10 +1625,234 @@
           }
         }
       }
+    },
+    "/v1/asr-settings": {
+      "get": {
+        "tags": [
+          "asr"
+        ],
+        "summary": "Get Asr Settings",
+        "operationId": "get_asr_settings_v1_asr_settings_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "asr"
+        ],
+        "summary": "Put Asr Settings",
+        "operationId": "put_asr_settings_v1_asr_settings_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AsrSettingsIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/items/{item_id}/asr": {
+      "post": {
+        "tags": [
+          "asr"
+        ],
+        "summary": "Trigger Asr",
+        "description": "手动触发音频转写；模型别名幂等，重复点击不重复建任务。",
+        "operationId": "trigger_asr_v1_items__item_id__asr_post",
+        "parameters": [
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Item Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/AsrTriggerIn"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "asr"
+        ],
+        "summary": "Get Asr Status",
+        "operationId": "get_asr_status_v1_items__item_id__asr_get",
+        "parameters": [
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Item Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/items/{item_id}/asr/cancel": {
+      "post": {
+        "tags": [
+          "asr"
+        ],
+        "summary": "Cancel Asr",
+        "operationId": "cancel_asr_v1_items__item_id__asr_cancel_post",
+        "parameters": [
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Item Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
     "schemas": {
+      "AsrSettingsIn": {
+        "properties": {
+          "auto_when_no_track": {
+            "type": "boolean",
+            "title": "Auto When No Track"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "auto_when_no_track"
+        ],
+        "title": "AsrSettingsIn"
+      },
+      "AsrTriggerIn": {
+        "properties": {
+          "retry_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retry Model"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "AsrTriggerIn"
+      },
       "Body_upload_v1_uploads_post": {
         "properties": {
           "file": {
@@ -3084,5 +3308,10 @@
         "title": "ValidationError"
       }
     }
-  }
+  },
+  "servers": [
+    {
+      "url": "https://kb.jerrythealpaca.cn"
+    }
+  ]
 }

@@ -11,6 +11,10 @@ COPY alembic.ini ./
 
 RUN pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple fastapi "uvicorn[standard]" sqlalchemy alembic pydantic cryptography python-multipart httpx
 
+# FFmpeg：ASR 音频准备（docs/11 §5.2）经管道解码用；固定随镜像分发，不运行时安装
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
 # 非 root 运行；预创建数据卷挂载点，避免 Docker 以 root 重建挂载点导致非 root 容器无权写入
 RUN useradd --create-home appuser && mkdir -p /data/db /data/objects /data/tmp /data/deletions \
     && chown -R appuser /data /app
