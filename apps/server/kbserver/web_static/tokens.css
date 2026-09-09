@@ -1,7 +1,9 @@
 /* ============================================================
-   tokens.css — 全站设计令牌（docs/09 §3）
+   tokens.css v2 — 全站设计令牌（docs/09 §3 → docs/10 §5 精修）
    暖纸底 + 陶土橙 + serif 展示字，对齐 claude.ai 的 calm/editorial 气质。
-   inbox.html 与 authorize.html 共同引入，单一令牌源（I3）。
+   inbox.html 与 authorize.html 共同引入，单一令牌源。
+   v2（docs/10 §5）：显式字阶 / 圆角层级 16-12-10 / --surface-2 嵌套底 /
+   双层阴影 / pill 体系 / 深色对比度走查。
    ============================================================ */
 
 :root {
@@ -10,26 +12,36 @@
   /* —— 色板（light）—— */
   --bg: #FAF9F5;              /* 暖纸白：页面底 */
   --surface: #FFFFFF;         /* 卡片 */
-  --border: #E8E6DC;          /* 暖灰：分隔线/卡片边 */
+  --surface-2: #F5F3EC;       /* 嵌套卡 / 折叠区底（docs/10 §5.1） */
+  --border: #E5E2D8;          /* 暖灰：分隔线/卡片边（v2 略加深） */
   --border-strong: #D9D6C8;   /* 输入/按钮边 */
   --text: #1F1E1B;            /* 暖黑正文 */
-  --text-2: #73726C;          /* 次级文字（≥4.5:1，A6） */
+  --text-2: #73726C;          /* 次级文字（≥4.5:1） */
   --accent: #D97757;          /* 陶土橙：主行动/链接/激活态 */
-  --accent-hover: #C96342;    /* hover 加深（替代 opacity，A5） */
+  --accent-hover: #C96342;    /* hover 加深（替代 opacity） */
   --accent-soft: #F9EAE2;     /* 激活底色 */
   --ok: #3F7E5B;    --ok-soft: #E7F2EB;
   --warn: #B26A1B;  --warn-soft: #FAF0E1;
   --bad: #B3402F;   --bad-soft: #FBE9E6;
   --info: #5570A8;  --info-soft: #EBF0F8;
 
-  /* —— 阴影（轻量单层）—— */
+  /* —— 阴影（v2：双层，§5.4）—— */
   --shadow-card: 0 1px 2px rgba(31, 30, 27, .05);
-  --shadow-pop: 0 4px 16px rgba(31, 30, 27, .08);
+  --shadow-pop: 0 2px 4px rgba(31, 30, 27, .07), 0 6px 20px rgba(31, 30, 27, .10);
 
-  /* —— 圆角 —— */
-  --radius-s: 8px;    /* 按钮/输入 */
-  --radius-m: 14px;   /* 卡片 */
+  /* —— 圆角层级（v2 §5.3：页面卡 16 / 嵌套 12 / 控件 10 / pill）—— */
+  --radius-card: 16px;
+  --radius-inner: 12px;
+  --radius-ctl: 10px;
   --radius-pill: 999px;
+
+  /* —— 字阶（v2 §5.2：显式六级）—— */
+  --fs-display: 22px;   /* Display：品牌、空状态标题（serif） */
+  --fs-h1: 20px;        /* H1：详情标题 */
+  --fs-h2: 16px;        /* H2：卡片标题 */
+  --fs-body: 15px;      /* Body：正文、列表标题 */
+  --fs-small: 13px;     /* Small：辅助说明、aux 行 */
+  --fs-caption: 12px;   /* Caption：时间、版本、证据编号 */
 
   /* —— 动效 —— */
   --ease: cubic-bezier(.2, .7, .3, 1);
@@ -40,30 +52,33 @@
   --font-display: "Source Han Serif SC", "Noto Serif SC", "Songti SC", "SimSun", serif;
   --font-body: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
 
-  /* —— 旧变量别名（页面内渐进迁移）—— */
+  /* —— 旧变量别名（authorize.html 等渐进迁移）—— */
   --card: var(--surface);
   --line: var(--border);
   --muted: var(--text-2);
+  --radius-m: var(--radius-card);
+  --radius-s: var(--radius-ctl);
 }
 
-/* —— 深色模式（P2，A7）：跟随系统偏好 —— */
+/* —— 深色模式：跟随系统偏好（v2 §5.5 深浅两套对比度走查）—— */
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #21201C;
     --surface: #2A2925;
+    --surface-2: #242320;
     --border: #3B3A34;
     --border-strong: #4A4840;
     --text: #EDEBE6;
     --text-2: #A5A29A;
     --accent: #E08A67;
     --accent-hover: #E89B7D;
-    --accent-soft: #3B2F27;
+    --accent-soft: #443429;   /* v2：#3B2F27 调浅一档，与 --accent 对比 ≥4.5:1 */
     --ok: #7FB894;   --ok-soft: #26332B;
     --warn: #D29A4E; --warn-soft: #352C1F;
     --bad: #D97B6C;  --bad-soft: #3A2A26;
     --info: #92A8CE; --info-soft: #29303C;
-    --shadow-card: 0 1px 2px rgba(0, 0, 0, .25);
-    --shadow-pop: 0 4px 16px rgba(0, 0, 0, .4);
+    --shadow-card: 0 1px 2px rgba(0, 0, 0, .3);
+    --shadow-pop: 0 2px 6px rgba(0, 0, 0, .45), 0 10px 28px rgba(0, 0, 0, .5);
   }
 }
 
@@ -74,17 +89,17 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font: 15px/1.6 var(--font-body);
+  font: var(--fs-body)/1.6 var(--font-body);
   -webkit-font-smoothing: antialiased;
 }
 
-/* 键盘焦点环（I2）：统一 accent 外环 */
+/* 键盘焦点环：统一 accent 外环 */
 :focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
-/* 动效降级（§3.3） */
+/* 动效降级 */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: .01ms !important;
