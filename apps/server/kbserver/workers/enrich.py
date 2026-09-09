@@ -351,10 +351,12 @@ def call_provider(session_factory, plan: EnrichPlan) -> dict:
         return parse_model_json(result.output_text)
 
     segment_ids = {s["segment_id"] for s in plan.segments}
+    segment_texts = {s["segment_id"]: s.get("text") or "" for s in plan.segments}
 
     def _validate(doc: dict, base_prompt: str, raw_text: str) -> dict:
         errors = analysis.validate_analysis(
-            doc, source_revision=plan.source_revision, segment_ids=segment_ids
+            doc, source_revision=plan.source_revision, segment_ids=segment_ids,
+            segment_texts=segment_texts,
         ) if isinstance(doc, dict) else ["输出不是 JSON 对象"]
         if errors:
             try:
@@ -362,7 +364,8 @@ def call_provider(session_factory, plan: EnrichPlan) -> dict:
             except (ValueError, ProviderError):
                 raise AnalysisInvalid(errors, raw_text, doc if isinstance(doc, dict) else None) from None
             errors2 = analysis.validate_analysis(
-                doc2, source_revision=plan.source_revision, segment_ids=segment_ids
+                doc2, source_revision=plan.source_revision, segment_ids=segment_ids,
+                segment_texts=segment_texts,
             )
             if errors2:
                 raise AnalysisInvalid(errors2, raw_text, doc2)
@@ -370,7 +373,7 @@ def call_provider(session_factory, plan: EnrichPlan) -> dict:
         return doc
 
     if plan.chunked:
-        candidates: dict[str, list] = {"key_points": [], "methods": [], "insights": []}
+        candidates: dict[str, list] = {"key_points": [], "excerpts": [], "methods": [], "insights": []}
         chunk_errors: list[str] = []
         for i, chunk in enumerate(plan.chunks, start=1):
             prompt = templates.build_chunk_user_prompt(
@@ -432,9 +435,11 @@ def finish(session_factory, plan: EnrichPlan, result: dict) -> None:
             return
 
         doc = result["doc"]
-        doc.setdefault("schema_version", "1.0")
+        doc.setdefault("schema_version", templates.SCHEMA_VERSION)
         doc["source_revision"] = plan.source_revision
         doc["recipe_version"] = pipeline.RECIPE_VERSION
+        # 结构化证据映射（docs/08 §6.1）：claim_id -> 原文片段 ID；云端不生成双链
+        doc["evidence_map"] = analysis.evidence_map(doc)
 
         store = ObjectStore()
         preview_md = analysis.render_preview_md(doc, user_note=plan.user_note)

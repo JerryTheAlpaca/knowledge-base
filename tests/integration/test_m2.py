@@ -53,20 +53,35 @@ def llm_result(payload) -> GenerateResult:
 
 
 def doc_from_prompt(user_prompt: str) -> dict:
-    """按提示词构造一份必然通过校验的输出（兼容主流程/合并/修复调用提示词）。"""
+    """按提示词构造一份必然通过校验的输出（兼容主流程/合并/修复调用提示词）。
+
+    docs/08 §3.2：云端单篇提炼 Schema 2.0 —— claim_id、适用条件、逐字摘录，
+    不输出主题/标签/知识关联/晋升/双链。
+    """
     payload = json.loads(user_prompt)
     schema = payload.get("output_schema") or payload.get("original_task") or {}
     source_data = payload.get("source_data") or {}
     segments = json.loads(source_data["segments"]) if source_data.get("segments") else []
-    seg_id = segments[0]["segment_id"] if segments else "s0001"
+    if segments:
+        seg_id = segments[0]["segment_id"]
+        seg_text = segments[0]["text"]
+    else:
+        # 合并阶段：只允许引用候选要点携带的片段与摘录（docs/08 §7.1）
+        cands = payload.get("candidates") or {}
+        kps = cands.get("key_points") or []
+        exs = cands.get("excerpts") or []
+        seg_id = (kps[0]["evidence_ids"][0] if kps else
+                  (exs[0]["evidence_ids"][0] if exs else "s0001"))
+        seg_text = exs[0]["text"] if exs else "示例原文"
     doc = {
-        "schema_version": "1.0",
+        "schema_version": "2.0",
         "source_revision": schema["source_revision"],
         "summary": "演示摘要。",
-        "key_points": [{"text": "采集与总结应分开处理。", "evidence_ids": [seg_id]}],
+        "key_points": [{"claim_id": "c0001", "text": "采集与总结应分开处理。",
+                        "conditions": None, "evidence_ids": [seg_id]}],
+        "excerpts": [{"claim_id": "c0002", "text": seg_text, "evidence_ids": [seg_id]}],
         "methods": [],
         "insights": [{"text": "候选启发。", "kind": "ai_suggestion", "basis_ids": [seg_id]}],
-        "topics": ["知识管理"],
         "limitations": [],
     }
     if "workflow" in schema:
@@ -81,8 +96,10 @@ def chunk_aware_behavior(request):
         payload = json.loads(prompt)
         segments = json.loads(payload["source_data"]["segments"])
         seg_id = segments[0]["segment_id"]
+        seg_text = segments[0]["text"]
         return llm_result({
-            "key_points": [{"text": "分段要点。", "evidence_ids": [seg_id]}],
+            "key_points": [{"text": "分段要点。", "conditions": None, "evidence_ids": [seg_id]}],
+            "excerpts": [{"text": seg_text, "evidence_ids": [seg_id]}],
             "methods": [],
             "insights": [],
         })

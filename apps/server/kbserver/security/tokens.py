@@ -1,8 +1,10 @@
-"""服务 Token 与配对码（docs/02 §9.1）。
+"""服务 Token 与配对码（docs/02 §9.1；docs/08 §8.3）。
 
 - Token 至少 32 字节密码学随机；数据库只存 SHA-256 摘要。
 - Token 不出现在 URL、日志或错误消息里。
 - 手机 scopes：captures:create, uploads:create；桌面 scopes 另发。
+- `profiles:bind-local` 是专用权限：只有用户在设备授权时明确选择，才允许把
+  某个线上配置的 Key 下发到该设备用于本地直连模型；不随 profiles:manage 自动获得。
 """
 from __future__ import annotations
 
@@ -23,6 +25,10 @@ DESKTOP_SCOPES = [
     "profiles:manage",
     "devices:manage",
 ]
+# 设备授权时可额外申请的权限（docs/08 §8.3）：不能仅凭旧设备的普通
+# profiles:manage 自动获得导出能力，必须由用户在授权页显式勾选。
+BIND_LOCAL_SCOPE = "profiles:bind-local"
+OPTIONAL_DEVICE_SCOPES = [BIND_LOCAL_SCOPE]
 # Web 收件箱：桌面同级权限 + uploads:create（收件箱要上传补充材料，docs/02 §2.1）
 WEB_SCOPES = [
     "items:read",

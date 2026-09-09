@@ -87,7 +87,11 @@ async function refresh() {
     if (!me.ok) { await goLogin(); return; }
     const body = await me.json();
     setState('设备名称：<b>' + info.device_name + '</b><br>当前账号：<b>' +
-      (body.central_username || body.display_name || "") + '</b><br><span class="muted">批准后插件将以该账号同步。</span>');
+      (body.central_username || body.display_name || "") + '</b><br><span class="muted">批准后插件将以该账号同步。</span>' +
+      (info.requests_local_key_binding
+        ? '<div class="ok" style="margin-top:10px">该设备还申请了「将此 Key 配置到本设备」权限：' +
+          '批准后，你在插件中选择复用的线上模型 Key 会下发到这台设备，用于本地直接调用模型服务。</div>'
+        : ""));
     $("approveBtn").hidden = false;
     $("cancelBtn").hidden = false;
   } catch (e) {

@@ -1,7 +1,10 @@
-"""收件箱与条目接口（docs/02 §10.1）。
+"""收件箱与条目接口（docs/02 §10.1；docs/08 §8.4）。
 
 - GET /v1/items：状态过滤、稳定分页，不返回凭据。
-- GET /v1/items/{id}：来源、状态、缺失材料；已删除返回 410。
+- GET /v1/items/{id}：来源、状态、缺失材料、阅读所需的元数据与到期时间；
+  已删除返回 410。
+- GET /v1/items/{id}/reading：原始资料与云端提炼的结构化阅读视图；
+  复用 Bundle 内的 normalized.md / analysis.json，不新生成 AI 结果。
 - POST /v1/items/{id}/supplements：补充文字/截图/字幕，expected_source_revision 冲突 409，新增不可变来源版本。
 - DELETE /v1/items/{id}：标记 tombstone，取消后续发布。
 - POST /v1/items/{id}/reprocess：基于已有材料重新排队，不默认重新抓站点。
@@ -9,6 +12,7 @@
 """
 from __future__ import annotations
 
+import json
 import time
 
 from fastapi import APIRouter, Depends
@@ -19,7 +23,7 @@ from ..db import get_db
 from ..domain import pipeline
 from ..domain.errors import ApiError
 from ..api.deps import require_scope
-from ..models import Item, SourceRevision, Job, new_id, utcnow
+from ..models import BundleRevision, Item, SourceRevision, Job, new_id, utcnow
 from ..repositories import core as repo
 from ..storage.objects import ObjectStore
 
@@ -34,11 +38,25 @@ class ItemOut(BaseModel):
     source_revision: int
     bundle_revision: int
     platform: str
+    title: str | None
+    author: str | None
     original_url: str | None
+    canonical_url: str | None
+    published_at: str | None
+    source_locator: dict
     coverage: str
+    content_scope: str
+    user_note: str | None
     missing_materials: list[str]
     captured_at: str | None
     created_at: str
+    # 云端材料到期时间（docs/08 §8.4）：过期后如实提示，不从 Vault 回读
+    expires_at: str | None
+    expired: bool
+    # 最新含提炼的 Bundle 对应来源版本；用于显式版本选择（docs/08 §8.4）
+    analysis_source_revision: int | None
+    analysis_bundle_revision: int | None
+    analysis_created_at: str | None
 
 
 class ItemList(BaseModel):
@@ -62,8 +80,25 @@ class ReprocessInput(BaseModel):
     reason: str | None = None
 
 
-def _item_out(item: Item, source: SourceRevision) -> ItemOut:
+def _analysis_bundle(db: Session, item: Item) -> BundleRevision | None:
+    """最新一个带提炼产物的 Bundle（用于显式版本选择，docs/08 §8.4）。"""
+    return (
+        db.query(BundleRevision)
+        .filter(
+            BundleRevision.user_id == item.user_id,
+            BundleRevision.item_id == item.id,
+            BundleRevision.processing_state.in_(["ready", "failed"]),
+        )
+        .order_by(BundleRevision.revision.desc())
+        .first()
+    )
+
+
+def _item_out(item: Item, source: SourceRevision, db: Session | None = None) -> ItemOut:
     meta = source.metadata_json
+    analysis_bundle = _analysis_bundle(db, item) if db is not None else None
+    expires_at = analysis_bundle.expires_at if analysis_bundle else None
+    now = utcnow()
     return ItemOut(
         item_id=item.id,
         pipeline_state=item.pipeline_state,
@@ -71,11 +106,23 @@ def _item_out(item: Item, source: SourceRevision) -> ItemOut:
         source_revision=item.source_revision,
         bundle_revision=item.bundle_revision,
         platform=meta.get("platform", "unknown"),
+        title=meta.get("title"),
+        author=meta.get("author"),
         original_url=meta.get("original_url"),
+        canonical_url=meta.get("canonical_url"),
+        published_at=meta.get("published_at"),
+        source_locator=meta.get("source_locator") or {},
         coverage=meta.get("coverage", "metadata_only"),
+        content_scope=meta.get("content_scope", "unknown"),
+        user_note=meta.get("user_note"),
         missing_materials=meta.get("missing_materials", []),
         captured_at=meta.get("captured_at"),
         created_at=item.created_at.isoformat(),
+        expires_at=expires_at.isoformat() if expires_at else None,
+        expired=bool(expires_at and expires_at <= now),
+        analysis_source_revision=analysis_bundle.source_revision if analysis_bundle else None,
+        analysis_bundle_revision=analysis_bundle.revision if analysis_bundle else None,
+        analysis_created_at=analysis_bundle.created_at.isoformat() if analysis_bundle else None,
     )
 
 
@@ -116,7 +163,7 @@ def list_items(
             SourceRevision.item_id == it.id, SourceRevision.revision == it.source_revision
         ).one_or_none()
         if src:
-            outs.append(_item_out(it, src))
+            outs.append(_item_out(it, src, db))
     return ItemList(items=outs, total=total, limit=limit, offset=offset)
 
 
@@ -124,7 +171,226 @@ def list_items(
 def get_item(item_id: str, principal=Depends(require_scope("items:read")), db: Session = Depends(get_db)) -> ItemOut:
     user = principal.user
     item = _require_item(db, user.id, item_id)
-    return _item_out(item, _latest_source(db, item))
+    return _item_out(item, _latest_source(db, item), db)
+
+
+# ---- 阅读视图：原始资料与云端提炼（docs/08 §8.4） ----
+
+class SourceMaterialOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    source_revision: int
+    bundle_revision: int
+    normalized_md: str | None
+    normalized_available: bool
+    truncated: bool
+    files: list[dict]
+    # 有轨但取不到 / 部分取得等真实覆盖说明来自 manifest
+    coverage: str
+    missing_materials: list[str]
+    warnings: list[str]
+    # 原件下载入口（已鉴权文件路由）
+    download_base: str
+
+
+class CloudDigestOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    state: str  # ready|pending|failed|expired|missing
+    state_detail: str
+    source_revision: int | None
+    bundle_revision: int | None
+    created_at: str | None
+    schema_version: str | None
+    summary: str | None
+    key_points: list[dict]
+    excerpts: list[dict]
+    methods: list[dict]
+    insights: list[dict]
+    limitations: list[str]
+    workflow: dict | None
+    evidence_map: dict
+    # 结构化结果对应的原文片段（用于定位）；键为 segment_id
+    segments: dict[str, str]
+    stale_note: str | None
+
+
+class ReadingOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    item: ItemOut
+    source_material: SourceMaterialOut | None
+    cloud_digest: CloudDigestOut
+    expires_at: str | None
+    expired: bool
+    note: str = ""
+
+
+MAX_INLINE_READ_BYTES = 2 * 1024 * 1024  # 单次内联阅读上限；超出只给文件入口
+
+
+def _bundle_manifest(db: Session, item: Item, revision: int) -> dict | None:
+    bundle = repo.get_bundle(db, item.user_id, item.id, revision)
+    if bundle is None:
+        return None
+    try:
+        return json.loads(ObjectStore().read_object(bundle.manifest_key).decode("utf-8"))
+    except Exception:
+        return None
+
+
+def _read_bundle_text(db: Session, item: Item, revision: int, relative_path: str) -> str | None:
+    """按清单读取 Bundle 内某个已登记文件的文本；只接受清单里存在的路径。"""
+    manifest = _bundle_manifest(db, item, revision)
+    if manifest is None:
+        return None
+    entry = next((f for f in manifest.get("files", []) if f.get("relative_path") == relative_path), None)
+    if entry is None:
+        return None
+    f = repo.get_file(db, item.user_id, entry["file_id"], item_id=item.id)
+    if f is None or f.bytes > MAX_INLINE_READ_BYTES:
+        return None
+    store = ObjectStore()
+    if not store.object_exists(f.storage_key):
+        return None
+    try:
+        return store.read_object(f.storage_key).decode("utf-8", errors="replace")
+    except Exception:
+        return None
+
+
+def _segments_texts(db: Session, item: Item, revision: int) -> dict[str, str]:
+    raw = _read_bundle_text(db, item, revision, "segments.json")
+    if not raw:
+        return {}
+    try:
+        doc = json.loads(raw)
+    except ValueError:
+        return {}
+    return {
+        s["segment_id"]: s.get("text") or ""
+        for s in (doc.get("segments") or [])
+        if isinstance(s, dict) and s.get("segment_id")
+    }
+
+
+def _source_material(db: Session, item: Item) -> SourceMaterialOut | None:
+    """当前来源版本的原文与原件；版本显式，不把截断预览标成全文（docs/08 §8.4）。"""
+    revision = item.bundle_revision
+    if not revision:
+        return None
+    manifest = _bundle_manifest(db, item, revision)
+    if manifest is None:
+        return None
+    normalized = _read_bundle_text(db, item, revision, "normalized.md")
+    entry = next((f for f in manifest.get("files", []) if f.get("relative_path") == "normalized.md"), None)
+    too_large = bool(entry and entry.get("bytes", 0) > MAX_INLINE_READ_BYTES)
+    return SourceMaterialOut(
+        source_revision=manifest.get("source_revision", item.source_revision),
+        bundle_revision=revision,
+        normalized_md=normalized,
+        normalized_available=normalized is not None,
+        truncated=too_large,
+        files=manifest.get("files", []),
+        coverage=(manifest.get("source") or {}).get("coverage", "metadata_only"),
+        missing_materials=manifest.get("missing_materials", []),
+        warnings=manifest.get("warnings", []),
+        download_base=f"/v1/items/{item.id}/bundles/{revision}/files",
+    )
+
+
+def _cloud_digest(db: Session, item: Item) -> CloudDigestOut:
+    """云端提炼阅读：优先从结构化 analysis.json 渲染；旧 preview.md 仅作兼容输入。"""
+    bundle = _analysis_bundle(db, item)
+    if bundle is None:
+        if item.pipeline_state in {"waiting_key", "needs_input"}:
+            state, detail = "pending", "尚无云端提炼；原始资料仍可阅读。"
+        elif item.pipeline_state == "failed":
+            state, detail = "failed", item.state_detail or "云端提炼失败；可重新加工。"
+        else:
+            state, detail = "pending", "云端提炼尚未生成；原始资料仍可阅读。"
+        return CloudDigestOut(
+            state=state, state_detail=detail, source_revision=None, bundle_revision=None,
+            created_at=None, schema_version=None, summary=None, key_points=[], excerpts=[],
+            methods=[], insights=[], limitations=[], workflow=None, evidence_map={},
+            segments={}, stale_note=None,
+        )
+
+    now = utcnow()
+    expired = bool(bundle.expires_at and bundle.expires_at <= now)
+    doc = None
+    raw = _read_bundle_text(db, item, bundle.revision, "analysis.json")
+    if raw:
+        try:
+            doc = json.loads(raw)
+        except ValueError:
+            doc = None
+    if doc is None:
+        # 旧版产物只有 preview.md：作为历史兼容输入
+        legacy_md = _read_bundle_text(db, item, bundle.revision, "preview.md")
+        return CloudDigestOut(
+            state="expired" if expired else ("failed" if bundle.processing_state == "failed" else "pending"),
+            state_detail=("云端材料已过期，本地已下载材料仍可查看。" if expired
+                          else "该版本只有旧格式预览，无法结构化定位。"),
+            source_revision=bundle.source_revision, bundle_revision=bundle.revision,
+            created_at=bundle.created_at.isoformat(), schema_version="1.0",
+            summary=(legacy_md or "")[:500] or None, key_points=[], excerpts=[],
+            methods=[], insights=[], limitations=[], workflow=None, evidence_map={},
+            segments={}, stale_note=None,
+        )
+
+    # 证据定位必须与提炼所用来源版本一致：不同版本不混用片段（docs/08 §8.4）
+    segments = _segments_texts(db, item, bundle.revision)
+    stale_note = None
+    if bundle.source_revision != item.source_revision:
+        stale_note = (f"现有提炼基于 r{bundle.source_revision}，"
+                      f"当前来源为 r{item.source_revision}；点击证据打开 r{bundle.source_revision} 的原文。")
+    state = "ready"
+    detail = ""
+    if expired:
+        state, detail = "expired", "云端材料已过期，本地已下载材料仍可查看。"
+    elif bundle.processing_state == "failed":
+        state, detail = "failed", "该版本提炼未通过校验；可重新加工。"
+
+    return CloudDigestOut(
+        state=state,
+        state_detail=detail,
+        source_revision=bundle.source_revision,
+        bundle_revision=bundle.revision,
+        created_at=bundle.created_at.isoformat(),
+        schema_version=doc.get("schema_version"),
+        summary=doc.get("summary"),
+        key_points=doc.get("key_points") or [],
+        excerpts=doc.get("excerpts") or [],
+        methods=doc.get("methods") or [],
+        insights=doc.get("insights") or [],
+        limitations=doc.get("limitations") or [],
+        workflow=doc.get("workflow"),
+        evidence_map=doc.get("evidence_map") or {},
+        segments=segments,
+        stale_note=stale_note,
+    )
+
+
+@router.get("/{item_id}/reading", response_model=ReadingOut)
+def get_reading(item_id: str, principal=Depends(require_scope("items:read")),
+                db: Session = Depends(get_db)) -> ReadingOut:
+    """条目详情阅读页签数据：原始资料 + 云端提炼（docs/08 §8.4）。
+
+    只读已登记文件；不执行原始 HTML，不渲染模型生成的脚本与命令。
+    """
+    user = principal.user
+    item = _require_item(db, user.id, item_id)
+    out = _item_out(item, _latest_source(db, item), db)
+    digest = _cloud_digest(db, item)
+    note = ""
+    if out.expired:
+        note = "云端材料已过期，本地已下载材料仍可查看。"
+    return ReadingOut(
+        item=out,
+        source_material=_source_material(db, item),
+        cloud_digest=digest,
+        expires_at=out.expires_at,
+        expired=out.expired,
+        note=note,
+    )
 
 
 @router.post("/{item_id}/supplements", response_model=ItemOut, status_code=202)
@@ -196,7 +462,7 @@ def supplement(
     pipeline.enqueue_stage(db, user_id=user.id, item_id=item.id, source_revision=new_revision, stage="extract")
     db.commit()
     db.refresh(item)
-    return _item_out(item, new_source)
+    return _item_out(item, new_source, db)
 
 
 @router.post("/{item_id}/reprocess", response_model=ItemOut, status_code=202)
@@ -219,7 +485,7 @@ def reprocess(
     item.state_detail = body.reason or "用户请求重新加工"
     db.commit()
     db.refresh(item)
-    return _item_out(item, source)
+    return _item_out(item, source, db)
 
 
 # 重新提取限频：每条目 10 分钟一次（docs/02 §10.1 refetch 限频）
@@ -251,7 +517,7 @@ def refetch(item_id: str, principal=Depends(require_scope("items:edit")), db: Se
     item.state_detail = "用户请求重新提取来源"
     db.commit()
     db.refresh(item)
-    return _item_out(item, source)
+    return _item_out(item, source, db)
 
 
 @router.delete("/{item_id}", status_code=200)

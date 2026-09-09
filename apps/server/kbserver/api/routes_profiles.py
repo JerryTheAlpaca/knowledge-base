@@ -1,6 +1,8 @@
-"""模型配置与凭据托管（docs/02 §9.2、§10.1；docs/05 §5 去计费）。
+"""模型配置与凭据托管（docs/02 §9.2、§10.1；docs/05 §5 去计费；docs/08 §8.3）。
 
-- 凭据只进不出：任何读取接口不返回明文、掩码或可还原形式，只返回 configured 状态。
+- 凭据只进不出：普通读取接口不返回明文、掩码或可还原形式，只返回 configured 状态。
+  唯一例外是 docs/08 §8.3 的受控设备绑定接口：用户在插件中明确选择复用某个线上
+  配置时，允许把该配置的 Key 下发到其当前设备，用于本地直连模型服务。
 - PATCH 凭据产生新版本并撤销旧版本；更新后 waiting_key 条目自动重新排队。
 - 连接测试限频（每配置 60 秒一次）；仅返回连通结果，无金额/用量。
 - 不统计模型 API 用量、价格和估算费用；供应商账单由用户在供应商平台查看。
@@ -10,16 +12,24 @@ from __future__ import annotations
 import time
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Response
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
 from ..db import get_db
-from ..api.deps import require_scope
+from ..api.deps import require_device, require_scope
 from ..domain import pipeline, provider_ops
 from ..domain.errors import ApiError
-from ..models import Credential, Item, ProviderOperation, ProviderProfile, User, utcnow
+from ..models import (
+    Credential,
+    Item,
+    LocalKeyBinding,
+    ProviderOperation,
+    ProviderProfile,
+    User,
+    utcnow,
+)
 from ..providers.llm import (
     GenerateRequest,
     OpenAICompatibleProvider,
@@ -28,6 +38,7 @@ from ..providers.llm import (
 )
 from ..repositories import core as repo
 from ..security import credentials as cred_crypto
+from ..security.tokens import BIND_LOCAL_SCOPE
 
 router = APIRouter(tags=["profiles"])
 
@@ -267,6 +278,241 @@ def revoke_credential(profile_id: str, principal=Depends(require_scope("profiles
     db.commit()
     return {"profile_id": profile.id, "revoked": True, "revoked_versions": revoked,
             "note": "后续加工任务将进入 waiting_key；已产生的调用记录不受影响。"}
+
+
+# ---- 线上 Key 下发到本人设备（docs/08 §8.3） ----
+
+class LocalBindingOut(BaseModel):
+    """绑定响应：只此接口返回 secret，且禁止缓存。
+
+    经 HTTPS 返回，网关与应用日志不得记录响应体或 secret。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    binding_id: str
+    profile_id: str
+    profile_version: int
+    credential_version: int
+    endpoint: str
+    model: str
+    capabilities: dict
+    secret: str
+    bound_at: str
+    note: str = (
+        "此 Key 已配置到本设备用于本地直接调用模型服务；"
+        "服务端撤销绑定会阻止再次领取，但无法远程收回已下发的供应商 Key，"
+        "彻底失效需在供应商处撤销。"
+    )
+
+
+class LocalBindingStatus(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    profile_id: str
+    bound: bool
+    device_id: str | None
+    profile_version: int | None
+    credential_version: int | None
+    bound_at: str | None
+    note: str = ""
+
+
+def _binding_row(db: Session, user_id: str, device_id: str, profile_id: str) -> LocalKeyBinding | None:
+    """按（用户、设备、配置）取绑定行（含已解绑/已撤销），用于复用唯一约束下的同一行。"""
+    return (
+        db.query(LocalKeyBinding)
+        .filter(
+            LocalKeyBinding.user_id == user_id,
+            LocalKeyBinding.device_id == device_id,
+            LocalKeyBinding.profile_id == profile_id,
+        )
+        .one_or_none()
+    )
+
+
+def _binding_for(db: Session, user_id: str, device_id: str, profile_id: str) -> LocalKeyBinding | None:
+    """当前有效的绑定：未被本机解绑、也未被服务端撤销。"""
+    binding = _binding_row(db, user_id, device_id, profile_id)
+    if binding is None or binding.revoked_at is not None or binding.blocked_at is not None:
+        return None
+    return binding
+
+
+def _require_bind_local(principal) -> None:
+    """专用权限 + 有效桌面设备 + 配置与设备同属当前用户（docs/08 §8.3）。"""
+    if not principal.has_device:
+        raise ApiError("FORBIDDEN", "该操作需要已授权设备", status_code=403)
+    if BIND_LOCAL_SCOPE not in principal.scopes:
+        raise ApiError(
+            "FORBIDDEN",
+            f"缺少专用权限：{BIND_LOCAL_SCOPE}；请在插件中重新登录并勾选「将此 Key 配置到本设备」",
+            status_code=403,
+        )
+
+
+@router.get("/v1/provider-profiles/{profile_id}/local-binding", response_model=LocalBindingStatus)
+def local_binding_status(
+    profile_id: str,
+    principal=Depends(require_scope("profiles:manage")),
+    db: Session = Depends(get_db),
+):
+    """查询本设备是否已绑定该配置；不返回 Key。"""
+    user = principal.user
+    profile = _require_profile(db, user.id, profile_id)
+    device = principal.device
+    if device is None:
+        return LocalBindingStatus(
+            profile_id=profile.id, bound=False, device_id=None,
+            profile_version=None, credential_version=None, bound_at=None,
+            note="当前通道没有设备；请在插件中登录后再绑定。",
+        )
+    binding = _binding_for(db, user.id, device.id, profile.id)
+    if binding is None:
+        return LocalBindingStatus(
+            profile_id=profile.id, bound=False, device_id=device.id,
+            profile_version=None, credential_version=None, bound_at=None,
+            note="尚未绑定到本设备；绑定后本设备可直接调用该线上配置的模型。",
+        )
+    return LocalBindingStatus(
+        profile_id=profile.id, bound=True, device_id=device.id,
+        profile_version=binding.profile_version,
+        credential_version=binding.credential_version,
+        bound_at=binding.last_bound_at.isoformat() if binding.last_bound_at else None,
+        note="已绑定；线上换 Key 后下次配置同步会替换本机副本。",
+    )
+
+
+@router.post("/v1/provider-profiles/{profile_id}/local-binding", response_model=LocalBindingOut)
+def bind_local(
+    profile_id: str,
+    principal=Depends(require_device),
+    db: Session = Depends(get_db),
+):
+    """把线上配置的 Key 下发到本人当前设备，用于本地直接调用模型服务。
+
+    这是对「凭据只进不出」的受控变更：普通读取仍不返回密钥，只有本接口
+    在专用权限与设备校验通过时下发一次。
+    """
+    user = principal.user
+    device = principal.device
+    _require_bind_local(principal)
+    profile = _require_profile(db, user.id, profile_id)
+    if profile.kind != "llm":
+        raise ApiError("SCHEMA_INVALID", "本地整理只支持 llm 类型的配置", status_code=422)
+
+    cred = (
+        db.query(Credential)
+        .filter(Credential.profile_id == profile.id, Credential.revoked_at.is_(None))
+        .order_by(Credential.created_at.desc())
+        .first()
+    )
+    if cred is None:
+        raise ApiError("SCHEMA_INVALID", "该配置还没有可用的凭据", status_code=422)
+
+    settings = get_settings()
+    try:
+        api_key = cred_crypto.decrypt_secret(
+            cred.encrypted_secret, cred.encrypted_dek, cred.nonces_json,
+            settings.load_master_key(),
+            user_id=user.id, profile_id=profile.id, credential_version=cred.version,
+        )
+    except Exception as exc:
+        raise ApiError("PROVIDER_AUTH_FAILED", f"凭据解密失败：{type(exc).__name__}",
+                       status_code=422) from exc
+
+    now = utcnow()
+    existing = _binding_row(db, user.id, device.id, profile.id)
+    if existing is not None and existing.blocked_at is not None:
+        raise ApiError("FORBIDDEN", "服务端已撤销该绑定，不能再次领取；请在插件中重新登录",
+                       status_code=403)
+    if existing is None:
+        binding = LocalKeyBinding(
+            user_id=user.id, device_id=device.id, profile_id=profile.id,
+            profile_version=profile.version, credential_version=cred.version,
+            last_bound_at=now,
+        )
+        db.add(binding)
+    else:
+        # 后续仅为该绑定更新版本（docs/08 §8.3）；用户解绑后重新绑定复用同一行
+        binding = existing
+        binding.profile_version = profile.version
+        binding.credential_version = cred.version
+        binding.last_bound_at = now
+        binding.revoked_at = None
+    db.commit()
+    db.refresh(binding)
+
+    out = LocalBindingOut(
+        binding_id=binding.id,
+        profile_id=profile.id,
+        profile_version=profile.version,
+        credential_version=cred.version,
+        endpoint=profile.endpoint,
+        model=profile.model,
+        capabilities=profile.capabilities_json or {},
+        secret=api_key,
+        bound_at=now.isoformat(),
+    )
+    # 禁止缓存：网关与浏览器都不得留存响应体（docs/08 §8.3）
+    return Response(
+        content=out.model_dump_json(),
+        media_type="application/json",
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, private",
+            "Pragma": "no-cache",
+        },
+    )
+
+
+@router.delete("/v1/provider-profiles/{profile_id}/local-binding")
+def unbind_local(
+    profile_id: str,
+    principal=Depends(require_device),
+    db: Session = Depends(get_db),
+):
+    """解绑：只删除本机绑定，不替用户撤销线上或供应商 Key（docs/08 §8.3）。"""
+    user = principal.user
+    device = principal.device
+    _require_bind_local(principal)
+    profile = _require_profile(db, user.id, profile_id)
+    binding = _binding_row(db, user.id, device.id, profile.id)
+    if binding is None or binding.revoked_at is not None:
+        return {"profile_id": profile.id, "unbound": False,
+                "note": "本设备没有该配置的有效绑定。"}
+    binding.revoked_at = utcnow()
+    db.commit()
+    return {
+        "profile_id": profile.id,
+        "unbound": True,
+        "note": "已删除本机绑定；线上或供应商 Key 未撤销，本机已导入的副本由插件清理。",
+    }
+
+
+@router.post("/v1/provider-profiles/{profile_id}/local-binding/revoke")
+def revoke_local_binding(
+    profile_id: str,
+    principal=Depends(require_scope("profiles:manage")),
+    db: Session = Depends(get_db),
+):
+    """服务端撤销绑定：阻止该设备再次领取（docs/08 §8.3）。
+
+    无法远程收回已经下发的供应商 Key；彻底失效需在供应商处撤销。
+    """
+    user = principal.user
+    profile = _require_profile(db, user.id, profile_id)
+    now = utcnow()
+    rows = db.query(LocalKeyBinding).filter(
+        LocalKeyBinding.user_id == user.id,
+        LocalKeyBinding.profile_id == profile.id,
+        LocalKeyBinding.blocked_at.is_(None),
+    ).all()
+    for row in rows:
+        row.blocked_at = now
+    db.commit()
+    return {
+        "profile_id": profile.id,
+        "revoked_bindings": len(rows),
+        "note": "已阻止这些设备再次领取该配置的 Key；已下发的供应商 Key 需在供应商处撤销。",
+    }
 
 
 # ---- 连接测试 ----

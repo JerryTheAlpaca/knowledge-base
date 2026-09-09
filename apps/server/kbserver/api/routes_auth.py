@@ -30,7 +30,14 @@ from ..api.deps import (
 from ..domain.errors import ApiError
 from ..models import Device, DeviceAuthRequest, Token, utcnow
 from ..security import central_auth
-from ..security.tokens import DESKTOP_SCOPES, hash_token, issue_token, new_service_token
+from ..security.tokens import (
+    BIND_LOCAL_SCOPE,
+    DESKTOP_SCOPES,
+    OPTIONAL_DEVICE_SCOPES,
+    hash_token,
+    issue_token,
+    new_service_token,
+)
 
 router = APIRouter(tags=["auth"])
 
@@ -123,6 +130,8 @@ def auth_logout(request: Request, response: Response, principal=Depends(current_
 class DeviceStartInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     device_name: str = Field(min_length=1, max_length=120)
+    # 申请额外权限（docs/08 §8.3）：只接受 OPTIONAL_DEVICE_SCOPES 中的项
+    requested_scopes: list[str] = Field(default_factory=list)
 
 
 class DeviceStartResult(BaseModel):
@@ -131,6 +140,7 @@ class DeviceStartResult(BaseModel):
     browser_url: str
     expires_at: str
     interval_seconds: int
+    granted_scopes: list[str]
 
 
 class DevicePollInput(BaseModel):
@@ -161,9 +171,12 @@ def device_start(body: DeviceStartInput, request: Request, db: Session = Depends
     settings = get_settings()
     poll_secret = new_service_token()
     now = utcnow()
+    # 只接受白名单内的额外权限，其余静默忽略（不因拼写错误放大权限）
+    requested = [s for s in dict.fromkeys(body.requested_scopes) if s in OPTIONAL_DEVICE_SCOPES]
     req = DeviceAuthRequest(
         device_name=body.device_name[:120],
         poll_secret_hash=hash_token(poll_secret),
+        requested_scopes_json=requested,
         expires_at=now + timedelta(seconds=settings.device_auth_ttl_seconds),
     )
     db.add(req)
@@ -174,6 +187,7 @@ def device_start(body: DeviceStartInput, request: Request, db: Session = Depends
         browser_url=f"{settings.public_base_url}/authorize?request_id={req.id}",
         expires_at=req.expires_at.isoformat(),
         interval_seconds=settings.device_auth_poll_interval_seconds,
+        granted_scopes=list(DESKTOP_SCOPES) + requested,
     )
 
 
@@ -181,11 +195,14 @@ def device_start(body: DeviceStartInput, request: Request, db: Session = Depends
 def device_info(request_id: str, db: Session = Depends(get_db)):
     """授权页展示用：只暴露设备名/状态等非敏感信息；不含有能领取 Token 的数据。"""
     req = _pending_request(db, request_id)
+    requested = list(req.requested_scopes_json or [])
     return {
         "device_name": req.device_name,
         "state": req.state,
         "central_username": req.central_username,
         "expires_at": req.expires_at.isoformat(),
+        "requested_scopes": requested,
+        "requests_local_key_binding": BIND_LOCAL_SCOPE in requested,
     }
 
 
@@ -256,7 +273,11 @@ def device_poll(body: DevicePollInput, request: Request, db: Session = Depends(g
     device = db.get(Device, req.device_id)
     if device is None or device.revoked_at is not None:
         raise ApiError("AUTH_EXPIRED", "批准会话已失效，请重新发起", status_code=410)
-    raw, token = issue_token(req.local_user_id, device.id, list(DESKTOP_SCOPES))
+    # 批准时按请求的额外权限签发（docs/08 §8.3）：普通设备不自动获得导出能力
+    scopes = list(DESKTOP_SCOPES) + [
+        s for s in (req.requested_scopes_json or []) if s in OPTIONAL_DEVICE_SCOPES
+    ]
+    raw, token = issue_token(req.local_user_id, device.id, scopes)
     db.add(token)
     db.commit()
     return {
@@ -264,7 +285,7 @@ def device_poll(body: DevicePollInput, request: Request, db: Session = Depends(g
         "token": raw,
         "device_id": device.id,
         "user_id": req.local_user_id,
-        "scopes": list(DESKTOP_SCOPES),
+        "scopes": scopes,
         "expires_at": token.expires_at.isoformat(),
     }
 

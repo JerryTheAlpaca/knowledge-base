@@ -274,6 +274,34 @@ class ProviderOperation(Base, TimestampMixin):
     detail: Mapped[str] = mapped_column(String(200), default="")  # 结束原因的简短说明（不含敏感信息）
 
 
+class LocalKeyBinding(Base, TimestampMixin):
+    """线上 Key 向本人设备的下发绑定（docs/08 §8.3）。
+
+    - 一条绑定关联（用户、设备、线上配置）；解绑只删除本机绑定，
+      不替用户撤销线上或供应商 Key。
+    - 只记录绑定关系与下发的配置/凭据版本，不保存明文 Key。
+    - 服务端撤销绑定会阻止再次领取，但无法远程收回已下发的供应商 Key。
+    """
+
+    __tablename__ = "local_key_bindings"
+    __table_args__ = (
+        UniqueConstraint("user_id", "device_id", "profile_id", name="uq_local_binding"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    device_id: Mapped[str] = mapped_column(ForeignKey("devices.id"), index=True)
+    profile_id: Mapped[str] = mapped_column(ForeignKey("provider_profiles.id"), index=True)
+    # 最近一次成功下发的版本，用于「仅为该绑定更新版本」
+    profile_version: Mapped[int] = mapped_column(Integer, default=0)
+    credential_version: Mapped[int] = mapped_column(Integer, default=0)
+    last_bound_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    # revoked_at = 用户在本机解绑：允许再次绑定；
+    # blocked_at = 服务端撤销绑定：阻止再次领取（docs/08 §8.3）
+    revoked_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    blocked_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+
+
 class DeviceAuthRequest(Base, TimestampMixin):
     """插件浏览器授权请求（docs/05 §4.5）：浏览器批准，插件轮询领取设备 Token。
 
@@ -286,6 +314,8 @@ class DeviceAuthRequest(Base, TimestampMixin):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     device_name: Mapped[str] = mapped_column(String(120))
     poll_secret_hash: Mapped[str] = mapped_column(String(64))
+    # 插件在授权时申请的额外权限（docs/08 §8.3）：仅允许 OPTIONAL_DEVICE_SCOPES 中的项
+    requested_scopes_json: Mapped[list] = mapped_column(JSON, default=list)
     state: Mapped[str] = mapped_column(String(20), default="pending")  # pending|approved|consumed|expired|cancelled
     # 批准时绑定的中心账号与本地用户
     auth_subject: Mapped[str | None] = mapped_column(String(64), nullable=True)

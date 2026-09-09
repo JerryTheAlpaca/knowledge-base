@@ -72,6 +72,26 @@
   h2 { font-size: 16px; margin: 4px 0 10px; }
   details summary { cursor: pointer; color: var(--accent); font-size: 14px; }
   .filelist { font-size: 13px; }
+  /* 条目详情阅读页签（docs/08 §8.4） */
+  .readtabs { display: flex; gap: 4px; margin: 10px 0 0; border-bottom: 1px solid var(--line); }
+  .readtabs button { border: none; background: transparent; padding: 8px 14px; border-radius: 8px 8px 0 0;
+                     color: var(--muted); min-height: 40px; }
+  .readtabs button.active { color: var(--accent); background: var(--accent-soft); font-weight: 600; }
+  .readpane { padding-top: 10px; }
+  .readbody { font-size: 14px; line-height: 1.7; }
+  .readbody h4 { font-size: 14px; margin: 14px 0 6px; color: var(--muted); }
+  .readbody ul { margin: 6px 0; padding-left: 20px; }
+  .readbody li { margin: 4px 0; }
+  .readbody blockquote { margin: 6px 0; padding: 6px 12px; border-left: 3px solid var(--accent-soft);
+                         background: var(--bg); color: var(--text); border-radius: 0 6px 6px 0; }
+  .seg { display: block; padding: 4px 0; border-bottom: 1px dashed var(--line); }
+  .seg:target, .seg.highlight { background: var(--accent-soft); border-radius: 6px; }
+  .segid { font-size: 12px; color: var(--muted); margin-right: 6px; }
+  .evlink { font-size: 12px; color: var(--accent); cursor: pointer; border: none; background: none;
+            padding: 0 4px; text-decoration: underline; }
+  .versionnote { font-size: 13px; color: var(--warn); background: var(--warn-soft);
+                 border-radius: 8px; padding: 6px 10px; margin: 8px 0; }
+  .morebtn { margin-top: 8px; }
 </style>
 </head>
 <body>
@@ -405,46 +425,258 @@ function itemRow(it) {
       " · 创建于 " + fmtTime(it.created_at) + (it.state_detail ? " · " + esc(it.state_detail) : "") + "</div></li>";
 }
 
-// ---------- 详情 ----------
+// ---------- 详情（docs/08 §8.4：原始资料 / 云端提炼 / 状态与操作） ----------
 let detailId = null;
+let detailData = null;
+let detailTab = "source";
+const SEG_PAGE = 60;           // 长文本按段落逐段加载
+let segShown = 0;
+
+const COVERAGE_LABELS = {
+  full_text: "已取得本次正文范围全文", partial_text: "仅取得部分正文",
+  user_excerpt: "仅用户摘录", screenshots_only: "仅有截图（原文未取得）",
+  transcript_only: "仅字幕/文字稿，不含视频画面", metadata_only: "仅元数据，正文未取得",
+};
+const DIGEST_STATE_LABELS = {
+  ready: "已生成", pending: "待提炼", failed: "提炼失败", expired: "云端材料已过期", missing: "无提炼",
+};
+
 async function openDetail(itemId) {
   detailId = itemId;
+  detailTab = "source";
+  segShown = 0;
   const host = $("detailHost");
   host.innerHTML = '<div class="card muted">加载中…</div>';
   window.scrollTo({ top: host.offsetTop - 60, behavior: "smooth" });
-  let it;
-  try { it = await api("/v1/items/" + encodeURIComponent(itemId)); }
+  try { detailData = await api("/v1/items/" + encodeURIComponent(itemId) + "/reading"); }
   catch (e) { host.innerHTML = '<div class="card"><div class="error">' + esc(e.message) + "</div></div>"; return; }
+  renderDetail();
+}
+function closeDetail() { detailId = null; detailData = null; $("detailHost").innerHTML = ""; }
+function switchDetailTab(which) {
+  detailTab = which;
+  if (which === "source") segShown = 0;
+  renderDetail();
+}
+function showMoreSegments() { segShown += SEG_PAGE; renderDetail(); }
 
+function renderDetail() {
+  const host = $("detailHost");
+  const d = detailData;
+  if (!d) return;
+  const it = d.item;
   const hasUrl = !!it.original_url;
+  const expired = d.expired;
   host.innerHTML = '<div class="card">' +
-    '<div class="row"><h2 style="flex:1;margin:0">条目详情</h2>' +
+    '<div class="row"><h2 style="flex:1;margin:0">' + esc(it.title || "条目详情") + '</h2>' +
     '<button onclick="closeDetail()">收起</button></div>' +
     '<div class="kv"><b>状态</b>' + stateBadge(it.pipeline_state) +
       (it.state_detail ? "　" + esc(it.state_detail) : "") + "</div>" +
-    '<div class="kv"><b>平台</b>' + esc(it.platform) + "</div>" +
-    '<div class="kv"><b>覆盖</b>' + esc(it.coverage) + "</div>" +
-    '<div class="kv"><b>链接</b>' + (hasUrl ? '<a href="' + esc(it.original_url) + '" target="_blank" rel="noopener">' + esc(it.original_url) + "</a>" : "（无）") + "</div>" +
-    '<div class="kv"><b>缺失材料</b>' + (it.missing_materials.length ? esc(it.missing_materials.join("、")) : "无") + "</div>" +
-    '<div class="kv"><b>版本</b>来源 r' + it.source_revision + " · 成品 bundle r" + it.bundle_revision + "</div>" +
-    '<div class="kv"><b>时间</b>采集 ' + fmtTime(it.captured_at) + " · 创建 " + fmtTime(it.created_at) + "</div>" +
-    '<div class="actions">' +
-      '<button onclick="doReprocess()">重新加工</button>' +
-      (hasUrl ? '<button onclick="doRefetch()">重新提取来源</button>' : "") +
-      (it.bundle_revision ? '<a class="btn" style="min-height:36px;display:inline-flex;align-items:center" href="/v1/items/' + encodeURIComponent(it.item_id) + '/bundles/' + it.bundle_revision + '/manifest" download target="_blank">下载清单</a>' : "") +
-      '<button class="danger" onclick="doDelete()">删除服务器材料</button>' +
-    "</div>" +
-    '<details style="margin-top:12px"><summary>补充材料（文字 / 字幕 / 截图）</summary>' +
-      '<label for="supText">补充文字</label><textarea id="supText" placeholder="粘贴缺失的正文、字幕内容…"></textarea>' +
-      '<label for="supFiles">补充文件</label><input id="supFiles" type="file" multiple>' +
-      '<div id="supMsg"></div>' +
-      '<div class="row" style="margin-top:10px"><button class="primary" onclick="doSupplement()">提交补充</button></div>' +
-    "</details>" +
-    '<details style="margin-top:8px" id="exportBox" ontoggle="if(this.open) loadExport()"><summary style="cursor:pointer;color:var(--accent)">导出文件列表</summary>' +
-      '<div id="exportBody" class="filelist" style="margin-top:8px"></div></details>' +
+    (expired ? '<div class="versionnote">' + esc(d.note || "云端材料已过期，本地已下载材料仍可查看。") + "</div>" : "") +
+    '<nav class="readtabs">' +
+      '<button class="' + (detailTab === "source" ? "active" : "") + '" onclick="switchDetailTab(\'source\')">原始资料</button>' +
+      '<button class="' + (detailTab === "digest" ? "active" : "") + '" onclick="switchDetailTab(\'digest\')">云端提炼</button>' +
+      '<button class="' + (detailTab === "status" ? "active" : "") + '" onclick="switchDetailTab(\'status\')">状态与操作</button>' +
+    "</nav>" +
+    '<div class="readpane">' + renderDetailPane(d) + "</div>" +
+    (hasUrl ? "" : "") +
     "</div>";
 }
-function closeDetail() { detailId = null; $("detailHost").innerHTML = ""; }
+
+function renderDetailPane(d) {
+  if (detailTab === "source") return renderSourcePane(d);
+  if (detailTab === "digest") return renderDigestPane(d);
+  return renderStatusPane(d);
+}
+
+// ---- 原始资料 ----
+function renderSourcePane(d) {
+  const it = d.item;
+  const sm = d.source_material;
+  const rows = [];
+  rows.push('<div class="grid2">' +
+    '<div class="kv"><b>平台</b>' + esc(it.platform) + "</div>" +
+    '<div class="kv"><b>作者</b>' + esc(it.author || "未取得") + "</div>" +
+    '<div class="kv"><b>来源 URL</b>' + (it.original_url
+      ? '<a href="' + esc(it.original_url) + '" target="_blank" rel="noopener">' + esc(it.original_url) + "</a>"
+      : "（无）") + "</div>" +
+    '<div class="kv"><b>发布时间</b>' + esc(it.published_at || "未取得") + "</div>" +
+    '<div class="kv"><b>采集时间</b>' + fmtTime(it.captured_at) + "</div>" +
+    '<div class="kv"><b>定位</b>' + esc(locatorText(it.source_locator)) + "</div>" +
+    "</div>");
+  rows.push('<div class="kv"><b>覆盖</b>' + esc(COVERAGE_LABELS[it.coverage] || it.coverage) +
+    "　<b style=\"margin-left:10px\">缺失</b>" +
+    (it.missing_materials.length ? esc(it.missing_materials.join("、")) : "无") + "</div>");
+  if (it.user_note) {
+    rows.push('<div class="kv"><b>用户原始备注</b></div><blockquote>' + esc(it.user_note) + "</blockquote>");
+  }
+  if (!sm) {
+    rows.push('<div class="muted" style="margin-top:10px">该条目还没有可阅读的原始材料。</div>');
+    return rows.join("");
+  }
+  if (sm.warnings.length) {
+    rows.push('<div class="versionnote">' + esc(sm.warnings.join("；")) + "</div>");
+  }
+  // 原件下载
+  const downloads = sm.files.filter((f) => f.relative_path !== "normalized.md");
+  if (downloads.length) {
+    rows.push('<h4>原始文件与附件</h4><div class="filelist">' + downloads.map((f) =>
+      '<div><a href="' + esc(sm.download_base) + "/" + encodeURIComponent(f.file_id) + '" download>' +
+      esc(f.relative_path) + "</a>　" + (f.bytes / 1024).toFixed(1) + " KB · " + esc(f.role) + "</div>"
+    ).join("") + "</div>");
+  }
+  // 全文 / 完整字幕
+  rows.push('<h4>实际取得的全文</h4>');
+  if (sm.normalized_md) {
+    const lines = sm.normalized_md.split("\n").filter((l) => l.trim());
+    const shown = lines.slice(0, segShown + SEG_PAGE);
+    rows.push('<div class="readbody" id="sourceBody">' + shown.map(renderSourceLine).join("") + "</div>");
+    if (shown.length < lines.length) {
+      rows.push('<button class="morebtn" onclick="showMoreSegments()">继续展开（还有 ' +
+        (lines.length - shown.length) + ' 段）</button>');
+    }
+  } else if (sm.truncated) {
+    rows.push('<div class="muted">正文超过内联阅读上限，请用上方原件入口下载。</div>');
+  } else {
+    rows.push('<div class="muted">未取得可读正文；覆盖说明如实反映缺失，不用标题补写。</div>');
+  }
+  return rows.join("");
+}
+
+/** 原文行：带块 ID 的行渲染为可定位段落；不加链接，纯文本阅读。 */
+function renderSourceLine(line) {
+  const m = /^(.*?)\s+\^(s\d{4})\s*$/.exec(line);
+  if (!m) return '<div class="seg">' + esc(line) + "</div>";
+  return '<div class="seg" id="' + esc(m[2]) + '"><span class="segid">' + esc(m[2]) + "</span>" +
+    esc(m[1]) + "</div>";
+}
+
+function locatorText(loc) {
+  if (!loc || typeof loc !== "object") return "—";
+  const parts = [];
+  if (loc.part) parts.push("分P " + loc.part);
+  if (loc.cid) parts.push("cid " + loc.cid);
+  if (loc.bvid) parts.push(loc.bvid);
+  if (loc.index) parts.push("第 " + loc.index + " 段");
+  if (loc.type) parts.push(loc.type);
+  return parts.length ? parts.join(" · ") : "—";
+}
+
+// ---- 云端提炼 ----
+function renderDigestPane(d) {
+  const g = d.cloud_digest;
+  const rows = [];
+  rows.push('<div class="kv"><b>提炼状态</b>' +
+    '<span class="badge ' + (g.state === "ready" ? "b-ready" : (g.state === "expired" ? "b-needs_input" : "b-queued")) + '">' +
+    esc(DIGEST_STATE_LABELS[g.state] || g.state) + "</span>" +
+    (g.bundle_revision ? '　<span class="muted">来源 r' + g.source_revision + " · 提炼 r" + g.bundle_revision +
+      (g.created_at ? " · 生成于 " + fmtTime(g.created_at) : "") + "</span>" : "") + "</div>");
+  if (g.state_detail) rows.push('<div class="muted">' + esc(g.state_detail) + "</div>");
+  if (g.stale_note) rows.push('<div class="versionnote">' + esc(g.stale_note) + "</div>");
+  if (g.state !== "ready" && g.state !== "expired") return rows.join("");
+  if (g.state === "expired") {
+    rows.push('<div class="muted">该版本提炼仍可阅读；云端原件可能已回收。</div>');
+  }
+  rows.push('<h4>一句话总结</h4><div class="readbody">' + esc(g.summary || "—") + "</div>");
+
+  rows.push('<h4>核心观点与证据</h4><div class="readbody">');
+  if (g.key_points.length) {
+    rows.push("<ul>" + g.key_points.map((kp) =>
+      "<li>" + (kp.claim_id ? '<span class="segid">' + esc(kp.claim_id) + "</span>" : "") +
+      esc(kp.text) + (kp.conditions ? "（适用条件：" + esc(kp.conditions) + "）" : "") +
+      evidenceButtons(kp.evidence_ids, g) + "</li>").join("") + "</ul>");
+  } else {
+    rows.push("材料不足以提取核心观点。");
+  }
+  rows.push("</div>");
+
+  rows.push('<h4>值得保留的原文摘录</h4><div class="readbody">');
+  if (g.excerpts.length) {
+    rows.push(g.excerpts.map((ex) =>
+      "<blockquote>" + (ex.claim_id ? '<span class="segid">' + esc(ex.claim_id) + "</span>" : "") +
+      esc(ex.text) + evidenceButtons(ex.evidence_ids, g) + "</blockquote>").join(""));
+  } else {
+    rows.push('<span class="muted">没有合适的逐字摘录。</span>');
+  }
+  rows.push("</div>");
+
+  rows.push('<h4>方法、适用条件与局限</h4><div class="readbody">');
+  if (g.methods.length) {
+    rows.push("<ul>" + g.methods.map((m) => "<li>" + esc(m.text) + evidenceButtons(m.evidence_ids, g) +
+      (m.steps && m.steps.length ? "<ul>" + m.steps.map((s) => "<li>" + esc(s) + "</li>").join("") + "</ul>" : "") +
+      (m.conditions ? '<div class="muted">适用条件：' + esc(m.conditions) + "</div>" : "") + "</li>").join("") + "</ul>");
+  } else {
+    rows.push('<span class="muted">原文未提供。</span>');
+  }
+  if (g.limitations.length) {
+    rows.push("<ul>" + g.limitations.map((l) => "<li>局限：" + esc(l) + "</li>").join("") + "</ul>");
+  }
+  rows.push("</div>");
+
+  rows.push('<h4>AI 候选启发</h4><div class="readbody">');
+  rows.push(g.insights.length
+    ? "<ul>" + g.insights.map((i) => "<li>" + esc(i.text) + "（AI 推测，未经原文证明）</li>").join("") + "</ul>"
+    : '<span class="muted">暂无。</span>');
+  rows.push("</div>");
+  return rows.join("");
+}
+
+/** 证据定位按钮：点击跳到原始资料页签对应片段（同版本原文，docs/08 §8.4）。 */
+function evidenceButtons(ids, g) {
+  if (!ids || !ids.length) return "";
+  return ids.map((sid) => {
+    const known = g.segments && Object.prototype.hasOwnProperty.call(g.segments, sid);
+    return '<button class="evlink" ' + (known ? 'onclick="jumpToSegment(\'' + esc(sid) + '\')"' : "disabled") +
+      ' title="' + (known ? "定位到本条原文片段" : "该片段不属于此提炼版本的原文") + '">' + esc(sid) + "</button>";
+  }).join("");
+}
+
+function jumpToSegment(sid) {
+  const g = detailData && detailData.cloud_digest;
+  const sm = detailData && detailData.source_material;
+  if (!g || !sm || !sm.normalized_md) return;
+  // 证据可能位于长文本后段：先展开到目标位置再定位
+  const lines = sm.normalized_md.split("\n").filter((l) => l.trim());
+  const idx = lines.findIndex((l) => l.indexOf("^" + sid) !== -1);
+  if (idx === -1) return;
+  if (idx >= segShown + SEG_PAGE) segShown = Math.floor(idx / SEG_PAGE) * SEG_PAGE;
+  detailTab = "source";
+  renderDetail();
+  const el = document.getElementById(sid);
+  if (el) { el.scrollIntoView({ block: "center" }); el.classList.add("highlight"); }
+}
+
+// ---- 状态与操作 ----
+function renderStatusPane(d) {
+  const it = d.item;
+  const hasUrl = !!it.original_url;
+  const rows = [];
+  rows.push('<div class="grid2">' +
+    '<div class="kv"><b>来源版本</b>r' + it.source_revision + "</div>" +
+    '<div class="kv"><b>成品版本</b>bundle r' + it.bundle_revision + "</div>" +
+    '<div class="kv"><b>提炼基于</b>' + (it.analysis_source_revision
+      ? "来源 r" + it.analysis_source_revision + "（提炼 r" + it.analysis_bundle_revision + "）" : "尚无提炼") + "</div>" +
+    '<div class="kv"><b>创建时间</b>' + fmtTime(it.created_at) + "</div>" +
+    '<div class="kv"><b>云端保留至</b>' + (it.expires_at ? fmtTime(it.expires_at) : "—") + "</div>" +
+    "</div>");
+  rows.push('<div class="actions">' +
+    '<button onclick="doReprocess()">重新加工</button>' +
+    (hasUrl ? '<button onclick="doRefetch()">重新提取来源</button>' : "") +
+    (it.bundle_revision ? '<a class="btn" style="min-height:36px;display:inline-flex;align-items:center" href="/v1/items/' +
+      encodeURIComponent(it.item_id) + "/bundles/" + it.bundle_revision + '/manifest" download target="_blank">下载清单</a>' : "") +
+    '<button class="danger" onclick="doDelete()">删除服务器材料</button>' +
+    "</div>");
+  rows.push('<details style="margin-top:12px"><summary>补充材料（文字 / 字幕 / 截图）</summary>' +
+    '<label for="supText">补充文字</label><textarea id="supText" placeholder="粘贴缺失的正文、字幕内容…"></textarea>' +
+    '<label for="supFiles">补充文件</label><input id="supFiles" type="file" multiple>' +
+    '<div id="supMsg"></div>' +
+    '<div class="row" style="margin-top:10px"><button class="primary" onclick="doSupplement()">提交补充</button></div>' +
+    "</details>");
+  rows.push('<details style="margin-top:8px" id="exportBox" ontoggle="if(this.open) loadExport()">' +
+    '<summary style="cursor:pointer;color:var(--accent)">导出文件列表</summary>' +
+    '<div id="exportBody" class="filelist" style="margin-top:8px"></div></details>');
+  return rows.join("");
+}
 
 async function doReprocess() {
   if (!detailId) return;
