@@ -87,7 +87,7 @@ def build_user_prompt(
         "output_rules": [
             "只输出一个 JSON 对象，不要输出其他文字。",
             "source_revision 固定填写本提示给出的值。",
-            "key_points 每条必须带 evidence_ids，且 ID 必须来自输入片段；材料不足时宁可少写。",
+            "key_points 每条必须带 evidence_ids，且 ID 必须来自输入片段；每条 evidence_ids 最多 20 个，优先选最有代表性的片段；材料不足时宁可少写。",
             "insights 是你的延伸建议，kind 固定为 ai_suggestion；不要与原文主张混淆。",
             "原文没有的方法/决策/作者/日期一律留空或空数组。",
             "key_points 最多 7 条，methods 最多 5 条，insights 最多 3 条，topics 最多 5 个。",
@@ -117,7 +117,7 @@ def build_chunk_user_prompt(
         },
         "output_rules": [
             "只输出一个 JSON 对象。",
-            "evidence_ids 必须来自本段输入片段。",
+            "evidence_ids 必须来自本段输入片段；每条最多 20 个。",
             "insights 的 kind 固定为 ai_suggestion。",
             "每类最多 5 条；本段没有就给空数组。",
         ],
@@ -153,7 +153,7 @@ def build_merge_user_prompt(
         "output_rules": [
             "只输出一个 JSON 对象。",
             "source_revision 固定填写本提示给出的值。",
-            "evidence_ids 只能使用候选要点中出现过的片段 ID。",
+            "evidence_ids 只能使用候选要点中出现过的片段 ID；每条最多 20 个。",
             "key_points 最多 7 条，methods 最多 5 条，insights 最多 3 条，topics 最多 5 个。",
             "材料没有依据的作者/日期/最终决策一律留空。",
         ],
