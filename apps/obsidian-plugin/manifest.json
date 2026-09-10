@@ -3,7 +3,7 @@
   "name": "KB Inbox",
   "version": "0.3.0",
   "minAppVersion": "1.11.4",
-  "description": "知识摄入系统：三层知识库（Sources/Digests/Knowledge）、本地整理与融合、增量下载、校验落盘与编辑保护。",
+  "description": "Self-hosted knowledge inbox for Obsidian: bring web clips, articles and videos into your vault with incremental sync, verified writes and edit protection.",
   "author": "JerryTheAlpaca",
   "isDesktopOnly": true
 }

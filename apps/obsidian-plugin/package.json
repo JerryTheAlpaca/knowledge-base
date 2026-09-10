@@ -1,7 +1,7 @@
 {
-  "name": "knowledge-inbox-obsidian",
-  "version": "0.1.1",
-  "description": "知识摄入系统本地入库：配对、增量下载、校验落盘、编辑保护与回执。",
+  "name": "kb-inbox",
+  "version": "0.3.0",
+  "description": "Self-hosted knowledge inbox for Obsidian: incremental sync, verified writes and edit protection.",
   "main": "main.js",
   "scripts": {
     "typecheck": "tsc --noEmit --skipLibCheck",
@@ -10,7 +10,7 @@
   },
   "keywords": [
     "obsidian",
-    "knowledge-inbox"
+    "kb-inbox"
   ],
   "license": "MIT",
   "devDependencies": {
