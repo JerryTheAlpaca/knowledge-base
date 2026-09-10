@@ -153,4 +153,4 @@
 - **部署**：`sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17`（163MB 包 / model.int8.onnx 239MB）→ `/opt/models/`，经 ghfast.top 镜像 ~30s 拉完；SHA-256 清单 `/opt/models/MANIFEST-sha256-sensevoice.txt`；宿主机直跑引擎冒烟通过（输出自带标点）。代码零改动（`--model sense_voice` 原生支持）。
 - **对比结论**（同两样本、同管道，仅换模型）：准确率 **SenseVoice 明显更好**——同音错字显著更少（遍地是机会/唯心主义/抱负和理想等 dolphin 全错点均正确）、自带完整标点、数字 ITN 规范（70%）、专有名词更稳；速度 dolphin 仍快 2.2 倍（RTF 0.13 vs 0.29），但 SenseVoice 3.5 倍速 + 峰值 346MiB 对空闲串行场景完全够用。104/104 段全过。
 - **全文与对比**：`probe-out/模型对比-Dolphin-vs-SenseVoice.md` + 四份转写全文（两模型 × 两样本）。
-- **生产配置未动**：`ASR_MODEL` 仍为 dolphin；待用户拍板后改 compose 一行重启 worker 即可切换，Dolphin 留作 retry_model 备胎。
+- **生产配置已切换（2026-09-10 09:37，用户拍板）**：`ASR_MODEL=sense_voice`（c422bb2），服务器 `up -d` 重建 worker 生效（env 验证、模型挂载可见、worker 启动日志正常、health 200）。Dolphin 留在 `/opt/models` 作 `retry_model` 备胎（API 传别名即可用）。
