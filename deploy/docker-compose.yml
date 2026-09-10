@@ -34,6 +34,8 @@ services:
       # 代码依赖 tmp → objects 同卷 rename 的原子性（docs/02 §7.4），拆成多个卷会因
       # 跨设备 rename 报 EXDEV (Invalid cross-device link)，导致存储探针和上传全部失败。
       - data:/data
+      # 模型只读挂载：asr 触发接口在 api 侧校验 model_available（引擎只有 worker 用，不挂）
+      - /opt/models:/opt/models:ro
     secrets:
       - master_key
       - session_secret
