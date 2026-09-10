@@ -31,6 +31,8 @@ class CaptureInput(BaseModel):
     source_hint: str | None = "unknown"
     # 采集渠道（web_inbox / plugin / phone…）：只作渠道记录，不是平台（docs/13 §5.2）
     capture_channel: str | None = None
+    # 网页/公众号正文图片：默认不下载，勾选后本次提取才保存配图（docs/02 §5.1）
+    include_images: bool = False
     original_url: str | None = None
     share_text: str | None = None
     text: str | None = None

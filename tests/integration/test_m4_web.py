@@ -102,13 +102,15 @@ def make_page_net() -> FakeWebNet:
     )
 
 
-def _capture_url(client, token, key: str, url: str | None = None, share: str | None = None):
+def _capture_url(client, token, key: str, url: str | None = None, share: str | None = None,
+                 **extra):
     body = {
         "client_capture_id": f"{key}-1111-2222-3333-444444444444",
         "input_kind": "share" if share else "url",
         "original_url": url,
         "share_text": share,
     }
+    body.update(extra)
     return client.post(
         "/v1/captures", json=body,
         headers={**auth(token), "Idempotency-Key": key},
@@ -309,6 +311,23 @@ def test_webpage_include_images_switch(web_net):
     assert [i.ext for i in ext.images] == ["png"]
     # 两次 extract 各抓一次页面，第二次另抓图片：共 3 次请求
     assert len(net.calls) == 3
+
+
+def test_capture_with_include_images(client, user_a, session_factory, web_net):
+    """采集入口带 include_images=true：首次提取就保存正文图片（首页勾选路径）。"""
+    web_net(make_page_net())
+    c = _capture_url(client, user_a["phone"]["token"], "m4capimg",
+                     url=GENERIC_URL, include_images=True)
+    assert c.status_code == 202
+    item_id = c.json()["item_id"]
+    _drain(session_factory)
+
+    it = _get_item(client, user_a["desktop"]["token"], item_id)
+    assert it["source_revision"] == 2
+    assert it["images_archived"] == 1
+    m = _manifest(client, user_a["desktop"]["token"], it)
+    paths = [f["relative_path"] for f in m["files"]]
+    assert any(p.endswith("img-001.png") for p in paths)
 
 
 def test_generic_js_shell_needs_input(client, user_a, session_factory, web_net):

@@ -134,6 +134,11 @@
                        max-height: 220px; resize: none; background: transparent; }
   .smartbox textarea:focus { box-shadow: none; }
   .chiprow { display: flex; flex-wrap: wrap; gap: 6px; padding: 4px 6px 0; }
+  /* 提取图片勾选行：粘贴框下方，默认不勾；触控目标 ≥44px（docs/10 §7.1） */
+  .checkrow { display: flex; align-items: center; gap: 6px; min-height: 44px;
+              padding: 4px 8px 0; cursor: pointer; font-size: var(--fs-body); }
+  .checkrow input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--accent); flex: none; }
+  .checkrow .muted { font-size: var(--fs-small); }
   .chip { display: inline-flex; align-items: center; gap: 4px; background: var(--surface-2);
           border: 1px solid var(--border); border-radius: var(--radius-pill);
           padding: 4px 8px 4px 12px; font-size: var(--fs-caption); max-width: 100%; color: var(--text); }
@@ -449,6 +454,10 @@
         <textarea id="capText" rows="1" placeholder="粘贴链接、正文或分享内容…"></textarea>
         <div class="chiprow" id="urlChips" hidden></div>
         <div class="chiprow" id="fileChips" hidden></div>
+        <label class="checkrow" for="capImages" title="勾选后，本次提交的公众号/网页链接会连同正文配图一起保存">
+          <input type="checkbox" id="capImages"> 提取图片
+          <span class="small muted">公众号/网页配图默认不保存，勾选后本次提交才提取</span>
+        </label>
         <div class="smartbar">
           <span class="spacer"></span>
           <span class="small" id="capProgress"></span>
@@ -916,6 +925,8 @@ async function submitCapture() {
           input_kind: j.url ? "url" : ((jText || audioJob) ? (audioJob && !jText ? "file" : "text") : "file"),
           // 采集渠道（不是平台）：来源由服务端按 URL/输入判定
           capture_channel: "web_inbox", source_hint: "unknown",
+          // 提取图片开关：只影响网页/公众号路径，B 站等自动行为不受影响
+          include_images: !!$("capImages").checked,
           original_url: j.url || null, text: jText || null, share_text: null,
           user_note: jNote || null, upload_ids: jFiles,
           processing_intent: audioJob ? "transcribe_audio" : "default",

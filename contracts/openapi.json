@@ -2402,6 +2402,11 @@
             ],
             "title": "Capture Channel"
           },
+          "include_images": {
+            "type": "boolean",
+            "title": "Include Images",
+            "default": false
+          },
           "original_url": {
             "anyOf": [
               {
