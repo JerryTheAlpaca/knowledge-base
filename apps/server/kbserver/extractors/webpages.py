@@ -104,6 +104,10 @@ _VOID_TAGS = {"area", "base", "br", "col", "embed", "hr", "img", "input",
               "link", "meta", "param", "source", "track", "wbr"}
 _BLOCK_TAGS = {"p", "div", "section", "article", "blockquote", "li", "dd", "dt",
                "td", "th", "h1", "h2", "h3", "h4", "h5", "h6", "pre", "figcaption", "main"}
+# 标题标签：原文的小标题，段落分组时独立成段（docs/08 §3.1 阅读层）
+_HEADING_TAGS = {"h1", "h2", "h3", "h4", "h5", "h6"}
+_BOLD_TAGS = {"strong", "b"}
+_HEADING_MAX_CHARS = 30
 
 
 class _Node:
@@ -230,6 +234,35 @@ def _text_of(node: _Node) -> str:
 
     walk(node)
     return _clean_text("".join(parts))
+
+
+def _all_bold(node: _Node) -> bool:
+    """块内文字是否全部来自 strong/b（排版器常用它做小标题）。"""
+    state = {"text": False, "all_bold": True}
+
+    def walk(n: _Node, bold: bool) -> None:
+        for c in n.children:
+            if isinstance(c, str):
+                if c.strip():
+                    state["text"] = True
+                    if not bold:
+                        state["all_bold"] = False
+            else:
+                walk(c, bold or c.tag in _BOLD_TAGS)
+
+    walk(node, False)
+    return state["all_bold"] and state["text"]
+
+
+def _block_kind(node: _Node | None, text: str) -> str:
+    """正文块是标题还是普通段落；只按原文结构判断，不用文字内容猜测。"""
+    if node is None:
+        return "paragraph"
+    if node.tag in _HEADING_TAGS:
+        return "heading"
+    if len(text) <= _HEADING_MAX_CHARS and _all_bold(node):
+        return "heading"
+    return "paragraph"
 
 
 def _find_by_id(root: _Node, node_id: str) -> _Node | None:
@@ -417,6 +450,7 @@ def extract(url: str | None, *, share_text: str | None = None) -> WebpageExtract
     container = tree.root  # 图片收集范围；无正文启发式结果时兜底为整个文档
     leaves = _leaf_blocks(tree.root)
 
+    blocks: list[tuple[_Node | None, str]] = []
     if wechat:
         content_node = _find_by_id(tree.root, "js_content")
         if content_node is None:
@@ -425,19 +459,16 @@ def extract(url: str | None, *, share_text: str | None = None) -> WebpageExtract
                 "公众号页面未包含正文结构（可能需要登录或已被删除）。"
                 "可复制正文粘贴保存，或补充截图。",
             )
-        leaf_blocks = _blocks_under(content_node, leaves)
-        paragraphs = [_text_of(b) for b in leaf_blocks if _text_of(b)]
+        blocks = [(b, t) for b, t in ((b, _text_of(b)) for b in _blocks_under(content_node, leaves)) if t]
         container = content_node
     else:
-        paragraphs = []
         if leaves:
             container = _content_root(tree.root, leaves)
-            paragraphs = [_text_of(b) for b in _blocks_under(container, leaves) if _text_of(b)]
-        if len("".join(paragraphs)) < 40:
-            paragraphs = _fallback_paragraphs(tree.root)
+            blocks = [(b, t) for b, t in ((b, _text_of(b)) for b in _blocks_under(container, leaves)) if t]
+        if len("".join(t for _b, t in blocks)) < 40:
+            blocks = [(None, p) for p in _fallback_paragraphs(tree.root)]
             container = tree.root
-    paragraphs = [p for p in paragraphs if p]
-    if not paragraphs:
+    if not blocks:
         raise WebpageError(
             "empty_content",
             "未能从页面提取到正文：页面可能由脚本渲染或需要登录。"
@@ -447,13 +478,14 @@ def extract(url: str | None, *, share_text: str | None = None) -> WebpageExtract
     segments = [
         {
             "segment_id": f"s{i:04d}",
-            "text": p,
+            "text": t,
             "artifact_file_id": None,
             "locator": {"type": "paragraph", "index": i},
             "origin": "web_article",
             "confidence": None,
+            "kind": _block_kind(b, t),
         }
-        for i, p in enumerate(paragraphs, start=1)
+        for i, (b, t) in enumerate(blocks, start=1)
     ]
 
     # 元数据：有依据才填

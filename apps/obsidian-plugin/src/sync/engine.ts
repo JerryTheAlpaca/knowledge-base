@@ -317,10 +317,13 @@ export class SyncEngine {
     }
     for (const leftover of await fs.list(stagingBase)) await fs.remove(leftover);
 
-    // 4. 读取已下载内容
+    // 4. 读取已下载内容：正文优先用段落版 readable.md（自然分段），
+    //    没有段落版的旧来源版本回退到逐片段 normalized.md
     let normalizedText: string | null = null;
+    const readablePath = joinUnder(assetsBase, "readable.md");
     const normalizedPath = joinUnder(assetsBase, "normalized.md");
-    if (await fs.exists(normalizedPath)) normalizedText = await fs.read(normalizedPath);
+    if (await fs.exists(readablePath)) normalizedText = await fs.read(readablePath);
+    else if (await fs.exists(normalizedPath)) normalizedText = await fs.read(normalizedPath);
 
     let cloudMd: string | null = null;
     if (manifest.processing.result_file_id) {

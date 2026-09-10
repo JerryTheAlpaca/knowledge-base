@@ -208,6 +208,7 @@ export function mergeManagedTags(existing: string, managed: string[]): string {
 function fileLabel(f: KbFileEntry): string {
   const p = f.relative_path;
   if (p === "normalized.md") return "完整文字稿";
+  if (p === "readable.md") return "";  // 段落版正文已嵌入笔记，不重复列入原件
   if (p === "capture.json") return "原始提交记录";
   if (p === "analysis.json") return "云端结构化结果";
   if (p === "preview.md") return "";
@@ -217,9 +218,9 @@ function fileLabel(f: KbFileEntry): string {
   return p;
 }
 
-/** 可读原文里去掉块 ID 后的纯文本，用于嵌入 Source（docs/08 §3.1）。 */
+/** 嵌入 Source 的正文：去掉块 ID（段落 ^p0001 / 片段 ^s0001），只留可读文字。 */
 export function stripSegmentIds(normalizedMd: string): string {
-  return normalizedMd.replace(/\s+\^s\d{4}\s*$/gm, "");
+  return normalizedMd.replace(/\s+\^[sp]\d{4}\s*$/gm, "");
 }
 
 /** Source 笔记（docs/08 §3.1）：来源元数据、完整性说明、对应 Digest 链接、原件链接、可读原文。

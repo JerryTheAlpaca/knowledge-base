@@ -247,6 +247,9 @@
                          background: var(--surface-2); border-radius: 0 8px 8px 0; }
   .seg { padding: 4px 0; border-bottom: 1px dashed var(--border); }
   .seg:target, .seg.highlight { background: var(--accent-soft); border-radius: 6px; }
+  .para { margin: 0 0 14px; }
+  .para:target, .para.highlight { background: var(--accent-soft); border-radius: 6px; }
+  .parahead { font-size: 15px; font-weight: 600; margin: 20px 0 8px; }
   .segid { font-size: 11px; color: var(--text-2); margin-right: 6px; font-variant-numeric: tabular-nums; }
   .evlink { font-size: var(--fs-caption); color: var(--accent); cursor: pointer; border: none; background: none;
             padding: 0 4px; text-decoration: underline; min-height: 0; }
@@ -742,7 +745,7 @@ function stateBadge(s) {
   const pulse = (s === "extracting" || s === "enriching") ? " pulse" : "";
   return '<span class="badge ' + cls + pulse + '">' + dot + esc(label) + "</span>";
 }
-const fmtTime = (iso) => { try { return new Date(iso).toLocaleString("zh-CN", { hour12: false }); } catch (e) { return iso || ""; } };
+const fmtTime = (iso) => { if (!iso) return "—"; const d = new Date(iso); return isNaN(d.getTime()) ? "—" : d.toLocaleString("zh-CN", { hour12: false }); };
 function fmtShort(iso) {
   try {
     const d = new Date(iso); const p = (n) => String(n).padStart(2, "0");
@@ -1300,13 +1303,15 @@ function renderSourcePane(d) {
     rows.push('<div class="versionnote">' + esc(sm.warnings.join("；")) + "</div>");
   }
   rows.push('<h4>实际取得的全文</h4>');
-  if (sm.normalized_md) {
-    const lines = sm.normalized_md.split("\n").filter((l) => l.trim());
+  const paras = sm.readable_md ? sm.readable_md.split("\n").filter((l) => l.trim()) : null;
+  const lines = paras || (sm.normalized_md ? sm.normalized_md.split("\n").filter((l) => l.trim()) : []);
+  if (lines.length) {
     const shown = lines.slice(0, segShown + SEG_PAGE);
-    rows.push('<div class="readbody" id="sourceBody">' + shown.map(renderSourceLine).join("") + "</div>");
+    rows.push('<div class="readbody" id="sourceBody">' +
+      shown.map(paras ? renderParagraphLine : renderSourceLine).join("") + "</div>");
     if (shown.length < lines.length) {
       rows.push('<button class="morebtn" onclick="showMoreSegments()">继续展开（还有 ' +
-        (lines.length - shown.length) + ' 段）</button>');
+        (lines.length - shown.length) + (paras ? ' 段）' : ' 片段）') + '</button>');
     }
   } else if (sm.truncated) {
     rows.push('<div class="muted">正文超过内联阅读上限，请到「管理」页签下载原件。</div>');
@@ -1320,6 +1325,12 @@ function renderSourceLine(line) {
   if (!m) return '<div class="seg">' + esc(line) + "</div>";
   return '<div class="seg" id="' + esc(m[2]) + '"><span class="segid">' + esc(m[2]) + "</span>" +
     esc(m[1]) + "</div>";
+}
+function renderParagraphLine(line) {
+  const m = /^(##\s+)?(.*?)\s+\^(p\d{4})\s*$/.exec(line);
+  if (!m) return '<p class="para">' + esc(line) + "</p>";
+  if (m[1]) return '<h5 class="para parahead" id="' + esc(m[3]) + '">' + esc(m[2]) + "</h5>";
+  return '<p class="para" id="' + esc(m[3]) + '">' + esc(m[2]) + "</p>";
 }
 // ---- 提炼（证据锚点保留、弱化样式） ----
 function renderDigestPane(d) {
@@ -1384,14 +1395,19 @@ function evidenceButtons(ids, g) {
 function jumpToSegment(sid) {
   const g = detailData && detailData.cloud_digest;
   const sm = detailData && detailData.source_material;
-  if (!g || !sm || !sm.normalized_md) return;
-  const lines = sm.normalized_md.split("\n").filter((l) => l.trim());
-  const idx = lines.findIndex((l) => l.indexOf("^" + sid) !== -1);
+  if (!g || !sm) return;
+  // 有段落正文时定位到该片段所属的段落（阅读层），否则回退到逐片段定位
+  const pid = sm.readable_md && sm.segment_paragraph ? sm.segment_paragraph[sid] : null;
+  const body = pid ? sm.readable_md : sm.normalized_md;
+  const target = pid || sid;
+  if (!body) return;
+  const lines = body.split("\n").filter((l) => l.trim());
+  const idx = lines.findIndex((l) => l.indexOf("^" + target) !== -1);
   if (idx === -1) return;
   if (idx >= segShown + SEG_PAGE) segShown = Math.floor(idx / SEG_PAGE) * SEG_PAGE;
   detailTab = "source";
   renderDetail();
-  const el = document.getElementById(sid);
+  const el = document.getElementById(target);
   if (el) { el.scrollIntoView({ block: "center" }); el.classList.add("highlight"); }
 }
 
@@ -1437,7 +1453,9 @@ function renderManagePane(d) {
     "</div></details>");
   // 文件区：原始文件（来源材料）与提炼文件（bundle 产物）合并展示，每项前有类别标识
   const sm = d.source_material;
-  const srcFiles = sm ? sm.files.filter((f) => f.relative_path !== "normalized.md") : [];
+  const srcFiles = sm
+    ? sm.files.filter((f) => f.relative_path !== "normalized.md" && f.relative_path !== "readable.md")
+    : [];
   rows.push('<details class="disclosure" id="exportDisc"' +
     ' ontoggle="if(this.open&amp;&amp;!this.dataset.loaded){this.dataset.loaded=1;loadExport();}">' +
     '<summary>文件（原始 / 提炼）</summary><div class="disclosure-body">' +

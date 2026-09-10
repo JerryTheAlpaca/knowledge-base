@@ -27,6 +27,7 @@ from ..db import make_engine, make_session_factory
 from ..domain import pipeline
 from ..domain.platforms import guess_platform
 from ..extractors import bilibili as bili
+from ..extractors import paragraphs as parafmt
 from ..extractors import subtitles as subfmt
 from ..extractors import webpages as webpage
 from ..models import (
@@ -208,13 +209,23 @@ def _extract_plain_text(db: Session, store: ObjectStore, job: Job, item: Item,
             "confidence": None,
         })
     normalized_md = "".join(lines)
-    segments_doc = {"source_revision": source.revision, "segments": segments}
+    paragraph_list = parafmt.group_paragraphs(segments)
+    segments_doc = {
+        "source_revision": source.revision,
+        "segments": segments,
+        "paragraphs": paragraph_list,
+    }
 
     files = _bundle_files(db, item)
     files.append(pipeline.register_file(
         db, store, user_id=item.user_id, item_id=item.id,
         data=normalized_md.encode("utf-8"), relative_path="normalized.md",
         role="source_material", mime="text/markdown",
+    ))
+    files.append(pipeline.register_file(
+        db, store, user_id=item.user_id, item_id=item.id,
+        data=parafmt.paragraphs_to_readable_md(paragraph_list).encode("utf-8"),
+        relative_path="readable.md", role="source_material", mime="text/markdown",
     ))
     files.append(pipeline.register_file(
         db, store, user_id=item.user_id, item_id=item.id,

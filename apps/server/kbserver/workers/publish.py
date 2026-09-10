@@ -9,6 +9,7 @@ from __future__ import annotations
 from sqlalchemy.orm import Session
 
 from ..domain import pipeline
+from ..extractors import paragraphs as parafmt
 from ..extractors import subtitles as subfmt
 from ..models import BundleRevision, Item, Job, SourceRevision, StoredFile
 from ..storage.objects import ObjectStore
@@ -76,6 +77,13 @@ def publish_segments_revision(db: Session, store: ObjectStore, job: Job, item: I
     for f in extra_files:
         merged[f.relative_path] = f
     files = list(merged.values())
+    # 阅读层：段落只是合并相邻片段，segments 仍是引用粒度（extractors/paragraphs.py）
+    paragraph_list = parafmt.group_paragraphs(segments)
+    segment_para = parafmt.segment_paragraph_map(paragraph_list)
+    indexed_segments = [
+        dict(seg, paragraph_id=segment_para.get(seg.get("segment_id")))
+        for seg in segments
+    ]
     files.append(pipeline.register_file(
         db, store, user_id=item.user_id, item_id=item.id,
         data=subfmt.segments_to_normalized_md(segments).encode("utf-8"),
@@ -83,7 +91,16 @@ def publish_segments_revision(db: Session, store: ObjectStore, job: Job, item: I
     ))
     files.append(pipeline.register_file(
         db, store, user_id=item.user_id, item_id=item.id,
-        data=pipeline.canonical_json({"source_revision": new_revision, "segments": segments}),
+        data=parafmt.paragraphs_to_readable_md(paragraph_list).encode("utf-8"),
+        relative_path="readable.md", role="source_material", mime="text/markdown",
+    ))
+    files.append(pipeline.register_file(
+        db, store, user_id=item.user_id, item_id=item.id,
+        data=pipeline.canonical_json({
+            "source_revision": new_revision,
+            "segments": indexed_segments,
+            "paragraphs": paragraph_list,
+        }),
         relative_path="segments.json", role="source_material", mime="application/json",
     ))
     db.flush()

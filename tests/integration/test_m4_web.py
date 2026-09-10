@@ -177,6 +177,27 @@ def test_wechat_mp_extract_success(client, user_a, session_factory, web_net):
     assert len(net.calls) == 2
 
 
+def test_wechat_publishes_paragraph_reading_layer(client, user_a, session_factory, web_net):
+    """阅读层：额外发布段落版正文，segments 仍是逐段可引用的粒度。"""
+    web_net(make_page_net())
+    c = _capture_url(client, user_a["phone"]["token"], "m4wxpara", url=WECHAT_URL)
+    assert c.status_code == 202
+    item_id = c.json()["item_id"]
+    _drain(session_factory)
+
+    it = _get_item(client, user_a["desktop"]["token"], item_id)
+    m = _manifest(client, user_a["desktop"]["token"], it)
+    paths = [f["relative_path"] for f in m["files"]]
+    assert "readable.md" in paths and "normalized.md" in paths
+
+    r = client.get(f"/v1/items/{item_id}/reading", headers=auth(user_a["desktop"]["token"]))
+    sm = r.json()["source_material"]
+    # 原文三个 <p> 各自成段：段落层尊重原文分段，同时给出片段到段落的映射
+    assert sm["readable_md"].count("^p") == 3
+    assert sm["normalized_md"].count("^s") == 3
+    assert sm["segment_paragraph"] == {"s0001": "p0001", "s0002": "p0002", "s0003": "p0003"}
+
+
 def test_wechat_share_text_not_used_as_body(client, user_a, session_factory, web_net):
     """分享文字只有标题+链接+摘要：正文来自页面适配器，不冒充全文（docs/04 §5 同理）。"""
     web_net(make_page_net())

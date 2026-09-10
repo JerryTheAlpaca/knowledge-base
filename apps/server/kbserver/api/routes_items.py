@@ -116,7 +116,7 @@ def _item_out(item: Item, source: SourceRevision, db: Session | None = None) -> 
         content_scope=meta.get("content_scope", "unknown"),
         user_note=meta.get("user_note"),
         missing_materials=meta.get("missing_materials", []),
-        captured_at=meta.get("captured_at"),
+        captured_at=meta.get("captured_at") or item.created_at.isoformat(),
         created_at=item.created_at.isoformat(),
         expires_at=expires_at.isoformat() if expires_at else None,
         expired=bool(expires_at and expires_at <= now),
@@ -181,6 +181,10 @@ class SourceMaterialOut(BaseModel):
     source_revision: int
     bundle_revision: int
     normalized_md: str | None
+    # 阅读层正文：segments 合并后的自然段落（块 ID ^p0001）；没有则回退 normalized
+    readable_md: str | None
+    # segment_id → paragraph_id：证据引用定位到所属段落
+    segment_paragraph: dict[str, str]
     normalized_available: bool
     truncated: bool
     files: list[dict]
@@ -271,6 +275,31 @@ def _segments_texts(db: Session, item: Item, revision: int) -> dict[str, str]:
     }
 
 
+def _segment_paragraph_map(db: Session, item: Item, revision: int) -> dict[str, str]:
+    """segment_id → paragraph_id：证据引用跳转到段落正文用（阅读层）。"""
+    raw = _read_bundle_text(db, item, revision, "segments.json")
+    if not raw:
+        return {}
+    try:
+        doc = json.loads(raw)
+    except ValueError:
+        return {}
+    mapping = {
+        s["segment_id"]: s["paragraph_id"]
+        for s in (doc.get("segments") or [])
+        if isinstance(s, dict) and s.get("segment_id") and s.get("paragraph_id")
+    }
+    if mapping:
+        return mapping
+    # 旧版本没有逐片段标记：用段落清单展开
+    return {
+        sid: p["paragraph_id"]
+        for p in (doc.get("paragraphs") or [])
+        if isinstance(p, dict) and p.get("paragraph_id")
+        for sid in (p.get("segment_ids") or [])
+    }
+
+
 def _source_material(db: Session, item: Item) -> SourceMaterialOut | None:
     """当前来源版本的原文与原件；版本显式，不把截断预览标成全文（docs/08 §8.4）。"""
     revision = item.bundle_revision
@@ -280,12 +309,15 @@ def _source_material(db: Session, item: Item) -> SourceMaterialOut | None:
     if manifest is None:
         return None
     normalized = _read_bundle_text(db, item, revision, "normalized.md")
+    readable = _read_bundle_text(db, item, revision, "readable.md")
     entry = next((f for f in manifest.get("files", []) if f.get("relative_path") == "normalized.md"), None)
     too_large = bool(entry and entry.get("bytes", 0) > MAX_INLINE_READ_BYTES)
     return SourceMaterialOut(
         source_revision=manifest.get("source_revision", item.source_revision),
         bundle_revision=revision,
         normalized_md=normalized,
+        readable_md=readable,
+        segment_paragraph=_segment_paragraph_map(db, item, revision),
         normalized_available=normalized is not None,
         truncated=too_large,
         files=manifest.get("files", []),
