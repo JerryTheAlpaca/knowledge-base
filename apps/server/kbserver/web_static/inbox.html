@@ -238,6 +238,18 @@
   .fext { display: inline-flex; min-width: 30px; justify-content: center; padding: 1px 6px;
           border-radius: 6px; background: var(--info-soft); color: var(--info);
           font-size: 11px; font-weight: 600; text-transform: uppercase; flex: none; }
+  .fkind { display: inline-flex; justify-content: center; padding: 1px 6px;
+           border-radius: 6px; font-size: 11px; font-weight: 600; flex: none; }
+  .fkind.k-raw { background: var(--surface-2); color: var(--text-2); }
+  .fkind.k-refine { background: var(--accent-soft); color: var(--accent); }
+  .asrtoggle { display: flex; gap: 12px; align-items: flex-start; margin-top: 14px; padding: 12px 14px;
+               border: 1px solid var(--border); border-radius: var(--radius-ctl);
+               background: var(--surface-2); cursor: pointer; }
+  .asrtoggle:hover { border-color: var(--border-strong); }
+  .asrtoggle[hidden] { display: none; }
+  .asrtoggle input { width: 18px; height: 18px; margin: 2px 0 0; accent-color: var(--accent); flex: none; cursor: pointer; }
+  .asrtoggle-text b { display: block; margin-bottom: 2px; font-size: var(--fs-body); }
+  .asrtoggle-text .muted { display: block; font-size: var(--fs-small); line-height: 1.55; }
   .primaryrow { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 14px; }
   .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
 
@@ -400,14 +412,13 @@
         <div class="chiprow" id="urlChips" hidden></div>
         <div class="chiprow" id="fileChips" hidden></div>
         <div class="smartbar">
-          <button class="ghost small" id="moreToggle" style="min-height:36px">更多选项</button>
           <span class="spacer"></span>
           <span class="small" id="capProgress"></span>
           <button class="primary" id="capSubmit">提交采集</button>
         </div>
       </div>
       <p class="help">支持公众号 / B 站 / 普通网页链接（可一次粘贴多个）、正文文字或字幕文件；Ctrl+Enter 快捷提交，链接会自动拆分为独立条目。</p>
-      <div class="moreopts" id="moreOpts" hidden>
+      <div class="moreopts" id="moreOpts">
         <label for="capNote">备注（可选）</label>
         <input id="capNote" placeholder="为什么收集它、想让它怎么加工">
         <label for="capFiles">附件（可选，字幕文件 / 截图等，可多选）</label>
@@ -490,11 +501,11 @@
         <button id="biliCheck">检测登录态</button>
         <button class="danger" id="biliRevoke">撤销</button>
       </div>
-      <div class="row" id="asrAutoRow" style="margin-top:14px; align-items:flex-start" hidden>
-        <input type="checkbox" id="asrAuto" style="margin-top:3px">
-        <span class="small" style="flex:1"><label for="asrAuto" style="display:inline">无字幕时自动转写</label><br>
+      <label class="asrtoggle" id="asrAutoRow" for="asrAuto" hidden>
+        <input type="checkbox" id="asrAuto">
+        <span class="asrtoggle-text"><b>无字幕时自动转写</b>
         <span class="muted">B 站确认没有字幕轨的条目，会在服务器空闲时用本地语音识别转写（机器转写、未经人工校对，耗时较长，不占用你的电脑）。</span></span>
-      </div>
+      </label>
     </div>
 
     <div class="card" id="secAccount">
@@ -822,7 +833,6 @@ async function submitCapture() {
     // 成功：收缩回 idle + toast 带「查看」动作（G2/E5）
     $("capText").value = ""; $("capNote").value = "";
     capFilesState.length = 0; $("capFiles").value = "";
-    $("moreOpts").hidden = true; $("moreToggle").textContent = "更多选项";
     $("capProgress").textContent = "";
     renderCapChips(); autosizeCap(); clearDraft();
     toast("已接收 " + ids.length + " 条，后台开始加工", { type: "ok", action: { label: "查看", fn: scrollToListTop } });
@@ -1073,11 +1083,10 @@ function stepperHTML(it) {
   return html;
 }
 
-// 主操作条唯一主按钮（docs/10 §3.1：failed→重试 / needs_input→去补充 / ready→导出）
+// 主操作条唯一主按钮（docs/10 §3.1：failed→重试 / needs_input→去补充；ready 无主按钮，文件在管理页签下载）
 function primaryActionHTML(it) {
   if (it.pipeline_state === "failed") return '<button class="primary" onclick="doReprocess()">重试加工</button>';
   if (it.pipeline_state === "needs_input") return '<button class="primary" onclick="focusSupplement()">去补充</button>';
-  if (it.pipeline_state === "ready" && it.bundle_revision) return '<button class="primary" onclick="focusExport()">导出</button>';
   return "";
 }
 
@@ -1169,7 +1178,7 @@ function renderDetailPane(d) {
   return renderManagePane(d);
 }
 
-// ---- 原文（C3：单主题；S6 去 role；原始文件直接展示，2026-09-09 走查调整） ----
+// ---- 原文（C3：单主题；S6 去 role；原始文件改在管理页签统一下载，2026-09-10 走查调整） ----
 function renderSourcePane(d) {
   const it = d.item;
   const sm = d.source_material;
@@ -1196,13 +1205,6 @@ function renderSourcePane(d) {
   if (sm.warnings.length) {
     rows.push('<div class="versionnote">' + esc(sm.warnings.join("；")) + "</div>");
   }
-  const downloads = sm.files.filter((f) => f.relative_path !== "normalized.md");
-  if (downloads.length) {
-    rows.push('<h4>原始文件（' + downloads.length + '）</h4><div class="filelist">' + downloads.map((f) =>
-      '<div><a href="' + esc(sm.download_base) + "/" + encodeURIComponent(f.file_id) + '" download>' +
-      esc(f.relative_path) + "</a>　" + (f.bytes / 1024).toFixed(1) + " KB</div>"
-    ).join("") + "</div>");
-  }
   rows.push('<h4>实际取得的全文</h4>');
   if (sm.normalized_md) {
     const lines = sm.normalized_md.split("\n").filter((l) => l.trim());
@@ -1213,7 +1215,7 @@ function renderSourcePane(d) {
         (lines.length - shown.length) + ' 段）</button>');
     }
   } else if (sm.truncated) {
-    rows.push('<div class="muted">正文超过内联阅读上限，请用上方原件入口下载。</div>');
+    rows.push('<div class="muted">正文超过内联阅读上限，请到「管理」页签下载原件。</div>');
   } else {
     rows.push('<div class="muted">未取得可读正文；覆盖说明如实反映缺失，不用标题补写。</div>');
   }
@@ -1299,7 +1301,15 @@ function jumpToSegment(sid) {
   if (el) { el.scrollIntoView({ block: "center" }); el.classList.add("highlight"); }
 }
 
-// ---- 管理（操作区 / 补充材料与导出折叠；时间与删除区直接展示，2026-09-09 走查调整） ----
+// ---- 管理（操作区 / 补充材料与文件折叠；时间与删除区直接展示，2026-09-10 走查调整） ----
+// 文件行：类别标识（raw=原始 / refine=提炼）+ 类型徽章 + 下载链接（2026-09-10 走查）
+function fileRow(kind, path, bytes, href) {
+  const ext = (path.split(".").pop() || "").toLowerCase();
+  return '<div><span class="fkind ' + (kind === "raw" ? "k-raw" : "k-refine") + '">' +
+    (kind === "raw" ? "原始" : "提炼") + "</span>" +
+    '<span class="fext">' + esc(ext.slice(0, 4)) + "</span>" +
+    '<a href="' + esc(href) + '" download>' + esc(path) + "</a><span>" + (bytes / 1024).toFixed(1) + " KB</span></div>";
+}
 function renderManagePane(d) {
   const it = d.item;
   const hasUrl = !!it.original_url;
@@ -1321,10 +1331,18 @@ function renderManagePane(d) {
     '<span class="small" id="supProgress"></span>' +
     '<div class="row" style="margin-top:12px"><button class="primary" onclick="doSupplement()">提交补充</button></div>' +
     "</div></details>");
+  // 文件区：原始文件（来源材料）与提炼文件（bundle 产物）合并展示，每项前有类别标识
+  const sm = d.source_material;
+  const srcFiles = sm ? sm.files.filter((f) => f.relative_path !== "normalized.md") : [];
   rows.push('<details class="disclosure" id="exportDisc"' +
     ' ontoggle="if(this.open&amp;&amp;!this.dataset.loaded){this.dataset.loaded=1;loadExport();}">' +
-    '<summary>导出文件</summary><div class="disclosure-body">' +
-    '<div id="exportBody" class="filelist"><span class="muted">展开时加载…</span></div>' +
+    '<summary>文件（原始 / 提炼）</summary><div class="disclosure-body">' +
+    '<div class="filelist">' +
+      (srcFiles.length
+        ? srcFiles.map((f) => fileRow("raw", f.relative_path, f.bytes, sm.download_base + "/" + f.file_id)).join("")
+        : '<span class="muted">无原始文件。</span>') +
+    "</div>" +
+    '<div id="exportBody" class="filelist" style="margin-top:6px"><span class="muted">提炼文件展开时加载…</span></div>' +
     "</div></details>");
   // B 站条目判定：it.platform 存的是采集渠道（web_inbox/plugin），内容平台要看 original_url
   //（与服务端 _is_bilibili_item 的 URL 分支一致；元数据分支由触发接口兜底校验）
@@ -1360,16 +1378,6 @@ function focusSupplement() {
   setTimeout(() => el.classList.remove("flash"), 2200);
   const t = $("supText");
   if (t) t.focus();
-}
-function focusExport() {
-  detailTab = "manage";
-  renderDetail();
-  const el = $("exportDisc");
-  if (!el) return;
-  el.open = true;  // ontoggle 会触发清单加载（dataset 防重复）
-  el.scrollIntoView({ behavior: "smooth", block: "center" });
-  el.classList.add("flash");
-  setTimeout(() => el.classList.remove("flash"), 2200);
 }
 
 async function doReprocess() {
@@ -1494,16 +1502,13 @@ async function loadExport() {
   if (!body) return;
   try {
     const it = await api("/v1/items/" + encodeURIComponent(detailId));
-    if (!it.bundle_revision) { body.innerHTML = '<span class="muted">还没有可导出的成品。</span>'; return; }
+    if (!it.bundle_revision) { body.innerHTML = '<span class="muted">还没有提炼产物。</span>'; return; }
     const base = "/v1/items/" + encodeURIComponent(it.item_id) + "/bundles/" + it.bundle_revision;
     const m = await api(base + "/manifest");
-    body.innerHTML = m.files.map((f) => {
-      const ext = (f.relative_path.split(".").pop() || "").toLowerCase();
-      return '<div><span class="fext">' + esc(ext.slice(0, 4)) + "</span>" +
-        '<a href="' + base + "/files/" + encodeURIComponent(f.file_id) + '" download>' +
-        esc(f.relative_path) + "</a><span>" + (f.bytes / 1024).toFixed(1) + " KB</span></div>";
-    }).join("") || '<span class="muted">清单中没有文件。</span>';
-  } catch (e) { body.innerHTML = '<span class="muted">导出清单加载失败。</span>'; }
+    body.innerHTML = m.files.map((f) =>
+      fileRow("refine", f.relative_path, f.bytes, base + "/files/" + f.file_id)
+    ).join("") || '<span class="muted">清单中没有文件。</span>';
+  } catch (e) { body.innerHTML = '<span class="muted">提炼文件清单加载失败。</span>'; }
 }
 </script>
 <script>
@@ -1794,12 +1799,6 @@ $("fileChips").addEventListener("click", (e) => {
   if (!b) return;
   capFilesState.splice(Number(b.dataset.fi), 1);
   renderCapChips();
-});
-$("moreToggle").addEventListener("click", () => {
-  const o = $("moreOpts");
-  o.hidden = !o.hidden;
-  $("moreToggle").textContent = o.hidden ? "更多选项" : "收起更多选项";
-  if (!o.hidden) $("capNote").focus();
 });
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
