@@ -171,6 +171,19 @@ def main() -> int:
             "child_peak_mib": round(_child_peak_mib(), 1) if _child_peak_mib() else None,
         }
     report["total_seconds"] = round(time.monotonic() - t_start, 1)
+
+    # 完整转写文本（report.json 只存 120 字预览；全文单独落盘供人工对照，
+    # 段偏移按各段音频时长累加，即段在原视频中的起始秒）。
+    if chunk_results:
+        lines, offset = [], 0.0
+        for res, doc in zip(asr_stats["chunks"], chunk_results):
+            mm, ss = divmod(int(offset), 60)
+            lines.append(f"[{mm:02d}:{ss:02d}] {(doc or {}).get('text', '')}")
+            offset += res.get("duration_s") or 0.0
+        transcript_path = args.out / "transcript.txt"
+        transcript_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        print(f"转写全文已写入 {transcript_path}")
+
     report["note"] = ("峰值内存为 getrusage(RUSAGE_CHILDREN) 累计值；"
                       "容器内限额验收需结合 cgroup.peak，不以此值单独宣布满足 1GB 合计限制。")
 
