@@ -154,3 +154,5 @@
 - **对比结论**（同两样本、同管道，仅换模型）：准确率 **SenseVoice 明显更好**——同音错字显著更少（遍地是机会/唯心主义/抱负和理想等 dolphin 全错点均正确）、自带完整标点、数字 ITN 规范（70%）、专有名词更稳；速度 dolphin 仍快 2.2 倍（RTF 0.13 vs 0.29），但 SenseVoice 3.5 倍速 + 峰值 346MiB 对空闲串行场景完全够用。104/104 段全过。
 - **全文与对比**：`probe-out/模型对比-Dolphin-vs-SenseVoice.md` + 四份转写全文（两模型 × 两样本）。
 - **生产配置已切换（2026-09-10 09:37，用户拍板）**：`ASR_MODEL=sense_voice`（c422bb2），服务器 `up -d` 重建 worker 生效（env 验证、模型挂载可见、worker 启动日志正常、health 200）。Dolphin 留在 `/opt/models` 作 `retry_model` 备胎（API 传别名即可用）。
+- **真机走查发现的 UI 缺陷（已修复上线，4052969）**：`it.platform` 存的是**采集渠道**（Web 收件箱采集时 `source_hint=web_inbox`），不是内容平台；ASR 折叠区原门槛 `it.platform==="bilibili"` 永不成立，Web 收件箱采集的 B 站视频全部看不到入口。已改为按 `original_url` 域名判定（bilibili.com/b23.tv，与服务端 `_is_bilibili_item` URL 分支一致）；服务端自动入队/手动触发的判断本来就正确（`_is_bilibili_capture`/`_require_bilibili_item`），纯前端门槛错误。注意：已存在的待补充条目不会补触发自动入队（那是 extract 时刻的逻辑），在详情「管理」页签手动触发即可。
+- **构建提速（25918ef）**：Dockerfile apt 切清华镜像（与 pip 一致）。腾讯云到 deb.debian.org 实测 ~10KB/s，ffmpeg 依赖层下载 40 分钟+；切后 30 秒下完，整层构建约 2 分钟。
