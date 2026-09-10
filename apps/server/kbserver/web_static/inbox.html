@@ -213,6 +213,13 @@
   .step.paused .slabel { color: var(--warn); }
   .step.bad .sball { border-color: var(--bad); color: var(--bad); font-weight: 700; }
   .step.bad .slabel { color: var(--bad); }
+  /* 进行中段的来向连线做流动渐变，让进度条「动」起来（转写等耗时阶段更直观） */
+  .step.done:has(+ .step.active) .sline,
+  .step.done:has(+ .step.paused) .sline {
+    background: linear-gradient(90deg, var(--ok) 0%, var(--ok) 30%, var(--accent) 55%, var(--ok) 80%);
+    background-size: 200% 100%;
+    animation: flowline 1.6s linear infinite; }
+  @keyframes flowline { from { background-position: 100% 0; } to { background-position: -100% 0; } }
   #primaryBar .primaryrow { margin: 10px 0 0; }
   .readtabs { display: flex; gap: 4px; margin: 18px 0 0; border-bottom: 1px solid var(--border); }
   .readtabs button { border: none; background: transparent; padding: 8px 14px; border-radius: 0;
@@ -1034,6 +1041,8 @@ let detailData = null;
 let detailTab = "auto";   // I3：auto 随状态解析——ready→提炼，否则原文
 let detailLoading = false;
 let detailPushed = false;
+let asrStatus = null;     // B 站条目最近一次转写 run（GET /asr）；驱动顶部进度条与音频转写按钮
+let detailSeq = 0;        // 详情打开序号：异步状态回包回来时校验没切到别的条目
 const SEG_PAGE = 60;
 let segShown = 0;
 
@@ -1068,19 +1077,56 @@ function stepperState(s) {
     default: return { done: 0, cur: 0, tone: "paused" };
   }
 }
+function isBiliItem(it) {
+  return /(^|\.)bilibili\.com\b|b23\.tv\b/.test((it && it.original_url) || "");
+}
+const ASR_BUSY_STATES = ["queued", "preparing", "transcribing", "paused"];
+// 转写 run → stepper 第 4 段（发布之后）：进行中带段数进度，完成/失败/暂停各自着色
+function asrStep() {
+  const s = asrStatus.state;
+  if (s === "succeeded") return { label: "转写完成", cls: "done", mark: "✓" };
+  if (s === "failed") return { label: "转写失败", cls: "bad", mark: "!" };
+  if (s === "cancelled") return { label: "转写已取消", cls: "", mark: "" };
+  if (s === "paused") return { label: "转写已暂停", cls: "paused", mark: "" };
+  if (s === "preparing") return { label: "转写·读取音频", cls: "active", mark: "" };
+  if (s === "transcribing") {
+    const prog = asrStatus.chunk_count
+      ? " " + asrStatus.done_chunks + "/" + asrStatus.chunk_count + " 段" : "";
+    return { label: "转写中" + prog, cls: "active", mark: "" };
+  }
+  return { label: "转写排队中", cls: "active", mark: "" };
+}
 function stepperHTML(it) {
   const st = stepperState(it.pipeline_state);
   const labels = ["提取", "加工", "发布"];
-  let html = '<div class="stepper">';
+  const steps = [];
   for (let i = 0; i < 3; i++) {
     const cls = i < st.done ? "done" : (i === st.cur ? st.tone : "");
-    html += '<div class="step ' + cls + (i === 2 ? " last" : "") + '">' +
-      '<span class="sball">' + (i < st.done ? "✓" : (cls === "bad" ? "!" : "")) + "</span>" +
-      '<span class="slabel">' + labels[i] + "</span>" +
-      (i < 2 ? '<span class="sline"></span>' : "") + "</div>";
+    steps.push({ label: labels[i], cls: cls, mark: i < st.done ? "✓" : (cls === "bad" ? "!" : "") });
+  }
+  if (asrStatus && asrStatus.exists) steps.push(asrStep());  // 有转写记录的 B 站条目追加第 4 段
+  let html = '<div class="stepper">';
+  for (let i = 0; i < steps.length; i++) {
+    const s = steps[i];
+    html += '<div class="step ' + s.cls + (i === steps.length - 1 ? " last" : "") + '">' +
+      '<span class="sball">' + s.mark + "</span>" +
+      '<span class="slabel">' + esc(s.label) + "</span>" +
+      (i < steps.length - 1 ? '<span class="sline"></span>' : "") + "</div>";
   }
   html += "</div>";
   return html;
+}
+// stepper + 徽标 + 主操作条：轻量刷新时只重画这三处，不动页签内容（保护正在输入的补充文字）
+function renderDetailHeader(it) {
+  const failedNote = (it.pipeline_state === "failed" && it.state_detail)
+    ? '<div class="errnote">' + esc(it.state_detail) + "</div>" : "";
+  const asrNote = (asrStatus && asrStatus.exists && asrStatus.state === "failed" && asrStatus.last_error)
+    ? '<div class="errnote">转写失败：' + esc(asrStatus.last_error) + "</div>" : "";
+  $("detailBadge").innerHTML = stateBadge(it.pipeline_state);
+  $("stepperHost").innerHTML = stepperHTML(it) + failedNote + asrNote;
+  const primary = primaryActionHTML(it);
+  $("primaryBar").innerHTML = primary ? '<div class="primaryrow">' + primary + "</div>" : "";
+  $("primaryBar").hidden = !primary;
 }
 
 // 主操作条唯一主按钮（docs/10 §3.1：failed→重试 / needs_input→去补充；ready 无主按钮，文件在管理页签下载）
@@ -1092,6 +1138,8 @@ function primaryActionHTML(it) {
 
 async function openDetail(itemId, opts = {}) {
   detailId = itemId;
+  detailSeq++;
+  asrStatus = null;
   detailTab = "auto";
   segShown = 0;
   $("captureCard").hidden = true;
@@ -1121,6 +1169,40 @@ async function refreshDetail() {
   }
   detailLoading = false;
 }
+// ---- 详情状态轻量刷新：拉流水线 + （B 站）转写状态，只重画头部与操作行，不动页签内容 ----
+async function refreshDetailStatus() {
+  if (!detailId || !detailData || $("detailView").hidden) return;
+  const seq = detailSeq;
+  const jobs = [api("/v1/items/" + encodeURIComponent(detailId) + "/reading")];
+  if (isBiliItem(detailData.item)) {
+    jobs.push(api("/v1/items/" + encodeURIComponent(detailId) + "/asr").catch(() => null));
+  }
+  let reading, asr;
+  try { [reading, asr] = await Promise.all(jobs); } catch (e) { return; }
+  if (seq !== detailSeq || detailId == null || !reading) return;
+  asrStatus = asr || null;
+  const changed = reading.item.pipeline_state !== detailData.item.pipeline_state;
+  detailData = reading;
+  renderDetailHeader(reading.item);
+  const actions = $("manageActions");
+  if (actions) actions.innerHTML = manageActionsHTML(reading.item);
+  if (changed) {
+    // 流水线阶段跳变（如加工完成）：补充框没在输入时整页刷新拿到新提炼，否则只提示不打断
+    const sup = $("supText");
+    if (sup && sup.value.trim()) {
+      const ps = reading.item.pipeline_state;
+      toast("条目状态已更新（" + (STATE_LABELS[ps] || ps) + "）", { type: "warn" });
+    } else renderDetail();
+  }
+}
+// 转写或流水线进行中时 5s 轮询：段数推进让顶部进度条真正动起来
+setInterval(() => {
+  if (!detailId || !detailData || $("detailView").hidden || document.visibilityState !== "visible") return;
+  const ps = detailData.item.pipeline_state;
+  const pipelineBusy = ["queued", "extracting", "enriching"].includes(ps);
+  const asrBusy = asrStatus && asrStatus.exists && ASR_BUSY_STATES.includes(asrStatus.state);
+  if (pipelineBusy || asrBusy) refreshDetailStatus();
+}, 5000);
 function closeDetail() {
   detailId = null; detailData = null;
   $("detailView").hidden = true;
@@ -1154,15 +1236,9 @@ function renderDetail() {
   const it = d.item;
   if (detailTab === "auto") detailTab = it.pipeline_state === "ready" ? "digest" : "source";  // I3
   $("detailTitle").textContent = it.title || shortUrl(it.original_url) || "条目详情";
-  $("detailBadge").innerHTML = stateBadge(it.pipeline_state);
   // S9：stepper 下不再重复「当前状态」；failed 原因以红色提示呈现
-  const failedNote = (it.pipeline_state === "failed" && it.state_detail)
-    ? '<div class="errnote">' + esc(it.state_detail) + "</div>" : "";
-  $("stepperHost").innerHTML = stepperHTML(it) + failedNote;
-  // 主操作条：stepper 正下方、页签之上（docs/10 §3）
-  const primary = primaryActionHTML(it);
-  $("primaryBar").innerHTML = primary ? '<div class="primaryrow">' + primary + "</div>" : "";
-  $("primaryBar").hidden = !primary;
+  renderDetailHeader(it);
+  refreshDetailStatus();  // 异步补拉转写/流水线状态，回来后只重画头部与操作行
   // 页签定序：提炼 / 原文 / 管理（I4）
   $("detailBody").innerHTML =
     '<nav class="readtabs">' +
@@ -1310,18 +1386,28 @@ function fileRow(kind, path, bytes, href) {
     '<span class="fext">' + esc(ext.slice(0, 4)) + "</span>" +
     '<a href="' + esc(href) + '" download>' + esc(path) + "</a><span>" + (bytes / 1024).toFixed(1) + " KB</span></div>";
 }
+// 管理页签主操作行（2026-09-10：下载清单并入下方文件折叠区；音频转写从折叠区提为按钮，
+// 进度由顶部进度条展示；轻量刷新时整行重画，不触碰补充输入框）
+function manageActionsHTML(it) {
+  const hasUrl = !!it.original_url;
+  let html = '<button onclick="doReprocess()">重新加工</button>';
+  if (hasUrl) html += '<button onclick="doRefetch()">重新提取来源</button>';
+  if (isBiliItem(it)) {
+    const st = asrStatus;
+    const busy = st && st.exists && ASR_BUSY_STATES.includes(st.state);
+    html += '<button onclick="doAsrTrigger()">' + (st && st.exists ? "重新转写" : "音频转写") + "</button>";
+    if (busy) html += '<button onclick="doAsrCancel()">取消转写</button>';
+  }
+  return html;
+}
 function renderManagePane(d) {
   const it = d.item;
   const hasUrl = !!it.original_url;
   const rows = [];
-  rows.push('<div class="primaryrow">' +
-    '<button onclick="doReprocess()">重新加工</button>' +
-    (hasUrl ? '<button onclick="doRefetch()">重新提取来源</button>' : "") +
-    (it.bundle_revision ? '<a class="btn" href="/v1/items/' + encodeURIComponent(it.item_id) +
-      "/bundles/" + it.bundle_revision + '/manifest" download target="_blank">下载清单</a>' : "") +
-    "</div>");
+  rows.push('<div class="primaryrow" id="manageActions">' + manageActionsHTML(it) + "</div>");
   const helps = [];
   if (hasUrl) helps.push("「重新提取来源」10 分钟内限一次，会生成新的来源版本；内容无变化不会新增版本。");
+  if (isBiliItem(it)) helps.push("「音频转写」在服务器空闲时执行：没有字幕轨时读取音频本地转写（机器转写，未经人工校对），进度见顶部。");
   if (it.expires_at) helps.push("云端原件保留至 " + fmtTime(it.expires_at) + "，过期后提炼结果仍可阅读。");
   if (helps.length) rows.push('<div class="help">' + esc(helps.join(" ")) + "</div>");
   rows.push('<details class="disclosure" id="supDisc"' + (it.pipeline_state === "needs_input" ? " open" : "") + '>' +
@@ -1344,15 +1430,6 @@ function renderManagePane(d) {
     "</div>" +
     '<div id="exportBody" class="filelist" style="margin-top:6px"><span class="muted">提炼文件展开时加载…</span></div>' +
     "</div></details>");
-  // B 站条目判定：it.platform 存的是采集渠道（web_inbox/plugin），内容平台要看 original_url
-  //（与服务端 _is_bilibili_item 的 URL 分支一致；元数据分支由触发接口兜底校验）
-  if (/(^|\.)bilibili\.com\b|b23\.tv\b/.test(it.original_url || "")) {
-    rows.push('<details class="disclosure" id="asrDisc"' +
-      ' ontoggle="if(this.open&amp;&amp;!this.dataset.loaded){this.dataset.loaded=1;loadAsrStatus();}">' +
-      '<summary>音频转写（视频没有字幕轨时）</summary>' +
-      '<div class="disclosure-body" id="asrBody"><span class="muted">展开时加载…</span></div>' +
-      "</details>");
-  }
   const g = d.cloud_digest;
   rows.push('<div class="grid2">' +
     '<div class="kv"><b>创建时间</b><span class="num">' + fmtTime(it.created_at) + "</span></div>" +
@@ -1408,47 +1485,13 @@ async function doRefetch() {
   } catch (e) { handleErr(e, "重新提取失败："); }
 }
 
-// ---- 音频转写（docs/11 §9.2：状态由持久化记录产生；服务器空闲时执行） ----
-async function loadAsrStatus() {
-  if (!detailId) return;
-  const body = $("asrBody");
-  if (!body) return;
-  let st;
-  try { st = await api("/v1/items/" + encodeURIComponent(detailId) + "/asr"); }
-  catch (e) { body.innerHTML = '<span class="muted">状态加载失败。</span>'; return; }
-  const stateText = {
-    queued: "排队等待", preparing: "正在读取音频", transcribing: "正在转写",
-    paused: "已暂停（服务器空闲后自动继续）", succeeded: "转写完成", failed: "转写失败",
-    cancelled: "已取消",
-  };
-  let line;
-  if (!st.exists) {
-    line = '<p class="small" style="margin:0 0 10px">这个视频在 B 站没有可下载的字幕轨时，' +
-      "可以让服务器在空闲时读取音频并本地转写（机器转写、未经人工校对，通常较慢）。</p>";
-  } else {
-    const progress = st.chunk_count
-      ? "，已完成 " + st.done_chunks + "/" + st.chunk_count + " 段" : "";
-    line = '<div class="kv"><b>状态</b><span>' + esc(stateText[st.state] || st.state) +
-      esc(progress) + "</span></div>" +
-      '<div class="kv"><b>模型</b><span class="small">' + esc(st.model_id || "") + "</span></div>" +
-      (st.last_error ? '<div class="errnote">' + esc(st.last_error) + "</div>" : "") +
-      (st.state === "succeeded" ? "" : '<p class="small muted" style="margin:4px 0 10px">' +
-        "排队或暂停时可以关闭电脑，服务器会在空闲时继续。</p>");
-  }
-  const busy = st.exists && ["queued", "preparing", "transcribing", "paused"].includes(st.state);
-  body.innerHTML = line +
-    '<div class="row">' +
-    '<button class="primary" onclick="doAsrTrigger()">' + (st.exists ? "重新转写" : "尝试音频转写") + "</button>" +
-    (busy ? '<button onclick="doAsrCancel()">取消转写</button>' : "") +
-    "</div>";
-}
+// ---- 音频转写（docs/11 §9.2：按钮在管理页签操作行，状态由顶部进度条 + 轻量轮询展示） ----
 async function doAsrTrigger() {
   if (!detailId) return;
   try {
     await api("/v1/items/" + encodeURIComponent(detailId) + "/asr", { method: "POST", body: {} });
     toast("已加入转写队列（服务器空闲时执行）", { type: "ok" });
-    $("asrBody") && ($("asrBody").dataset.loaded = "");
-    loadAsrStatus();
+    await refreshDetailStatus();  // 拉到 queued 后轮询自动接手，进度条开始走
     refreshItems();
   } catch (e) { handleErr(e, "转写请求失败："); }
 }
@@ -1457,7 +1500,7 @@ async function doAsrCancel() {
   try {
     await api("/v1/items/" + encodeURIComponent(detailId) + "/asr/cancel", { method: "POST", body: {} });
     toast("已请求取消转写", { type: "ok" });
-    loadAsrStatus();
+    await refreshDetailStatus();
     refreshItems();
   } catch (e) { handleErr(e, "取消失败："); }
 }
