@@ -156,3 +156,9 @@
 - **生产配置已切换（2026-09-10 09:37，用户拍板）**：`ASR_MODEL=sense_voice`（c422bb2），服务器 `up -d` 重建 worker 生效（env 验证、模型挂载可见、worker 启动日志正常、health 200）。Dolphin 留在 `/opt/models` 作 `retry_model` 备胎（API 传别名即可用）。
 - **真机走查发现的 UI 缺陷（已修复上线，4052969）**：`it.platform` 存的是**采集渠道**（Web 收件箱采集时 `source_hint=web_inbox`），不是内容平台；ASR 折叠区原门槛 `it.platform==="bilibili"` 永不成立，Web 收件箱采集的 B 站视频全部看不到入口。已改为按 `original_url` 域名判定（bilibili.com/b23.tv，与服务端 `_is_bilibili_item` URL 分支一致）；服务端自动入队/手动触发的判断本来就正确（`_is_bilibili_capture`/`_require_bilibili_item`），纯前端门槛错误。注意：已存在的待补充条目不会补触发自动入队（那是 extract 时刻的逻辑），在详情「管理」页签手动触发即可。
 - **构建提速（25918ef）**：Dockerfile apt 切清华镜像（与 pip 一致）。腾讯云到 deb.debian.org 实测 ~10KB/s，ffmpeg 依赖层下载 40 分钟+；切后 30 秒下完，整层构建约 2 分钟。
+
+### 7.6 合入 main 与 auto-deploy 恢复（2026-09-10 10:50）
+
+- **合并**：`feat-bilibili-asr`（含全部 ASR 实现、sense_voice 切换、ASR 入口 UI 修复、apt 提速）合并 `origin/main`（带上另一会话的 bbb435f 卡片误触修复）→ 合并提交 `28896d3` 快进 main；合并后全量 **135 passed**。
+- **部署**：服务器 `~/kb-inbox` 切回 main @`28896d3`；api/worker 镜像按 main 重建并 `up -d`（因手动 pull 已同步，auto-deploy 判定无更新，构建手动补做）；health 200；公网 /inbox 同时带「原文 ↗」（bbb435f）与 ASR 入口（b23 判定）标记；alembic head = `d6b8a2c4e9f7`；worker `ASR_MODEL=sense_voice`。
+- **auto-deploy 恢复**：`kb-auto-deploy.timer` 已 `enable --now`（每分钟巡检，健康时静默）；10:06 的 diverged ERROR 是切分支期间的历史残留，恢复后无新错误。此后正常流程 = push main 即自动部署。
