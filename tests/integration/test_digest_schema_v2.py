@@ -178,3 +178,94 @@ def test_preview_md_has_no_knowledge_links():
     assert "[[" not in md
     assert "晋升" not in md
     assert "Knowledge" not in md
+
+
+# ---- 摘录语义完整性：跨相邻片段（docs/02 §11.3）----
+
+def _spans():
+    return [
+        {"segment_id": "s0001", "text": "他说，其实关键不在于工具。"},
+        {"segment_id": "s0002", "text": "而在于你是否真的理解需求。"},
+        {"segment_id": "s0003", "text": "之后再去谈方法论才有意义。"},
+    ]
+
+
+def _validate_with_order(doc: dict, segments: list[dict]) -> list[str]:
+    return analysis.validate_analysis(
+        doc, source_revision=1, segment_ids={s["segment_id"] for s in segments},
+        segment_texts={s["segment_id"]: s["text"] for s in segments},
+        segment_order=[s["segment_id"] for s in segments],
+    )
+
+
+def test_excerpt_may_span_adjacent_segments():
+    """摘录跨相邻片段：按原文顺序拼接后逐字比对，乱序列出也接受。"""
+    segments = _spans()
+    text = "关键不在于工具。而在于你是否真的理解需求。"
+    doc = base_doc(excerpts=[{"claim_id": "c0001", "text": text,
+                              "evidence_ids": ["s0001", "s0002"]}])
+    assert _validate_with_order(doc, segments) == []
+
+    unsorted = base_doc(excerpts=[{"claim_id": "c0001", "text": text,
+                                   "evidence_ids": ["s0002", "s0001"]}])
+    assert _validate_with_order(unsorted, segments) == []
+
+
+def test_excerpt_must_not_join_nonadjacent_segments():
+    """被引片段不相邻（跳过中间片段）要拒绝，防止拼接不相邻的话。"""
+    segments = _spans()
+    doc = base_doc(excerpts=[{"claim_id": "c0001",
+                              "text": "关键不在于工具。之后再去谈方法论才有意义。",
+                              "evidence_ids": ["s0001", "s0003"]}])
+    errs = _validate_with_order(doc, segments)
+    assert any("相邻" in e for e in errs)
+
+
+def test_excerpt_rules_in_prompts():
+    """三类提示词都带语义完整规则；主提示词带段落索引。"""
+    rules = "".join(templates.EXCERPT_RULES)
+    assert "语义完整" in rules and "相邻片段" in rules
+
+    paragraphs = [{"paragraph_id": "p0001", "segment_ids": ["s0001", "s0002"]}]
+    main = json.loads(templates.build_user_prompt(
+        source_meta={"platform": "web"}, user_note=None, segments=SEGMENTS,
+        conversation_mode=False, source_revision=1, paragraphs=paragraphs,
+    ))
+    assert main["source_data"]["paragraphs"] == [
+        {"paragraph_id": "p0001", "from": "s0001", "to": "s0002"}
+    ]
+    assert "语义完整" in "".join(main["output_rules"])
+
+    chunk = json.loads(templates.build_chunk_user_prompt(
+        source_meta={"platform": "web"}, segments=SEGMENTS,
+        chunk_index=1, chunk_total=2, paragraphs=paragraphs,
+    ))
+    assert chunk["source_data"]["paragraphs"] == [
+        {"paragraph_id": "p0001", "from": "s0001", "to": "s0002"}
+    ]
+    assert "语义完整" in "".join(chunk["output_rules"])
+
+    merge = json.loads(templates.build_merge_user_prompt(
+        source_meta={"platform": "web"}, user_note=None,
+        candidates={"key_points": [], "excerpts": [], "methods": [], "insights": []},
+        conversation_mode=False, source_revision=1,
+    ))
+    assert "原样沿用候选" in "".join(merge["output_rules"])
+
+
+def test_plan_chunks_keeps_paragraphs_whole():
+    """分块边界对齐段落：同一段落的片段不拆到两块。"""
+    segments = [{"segment_id": f"s{i:04d}", "text": "字" * 50} for i in range(1, 25)]
+    paragraphs = [
+        {"paragraph_id": f"p{i:04d}", "segment_ids": [f"s{i * 2 - 1:04d}", f"s{i * 2:04d}"]}
+        for i in range(1, 13)
+    ]
+    chunks = templates.plan_chunks(segments, 1801, paragraphs)
+    assert len(chunks) > 1  # 确实分了块
+    owner = {}
+    for ci, chunk in enumerate(chunks):
+        for s in chunk:
+            owner[s["segment_id"]] = ci
+    for p in paragraphs:
+        blocks = {owner[sid] for sid in p["segment_ids"]}
+        assert len(blocks) == 1, f"段落 {p['paragraph_id']} 被拆到多块"

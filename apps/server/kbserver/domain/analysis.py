@@ -13,6 +13,8 @@ from __future__ import annotations
 import re
 
 MAX_TEXT = 2000
+# 摘录可以跨相邻片段，字数足够时要能覆盖一整句（字幕一句常被切成好几条 cue）。
+MAX_EVIDENCE_IDS = 30
 LIMITS = {
     "key_points": 12,
     "excerpts": 12,
@@ -43,8 +45,8 @@ def _evidence_check(item: dict, *, field: str, segment_ids: set[str], required: 
     for sid in ids:
         if sid not in segment_ids:
             errors.append(f"{field} 引用了不存在的片段 {sid}")
-    if len(ids) > 20:
-        errors.append(f"{field} evidence_ids 数量超过 20")
+    if len(ids) > MAX_EVIDENCE_IDS:
+        errors.append(f"{field} evidence_ids 数量超过 {MAX_EVIDENCE_IDS}")
     return errors
 
 
@@ -53,8 +55,18 @@ def _normalize_for_quote(text: str) -> str:
     return re.sub(r"\s+", "", text)
 
 
-def _excerpt_check(item: dict, *, field: str, segment_texts: dict[str, str]) -> list[str]:
-    """摘录必须能在被引用的原文片段中逐字找到（docs/08 §3.2、§6.1）。"""
+def _excerpt_check(
+    item: dict,
+    *,
+    field: str,
+    segment_texts: dict[str, str],
+    segment_order: list[str] | None = None,
+) -> list[str]:
+    """摘录必须能在被引用的原文片段中逐字找到（docs/08 §3.2、§6.1）。
+
+    摘录可以跨多个相邻片段（字幕一句常被切成好几条 cue）：此时按原文顺序拼接
+    被引片段再逐字比对。被引片段必须彼此相邻，避免把不相邻的话拼成一句。
+    """
     errors: list[str] = []
     text = item.get("text")
     if not isinstance(text, str) or not text.strip():
@@ -63,12 +75,20 @@ def _excerpt_check(item: dict, *, field: str, segment_texts: dict[str, str]) -> 
     if not ids:
         return [f"{field} 缺少 evidence_ids"]
     target = _normalize_for_quote(text)
-    for sid in ids:
-        source = segment_texts.get(sid)
-        if source is None:
-            continue  # 片段不存在由 _evidence_check 报告
-        if target and target in _normalize_for_quote(source):
-            return []
+    known = [sid for sid in ids if sid in segment_texts]
+    if not known:
+        return []  # 片段不存在由 _evidence_check 报告
+    if segment_order:
+        pos = {sid: i for i, sid in enumerate(segment_order)}
+        known.sort(key=lambda s: pos[s])
+        idxs = [pos[s] for s in known]
+        if idxs != list(range(idxs[0], idxs[0] + len(idxs))):
+            return [f"{field} 的 evidence_ids 必须是原文中相邻的片段（摘录不能拼接不相邻的文字）"]
+    else:
+        known = [sid for sid in ids if sid in segment_texts]
+    joined = _normalize_for_quote("".join(segment_texts.get(s) or "" for s in known))
+    if target and target in joined:
+        return []
     errors.append(f"{field} 的摘录未在被引用的原文片段中逐字出现")
     return errors
 
@@ -100,10 +120,12 @@ def validate_analysis(
     source_revision: int,
     segment_ids: set[str],
     segment_texts: dict[str, str] | None = None,
+    segment_order: list[str] | None = None,
 ) -> list[str]:
     """返回错误列表；空列表表示通过。
 
     segment_texts 为可选片段正文映射：提供时额外校验 excerpts 逐字一致。
+    segment_order 为片段的原文顺序：提供时允许摘录跨相邻片段，并拒绝拼接不相邻片段。
     """
     errors: list[str] = []
     schema = doc.get("schema_version")
@@ -157,7 +179,8 @@ def validate_analysis(
                     ex, field=f"excerpts[{i}]", claim_ids=seen_claim_ids
                 )
                 if texts:
-                    errors += _excerpt_check(ex, field=f"excerpts[{i}]", segment_texts=texts)
+                    errors += _excerpt_check(ex, field=f"excerpts[{i}]", segment_texts=texts,
+                                              segment_order=segment_order)
 
     methods = doc.get("methods")
     if methods is None:

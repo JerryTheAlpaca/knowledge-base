@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 
 from ..config import get_settings
 from ..domain import analysis, pipeline, provider_ops, templates
+from ..extractors import paragraphs as parafmt
 from ..models import (
     Capture,
     Credential,
@@ -73,6 +74,7 @@ class EnrichPlan:
     capabilities: dict
     operation_id: str
     segments: list[dict] = field(default_factory=list)
+    paragraphs: list[dict] = field(default_factory=list)
     user_note: str | None = None
     source_meta: dict = field(default_factory=dict)
     conversation_mode: bool = False
@@ -117,8 +119,12 @@ def _base_bundle_files(db: Session, item: Item) -> list[StoredFile]:
     return pipeline.latest_files_per_path(rows)
 
 
-def _load_segments(db: Session, item: Item) -> list[dict]:
-    """读取当前来源版本对应的 segments.json；按登记时间取最新并核对 source_revision。"""
+def _load_segments(db: Session, item: Item) -> tuple[list[dict], list[dict]]:
+    """读取当前来源版本对应的 segments.json；按登记时间取最新并核对 source_revision。
+
+    同时返回 paragraphs（阅读层段落，摘录语义完整性的分组依据）；旧 bundle 没有
+    paragraphs 字段时按片段现算，保证提示词始终有段落索引。
+    """
     rows = (
         db.query(StoredFile)
         .filter(StoredFile.item_id == item.id, StoredFile.relative_path == "segments.json")
@@ -132,11 +138,15 @@ def _load_segments(db: Session, item: Item) -> list[dict]:
         except Exception:
             continue
         if doc.get("source_revision") == item.source_revision:
-            return [
+            segments = [
                 s for s in (doc.get("segments") or [])
                 if isinstance(s, dict) and s.get("segment_id") and s.get("text")
             ]
-    return []
+            paragraphs = doc.get("paragraphs")
+            if not isinstance(paragraphs, list) or not paragraphs:
+                paragraphs = parafmt.group_paragraphs(segments)
+            return segments, [p for p in paragraphs if isinstance(p, dict) and p.get("paragraph_id")]
+    return [], []
 
 
 # ---- Phase A：校验与操作登记 ----
@@ -206,7 +216,7 @@ def prepare(session_factory, job_id: str, lease_token: str) -> EnrichPlan | None
 
         capture = db.get(Capture, item.capture_id)
         input_kind = (capture.input_json or {}).get("input_kind") if capture else None
-        segments = _load_segments(db, item)
+        segments, paragraphs = _load_segments(db, item)
         if not segments:
             _waiting(db, job, item, "needs_input", "缺少可加工的来源片段；请补充材料。", "item_needs_input")
             db.commit()
@@ -225,7 +235,7 @@ def prepare(session_factory, job_id: str, lease_token: str) -> EnrichPlan | None
         seg_tokens = sum(templates.estimate_tokens(s["text"]) for s in segments)
         if seg_tokens > max(1000, int(context_tokens * 0.6)):
             chunked = True
-            chunks = templates.plan_chunks(segments, int(context_tokens * 0.6))
+            chunks = templates.plan_chunks(segments, int(context_tokens * 0.6), paragraphs)
 
         fingerprint_src = json.dumps(
             [pipeline.RECIPE_VERSION, profile.id, profile.model, source.content_hash, chunked, len(chunks)],
@@ -252,6 +262,7 @@ def prepare(session_factory, job_id: str, lease_token: str) -> EnrichPlan | None
             capabilities=caps,
             operation_id=op.id,
             segments=segments,
+            paragraphs=paragraphs,
             user_note=meta.get("user_note"),
             source_meta=meta,
             conversation_mode=conversation_mode,
@@ -352,11 +363,12 @@ def call_provider(session_factory, plan: EnrichPlan) -> dict:
 
     segment_ids = {s["segment_id"] for s in plan.segments}
     segment_texts = {s["segment_id"]: s.get("text") or "" for s in plan.segments}
+    segment_order = [s["segment_id"] for s in plan.segments]
 
     def _validate(doc: dict, base_prompt: str, raw_text: str) -> dict:
         errors = analysis.validate_analysis(
             doc, source_revision=plan.source_revision, segment_ids=segment_ids,
-            segment_texts=segment_texts,
+            segment_texts=segment_texts, segment_order=segment_order,
         ) if isinstance(doc, dict) else ["输出不是 JSON 对象"]
         if errors:
             try:
@@ -365,7 +377,7 @@ def call_provider(session_factory, plan: EnrichPlan) -> dict:
                 raise AnalysisInvalid(errors, raw_text, doc if isinstance(doc, dict) else None) from None
             errors2 = analysis.validate_analysis(
                 doc2, source_revision=plan.source_revision, segment_ids=segment_ids,
-                segment_texts=segment_texts,
+                segment_texts=segment_texts, segment_order=segment_order,
             )
             if errors2:
                 raise AnalysisInvalid(errors2, raw_text, doc2)
@@ -379,6 +391,7 @@ def call_provider(session_factory, plan: EnrichPlan) -> dict:
             prompt = templates.build_chunk_user_prompt(
                 source_meta=plan.source_meta, segments=chunk,
                 chunk_index=i, chunk_total=len(plan.chunks),
+                paragraphs=plan.paragraphs,
             )
             doc = _call(prompt)
             for key in candidates:
@@ -401,7 +414,7 @@ def call_provider(session_factory, plan: EnrichPlan) -> dict:
         prompt = templates.build_user_prompt(
             source_meta=plan.source_meta, user_note=plan.user_note,
             segments=plan.segments, conversation_mode=plan.conversation_mode,
-            source_revision=plan.source_revision,
+            source_revision=plan.source_revision, paragraphs=plan.paragraphs,
         )
         doc = _call(prompt)
         doc = _validate(doc, prompt, json.dumps(doc, ensure_ascii=False))
