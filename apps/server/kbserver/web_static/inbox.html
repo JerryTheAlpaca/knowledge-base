@@ -454,6 +454,7 @@
         <textarea id="capText" rows="1" placeholder="粘贴链接、正文或分享内容…"></textarea>
         <div class="chiprow" id="urlChips" hidden></div>
         <div class="chiprow" id="fileChips" hidden></div>
+        <div class="chiprow" id="audioChips" hidden></div>
         <label class="checkrow" for="capImages" title="勾选后，本次提交的公众号/网页链接会连同正文配图一起保存">
           <input type="checkbox" id="capImages"> 提取图片
           <span class="small muted">公众号/网页配图默认不保存，勾选后本次提交才提取</span>
@@ -470,12 +471,12 @@
         <input id="capNote" placeholder="为什么收集它、想让它怎么加工">
         <label for="capFiles">附件（可选，字幕文件 / 截图等，可多选）</label>
         <input id="capFiles" type="file" multiple>
-        <label for="capAudio">录音文件（可选，最长 10 小时、单文件最大 8GiB；分块续传，可断点重试）</label>
-        <input id="capAudio" type="file"
+        <label for="capAudio">录音文件（可选，最多 10 个；单个最长 10 小时、最大 8GiB；分块续传，可断点重试）</label>
+        <input id="capAudio" type="file" multiple
                accept="audio/*,.m4a,.mp3,.aac,.wav,.flac,.ogg,.opus">
         <span class="small" id="capAudioState"></span>
       </div>
-      <p class="help">上传录音（会议等）会直接进入机器转写队列；B 站视频、网页音频与音频直链同样在服务器空闲时转写。</p>
+      <p class="help">上传录音（会议等）会直接进入机器转写队列，一次可选多个（最多 10 个），每个录音生成一条转写条目；在附件里选中的音频文件也会自动转入录音。B 站视频、网页音频与音频直链同样在服务器空闲时转写。</p>
     </div>
 
     <div class="card" id="listWrap">
@@ -825,6 +826,12 @@ function renderCapChips() {
     '<span class="chip"><span class="lbl" title="' + esc(f.name) + '">' + esc(f.name) +
     "（" + (f.size / 1024).toFixed(0) + " KB）</span>" +
     '<button class="xbtn" data-fi="' + i + '" aria-label="移除该附件">✕</button></span>').join("");
+  const ah = $("audioChips");
+  ah.hidden = capAudiosState.length === 0;
+  ah.innerHTML = capAudiosState.map((a, i) =>
+    '<span class="chip"><span class="lbl" title="' + esc(a.file.name) + '">录音 ' + esc(a.file.name) +
+    "（" + (a.file.size / (1024 * 1024)).toFixed(1) + " MiB）</span>" +
+    '<button class="xbtn" data-ai="' + i + '" aria-label="移除该录音">✕</button></span>').join("");
 }
 function bodyText() {
   let text = $("capText").value;
@@ -843,20 +850,43 @@ async function uploadFiles(fileList, onProgress) {
   return ids;
 }
 
-// ---------- 录音上传：最小串行分块续传（docs/13 §6.2）----------
-const capAudioState = { file: null, sessionId: null, uploadId: null };
+// ---------- 录音上传：最小串行分块续传（docs/13 §6.2）；一次最多 10 个录音 ----------
+const MAX_AUDIOS = 10;
+const capAudiosState = [];  // 每个录音一条：{ file, sessionId, uploadId }
+const AUDIO_EXT_RE = /\.(m4a|mp3|aac|wav|flac|ogg|opus|wma|amr|mka|aiff?|caf)$/i;
+function isAudioFile(f) {
+  return (f.type || "").startsWith("audio/") || AUDIO_EXT_RE.test(f.name || "");
+}
+function pushAudioFiles(fileList) {
+  let overflow = 0;
+  for (const f of fileList) {
+    if (capAudiosState.length >= MAX_AUDIOS) { overflow++; continue; }
+    capAudiosState.push({ file: f, sessionId: null, uploadId: null });
+  }
+  if (overflow) toast("一次最多提交 10 个录音，超出部分未加入", { type: "error" });
+}
+function refreshAudioSummary() {
+  const st = $("capAudioState");
+  const n = capAudiosState.length;
+  if (!n) { st.textContent = ""; return; }
+  const total = capAudiosState.reduce((s, a) => s + a.file.size, 0);
+  st.textContent = "已选择 " + n + " 个录音，共 " + (total / (1024 * 1024)).toFixed(1) + " MiB";
+}
 async function sha256Hex(buf) {
   const d = await crypto.subtle.digest("SHA-256", buf);
   return Array.from(new Uint8Array(d)).map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 // 先声明会话，再逐块上传，最后完成；中断后同一会话按可恢复 offset 继续，不重传整文件。
-async function uploadAudioFile(file, onProgress) {
+// 每个录音独立会话（entry.sessionId/uploadId），失败后再次提交各自续传。
+async function uploadAudioFile(entry, onProgress) {
+  if (entry.uploadId) return entry.uploadId;
   if (!crypto.subtle || !crypto.subtle.digest) {
     throw new Error("当前浏览器不支持分块上传所需的 SHA-256，请改用桌面端上传。");
   }
+  const file = entry.file;
   let session = null;
-  if (capAudioState.sessionId) {
-    session = await api("/v1/audio-uploads/" + encodeURIComponent(capAudioState.sessionId))
+  if (entry.sessionId) {
+    session = await api("/v1/audio-uploads/" + encodeURIComponent(entry.sessionId))
       .catch(() => null);
   }
   if (!session || session.state !== "receiving" || session.total_bytes !== file.size) {
@@ -864,14 +894,14 @@ async function uploadAudioFile(file, onProgress) {
       filename: file.name, total_bytes: file.size,
       mime: file.type || "application/octet-stream" } });
   }
-  capAudioState.sessionId = session.session_id;
+  entry.sessionId = session.session_id;
   let offset = session.offset || 0;
   const chunkSize = session.chunk_size || 16 * 1024 * 1024;
   const mib = (n) => (n / (1024 * 1024)).toFixed(0);
   while (offset < file.size) {
     const end = Math.min(offset + chunkSize, file.size);
     const buf = await file.slice(offset, end).arrayBuffer();
-    if (onProgress) onProgress("上传录音 " + mib(offset) + "/" + mib(file.size) + " MiB…");
+    if (onProgress) onProgress("上传 " + mib(offset) + "/" + mib(file.size) + " MiB…");
     const digest = await sha256Hex(buf);
     const r = await api("/v1/audio-uploads/" + encodeURIComponent(session.session_id) + "/chunks", {
       method: "PUT", rawBody: buf,
@@ -881,8 +911,8 @@ async function uploadAudioFile(file, onProgress) {
   }
   const done = await api("/v1/audio-uploads/" + encodeURIComponent(session.session_id) + "/complete",
     { method: "POST", body: {} });
-  capAudioState.uploadId = done.upload_id;
-  capAudioState.sessionId = null;
+  entry.uploadId = done.upload_id;
+  entry.sessionId = null;
   if (onProgress) onProgress("");
   return done.upload_id;
 }
@@ -891,8 +921,8 @@ async function submitCapture() {
   const text = bodyText();
   const note = $("capNote").value.trim();
   const files = capFilesState.slice();
-  const audioFile = capAudioState.file;
-  if (!urls.length && !text && !files.length && !audioFile) {
+  const audios = capAudiosState.slice();
+  if (!urls.length && !text && !files.length && !audios.length) {
     toast("至少提供链接、文字、附件或录音之一", { type: "error" });
     return;
   }
@@ -901,16 +931,22 @@ async function submitCapture() {
   btn.textContent = "提交中…";
   try {
     const uploadIds = await uploadFiles(files, (s) => ($("capProgress").textContent = s));
-    let audioUploadId = capAudioState.uploadId;
-    if (audioFile && !audioUploadId) {
-      // 断点续传：失败后再次提交会从已确认 offset 继续
-      audioUploadId = await uploadAudioFile(audioFile, (s) => {
-        $("capProgress").textContent = s;
-        $("capAudioState").textContent = s || "录音已上传完成";
-      });
+    // 录音逐个分块上传（最多 10 个）；失败后再次提交各会话从已确认 offset 续传
+    const audioIds = [];
+    for (let k = 0; k < audios.length; k++) {
+      const entry = audios[k];
+      if (!entry.uploadId) {
+        const tag = audios.length > 1 ? "录音 " + (k + 1) + "/" + audios.length + "：" : "";
+        await uploadAudioFile(entry, (s) => { $("capProgress").textContent = tag + s; });
+      }
+      audioIds.push(entry.uploadId);
+      if (audios.length > 1) $("capAudioState").textContent = "录音已上传 " + (k + 1) + "/" + audios.length;
     }
-    // 多链接每条一个条目；文字/备注/附件/录音挂第一条，其余纯链接
-    const jobs = urls.length ? urls.map((u, i) => ({ url: u, primary: i === 0 })) : [{ url: null, primary: true }];
+    // 多链接每条一个条目；每个录音单独一条转写条目；
+    // 文字/备注/附件挂第一条（有链接挂首链接，否则挂第一条录音）
+    const jobs = urls.map((u, i) => ({ url: u, primary: i === 0 }));
+    audioIds.forEach((aid, k) => jobs.push({ url: null, audio: aid, primary: !urls.length && k === 0 }));
+    if (!jobs.length) jobs.push({ url: null, primary: true });
     const ids = [];
     try {
       for (let i = 0; i < jobs.length; i++) {
@@ -918,11 +954,11 @@ async function submitCapture() {
         const jText = j.primary ? text : "";
         const jNote = j.primary ? note : "";
         const jFiles = j.primary ? uploadIds : [];
-        const audioJob = !!(j.primary && audioUploadId);
-        if (jobs.length > 1) $("capProgress").textContent = "提交链接 " + (i + 1) + "/" + jobs.length + "…";
+        const audioJob = !!j.audio;
+        if (jobs.length > 1) $("capProgress").textContent = "提交条目 " + (i + 1) + "/" + jobs.length + "…";
         const r = await api("/v1/captures", { method: "POST", idempotencyKey: crypto.randomUUID(), body: {
           schema_version: "1.0", client_capture_id: crypto.randomUUID(),
-          input_kind: j.url ? "url" : ((jText || audioJob) ? (audioJob && !jText ? "file" : "text") : "file"),
+          input_kind: j.url ? "url" : (jText ? "text" : "file"),
           // 采集渠道（不是平台）：来源由服务端按 URL/输入判定
           capture_channel: "web_inbox", source_hint: "unknown",
           // 提取图片开关：只影响网页/公众号路径，B 站等自动行为不受影响
@@ -930,7 +966,7 @@ async function submitCapture() {
           original_url: j.url || null, text: jText || null, share_text: null,
           user_note: jNote || null, upload_ids: jFiles,
           processing_intent: audioJob ? "transcribe_audio" : "default",
-          primary_audio_upload_id: audioJob ? audioUploadId : null,
+          primary_audio_upload_id: audioJob ? j.audio : null,
           content_scope: "unknown", archive_policy: "source_materials",
           processing_profile_id: ($("defaultProfile") || {}).value || null,
           captured_at: null,
@@ -948,8 +984,8 @@ async function submitCapture() {
     // 成功：收缩回 idle + toast 带「查看」动作（G2/E5）
     $("capText").value = ""; $("capNote").value = "";
     capFilesState.length = 0; $("capFiles").value = "";
-    capAudioState.file = null; capAudioState.sessionId = null; capAudioState.uploadId = null;
-    $("capAudio").value = ""; $("capAudioState").textContent = "";
+    capAudiosState.length = 0; $("capAudio").value = "";
+    $("capAudioState").textContent = "";
     $("capProgress").textContent = "";
     renderCapChips(); autosizeCap(); clearDraft();
     toast("已接收 " + ids.length + " 条，后台开始加工", { type: "ok", action: { label: "查看", fn: scrollToListTop } });
@@ -2065,19 +2101,16 @@ $("capSubmit").addEventListener("click", submitCapture);
 $("capText").addEventListener("input", () => { autosizeCap(); renderCapChips(); saveDraftSoon(); });
 $("capNote").addEventListener("input", () => saveDraftSoon());
 $("capFiles").addEventListener("change", (e) => {
-  for (const f of e.target.files) capFilesState.push(f);
+  const audios = [];
+  for (const f of e.target.files) (isAudioFile(f) ? audios : capFilesState).push(f);
   e.target.value = "";
-  renderCapChips();
+  if (audios.length) pushAudioFiles(audios);  // 附件里选中的录音转入转写队列
+  renderCapChips(); refreshAudioSummary();
 });
 $("capAudio").addEventListener("change", (e) => {
-  const f = e.target.files && e.target.files[0];
-  if (!f) return;
-  capAudioState.file = f;
-  capAudioState.sessionId = null;
-  capAudioState.uploadId = null;
-  capAudioState.error = "";
-  $("capAudioState").textContent = "已选择：" + f.name +
-    "（" + (f.size / (1024 * 1024)).toFixed(1) + " MiB）";
+  pushAudioFiles(e.target.files);
+  e.target.value = "";
+  renderCapChips(); refreshAudioSummary();
 });
 $("urlChips").addEventListener("click", (e) => {
   const b = e.target.closest(".xbtn");
@@ -2091,6 +2124,12 @@ $("fileChips").addEventListener("click", (e) => {
   if (!b) return;
   capFilesState.splice(Number(b.dataset.fi), 1);
   renderCapChips();
+});
+$("audioChips").addEventListener("click", (e) => {
+  const b = e.target.closest(".xbtn");
+  if (!b) return;
+  capAudiosState.splice(Number(b.dataset.ai), 1);
+  renderCapChips(); refreshAudioSummary();
 });
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
