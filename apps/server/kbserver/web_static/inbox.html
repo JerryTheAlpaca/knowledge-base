@@ -1449,9 +1449,14 @@ function renderManagePane(d) {
   rows.push('<div class="primaryrow" id="manageActions">' + manageActionsHTML(it) + "</div>");
   const helps = [];
   if (hasUrl) helps.push("「重新提取来源」10 分钟内限一次，会生成新的来源版本；内容无变化不会新增版本。");
-  if (isBiliItem(it)) helps.push("「音频转写」在服务器空闲时执行：没有字幕轨时读取音频本地转写（机器转写，未经人工校对），进度见顶部。");
+  if (isBiliItem(it)) helps.push("「音频转写」在服务器空闲时执行：没有字幕轨时读取音频本地转写，进度见顶部。");
   if (it.expires_at) helps.push("云端原件保留至 " + fmtTime(it.expires_at) + "，过期后提炼结果仍可阅读。");
-  if (helps.length) rows.push('<div class="help">' + esc(helps.join(" ")) + "</div>");
+  if (helps.length) {
+    // 每句一行：按句号拆开后逐句转义再拼接，句号后换行
+    const sentences = helps.join("").split("。").filter((s) => s.trim())
+      .map((s) => s.trim() + "。");
+    rows.push('<div class="help">' + sentences.map(esc).join("<br>") + "</div>");
+  }
   rows.push('<details class="disclosure" id="supDisc"' + (it.pipeline_state === "needs_input" ? " open" : "") + '>' +
     '<summary>补充材料（文字 / 字幕 / 截图）</summary><div class="disclosure-body">' +
     '<label for="supText">补充文字</label><textarea id="supText" rows="3" placeholder="粘贴缺失的正文、字幕内容…"></textarea>' +
