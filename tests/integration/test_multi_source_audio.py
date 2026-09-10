@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import stat
 import sys
 import tempfile
@@ -33,21 +34,59 @@ FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 
 # ---- 来源标签/图标 ----
 
-def test_source_label_mapping_is_distinct():
-    """B 站 / 网页音频 / 上传录音必须来源不同、标签不同、图标不同（docs/13 §5）。"""
+def test_source_label_mapping_is_distinct_and_text_only():
+    """来源标签是纯文字且各自独立：B 站 / 微信公众号 / 网页 / 网页音频 / 上传录音。"""
     bili = source_labels.source_fields("bilibili", "video")
+    wx = source_labels.source_fields("wechat_mp", "text")
+    web_text = source_labels.source_fields("web", "text")
     web_audio = source_labels.source_fields("web", "audio")
     upload = source_labels.source_fields("audio_upload", "audio")
-    web_text = source_labels.source_fields("wechat_mp", "text")
 
-    assert bili["source_type"] == "bilibili" and bili["source_label"] == "B 站"
-    assert web_audio["source_type"] == "web_audio" and web_audio["source_label"] == "网页音频"
-    assert upload["source_type"] == "audio_upload" and upload["source_label"] == "上传录音"
-    assert web_text["source_type"] == "web" and web_text["platform"] == "web"
+    assert (bili["source_type"], bili["source_label"]) == ("bilibili", "B 站")
+    assert (wx["source_type"], wx["source_label"], wx["platform"]) == (
+        "wechat_mp", "微信公众号", "wechat_mp")
+    assert (web_text["source_type"], web_text["source_label"]) == ("web", "网页")
+    assert (web_audio["source_type"], web_audio["source_label"]) == (
+        "web_audio", "网页音频")
+    assert (upload["source_type"], upload["source_label"]) == (
+        "audio_upload", "上传录音")
+    # 公众号不被并进"网页"；只有普通网页才是"网页"
+    assert wx["source_type"] != web_text["source_type"]
+    # 标签是纯文字：不含表情符号或图标符号
+    for f in (bili, wx, web_text, web_audio, upload):
+        assert f["source_label"] == f["source_label"].strip()
+        assert re.fullmatch(r"[\u4e00-\u9fffA-Za-z0-9 ]+", f["source_label"]), f["source_label"]
+    labels = {bili["source_label"], wx["source_label"], web_text["source_label"],
+              web_audio["source_label"], upload["source_label"]}
+    assert len(labels) == 5
 
-    icons = {bili["icon_key"], web_audio["icon_key"], upload["icon_key"]}
-    labels = {bili["source_label"], web_audio["source_label"], upload["source_label"]}
-    assert len(icons) == 3 and len(labels) == 3
+
+def test_capture_channel_is_not_a_platform():
+    """采集渠道（web_inbox）不是平台：平台按 URL 判定，公众号仍是 wechat_mp。"""
+    from kbserver.domain import pipeline
+
+    assert pipeline._capture_platform(
+        {"source_hint": "web_inbox", "original_url": "https://mp.weixin.qq.com/s/x"}
+    ) == ("wechat_mp", "text")
+    assert pipeline._capture_platform(
+        {"source_hint": "web_inbox", "original_url": "https://www.bilibili.com/video/BV1x"}
+    ) == ("bilibili", "video")
+    assert pipeline._capture_platform(
+        {"source_hint": "web_inbox", "original_url": "https://example.com/post"}
+    ) == ("web", "text")
+    # 无 URL 的纯文字/文件采集不冒充平台
+    assert pipeline._capture_platform(
+        {"source_hint": "web_inbox", "input_kind": "text"}
+    ) == ("unknown", "text")
+    # 旧记录把渠道写进 platform 时，展示与来源判定都回退到 URL
+    assert source_labels.source_fields("web_inbox", None)["source_label"] == "未知"
+    assert source_labels.resolve_platform(
+        "web_inbox", "https://mp.weixin.qq.com/s/x") == "wechat_mp"
+    # 音频转写意图下公众号链接也是网页音频，但平台不丢
+    assert pipeline._capture_platform(
+        {"processing_intent": "transcribe_audio",
+         "original_url": "https://mp.weixin.qq.com/s/x"}
+    ) == ("wechat_mp", "audio")
 
 
 def test_legacy_records_do_not_backfill_audio():

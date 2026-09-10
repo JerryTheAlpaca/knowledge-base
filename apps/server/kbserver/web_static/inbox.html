@@ -181,10 +181,8 @@
   .item-aux .sdetail { flex: 1; min-width: 0; max-width: 360px; overflow: hidden;
                        text-overflow: ellipsis; white-space: nowrap; }
   .item-aux .sdetail.bad { color: var(--bad); }
-  /* 来源徽标：图形图标 + 纯文本标签同时显示，不靠颜色区分（docs/13 §5） */
+  /* 来源徽标：只显示纯文字标签（无表情符号、无图标图形） */
   .item-aux .srcbadge { display: inline-flex; gap: 4px; align-items: center; }
-  .srcicon { width: 14px; height: 14px; flex: none; display: inline-block;
-             vertical-align: -2px; color: var(--text-2); }
   .auxcard { border: 1px solid var(--border); border-radius: var(--radius-inner);
              padding: 10px 12px; margin: 10px 0; background: var(--surface-2); }
   .auxcard .row { gap: 10px; }
@@ -916,7 +914,8 @@ async function submitCapture() {
         const r = await api("/v1/captures", { method: "POST", idempotencyKey: crypto.randomUUID(), body: {
           schema_version: "1.0", client_capture_id: crypto.randomUUID(),
           input_kind: j.url ? "url" : ((jText || audioJob) ? (audioJob && !jText ? "file" : "text") : "file"),
-          source_hint: "web_inbox",
+          // 采集渠道（不是平台）：来源由服务端按 URL/输入判定
+          capture_channel: "web_inbox", source_hint: "unknown",
           original_url: j.url || null, text: jText || null, share_text: null,
           user_note: jNote || null, upload_ids: jFiles,
           processing_intent: audioJob ? "transcribe_audio" : "default",
@@ -968,7 +967,7 @@ let activePlatform = "";
 
 const ROW_FIELDS = ["pipeline_state", "state_detail", "source_revision", "bundle_revision",
   "source_type", "title", "original_url", "missing_materials", "created_at",
-  "source_label", "icon_key"];
+  "source_label"];
 const rowJson = (it) => JSON.stringify(ROW_FIELDS.map((k) => it[k] === undefined ? null : it[k]));
 
 function itemInner(it) {
@@ -993,7 +992,7 @@ function itemInner(it) {
   return '<div class="item-main">' + main +
     '<span class="item-time num" title="创建于 ' + esc(fmtTime(it.created_at)) + '">' + esc(fmtShort(it.created_at)) + "</span></div>" +
     '<div class="item-aux">' + stateBadge(it.pipeline_state) +
-    '<span class="srcbadge">' + sourceIconHTML(it) + "<span>" + esc(sourceLabel(it)) + "</span></span>" + miss + link +
+    '<span class="srcbadge">' + esc(sourceLabel(it)) + "</span>" + miss + link +
     (auxextra ? '<span class="auxextra">' + auxextra + "</span>" : "") +
     "</div>";
 }
@@ -1017,7 +1016,6 @@ function rebuildPlatformChips() {
     ? '<button class="pchip' + (activePlatform === "" ? " active" : "") + '" data-p="">全部</button>' : "") +
     plats.map((p) => '<button class="pchip' + (activePlatform === p ? " active" : "") + '" data-p="' +
       esc(p) + '" title="' + esc(sourceTypeLabel(p)) + '">' +
-      sourceIconHTML({ icon_key: SOURCE_TYPE_ICON_KEYS[p] || "" }) + " " +
       esc(sourceTypeLabel(p)) + "</button>").join("");
 }
 function applyFilters() {
@@ -1146,7 +1144,7 @@ let detailData = null;
 let detailTab = "auto";   // I3：auto 随状态解析——ready→提炼，否则原文
 let detailLoading = false;
 let detailPushed = false;
-let asrStatus = null;     // B 站条目最近一次转写 run（GET /asr）；驱动顶部进度条与音频转写按钮
+let asrStatus = null;     // 可转写条目（B 站/网页/上传录音）最近一次转写 run（GET /asr）；驱动顶部进度条与提取音轨按钮
 let detailSeq = 0;        // 详情打开序号：异步状态回包回来时校验没切到别的条目
 const SEG_PAGE = 60;
 let segShown = 0;
@@ -1160,39 +1158,22 @@ const DIGEST_STATE_LABELS = {
   ready: "已生成", pending: "待提炼", failed: "提炼失败", expired: "云端材料已过期", missing: "无提炼",
 };
 // 来源展示字段由服务端派生（docs/13 §5）：Web 不得用 URL 正则猜 B 站/网页音频。
-// 标签是纯文本（不带表情符号）；图标按 icon_key 渲染为不同图形，不能只靠颜色区分。
+// 标签是纯文字：B 站 / 微信公众号 / 小红书 / 网页 / 网页音频 / 上传录音（不用表情符号）。
 const SOURCE_TYPE_LABELS = {
-  bilibili: "B 站", web_audio: "网页音频", audio_upload: "上传录音", web: "网页",
-};
-// 筛选把手上只有 source_type，用它反查 icon_key（服务端给的是 icon_key）
-const SOURCE_TYPE_ICON_KEYS = {
-  bilibili: "bilibili_video", web_audio: "web_audio",
-  audio_upload: "audio_upload", web: "web_page",
+  bilibili: "B 站", wechat_mp: "微信公众号", xiaohongshu: "小红书",
+  web: "网页", web_audio: "网页音频", audio_upload: "上传录音",
 };
 const PLATFORM_LABELS = {
-  weichat_mp: "网页", wechat_mp: "网页", wechat: "网页",
-  bilibili: "B 站", xiaohongshu: "网页",
+  weichat_mp: "微信公众号", wechat_mp: "微信公众号", wechat: "微信公众号",
+  bilibili: "B 站", xiaohongshu: "小红书",
   web: "网页", webpage: "网页",
-  note: "笔记", file: "文件", audio_upload: "上传录音", unknown: "未知",
+  note: "笔记", file: "文件", audio_upload: "上传录音",
+  // 旧记录可能把采集渠道写进了平台字段：渠道不是来源，不当作平台名显示
+  web_inbox: "未知", unknown: "未知",
 };
 const platformLabel = (p) => PLATFORM_LABELS[p] || p;
 const sourceTypeLabel = (t) => SOURCE_TYPE_LABELS[t] || platformLabel(t);
 const sourceLabel = (it) => (it && it.source_label) || sourceTypeLabel(it && it.source_type);
-// 四个来源各自一个图形（不含表情符号）；未知来源退化为通用文件形状
-const SOURCE_ICON_PATHS = {
-  bilibili_video: '<rect x="2" y="7" width="20" height="14" rx="2"/><path d="M8 3l4 4 4-4"/>',
-  web_audio: '<path d="M3 18v-6a9 9 0 0 1 18 0v6"/><path d="M21 19a3 3 0 0 1-3 3h-1"/>',
-  audio_upload: '<rect x="9" y="2" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v4"/>',
-  web_page: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3.5 3 14.5 0 18M12 3c-3 3.5-3 14.5 0 18"/>',
-  _generic: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>',
-};
-function sourceIconHTML(it) {
-  const key = (it && it.icon_key) || "";
-  const path = SOURCE_ICON_PATHS[key] || SOURCE_ICON_PATHS._generic;
-  return '<svg class="srcicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
-    'stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
-    path + "</svg>";
-}
 
 function stepperState(s) {
   // 返回 {done, cur, tone}：done=已完成段数；cur=当前段下标；tone=active|paused|bad
@@ -1211,6 +1192,14 @@ function stepperState(s) {
 function isBiliItem(it) {
   // 来源由服务端 source_type/platform 判定；不再用 URL 正则作为唯一入口（docs/13 §5）
   return !!(it && (it.source_type === "bilibili" || it.platform === "bilibili"));
+}
+function mayHaveAudio(it) {
+  // 可转写条目的前端预估（实际能力由服务端 audio_capability 决定）：
+  // B 站视频 / 上传录音 / 带链接的网页（网页音频能否静态解析要触发后才知道）
+  if (!it) return false;
+  if (isBiliItem(it)) return true;
+  if (it.source_type === "audio_upload" || it.platform === "audio_upload" || it.media_kind === "audio") return true;
+  return !!(it.platform === "web" && it.original_url);
 }
 const ASR_BUSY_STATES = ["queued", "preparing", "transcribing", "paused"];
 // 转写状态 → 「提取」下方小字副行（2026-09-10 走查：不单独占进度条圆点；有 run 才显示）
@@ -1259,10 +1248,22 @@ function renderDetailHeader(it) {
   $("primaryBar").hidden = !primary;
 }
 
-// 主操作条唯一主按钮（docs/10 §3.1：failed→重试 / needs_input→去补充；ready 无主按钮，文件在管理页签下载）
+// 主操作条主按钮（docs/10 §3.1：failed→重试 / needs_input→去补充）；
+// 网页等非 B 站可转写条目还没转过写时给一个显眼「提取音轨」入口（B 站无字幕会自动转写，不需要）
+function asrPrimaryAvailable(it) {
+  if (isBiliItem(it)) return false;
+  const st = asrStatus;
+  const supported = st ? (st.asr_supported !== false) : mayHaveAudio(it);
+  return supported && !(st && st.exists);
+}
 function primaryActionHTML(it) {
   if (it.pipeline_state === "failed") return '<button class="primary" onclick="doReprocess()">重试加工</button>';
-  if (it.pipeline_state === "needs_input") return '<button class="primary" onclick="focusSupplement()">去补充</button>';
+  if (it.pipeline_state === "needs_input") {
+    let html = '<button class="primary" onclick="focusSupplement()">去补充</button>';
+    if (asrPrimaryAvailable(it)) html += '<button class="primary" onclick="doAsrTrigger()">提取音轨</button>';
+    return html;
+  }
+  if (asrPrimaryAvailable(it)) return '<button class="primary" onclick="doAsrTrigger()">提取音轨</button>';
   return "";
 }
 
@@ -1293,31 +1294,51 @@ async function refreshDetail() {
   try {
     detailData = await api("/v1/items/" + encodeURIComponent(detailId) + "/reading");
     renderDetail();
+    loadAsrStatus();  // 异步补拉转写状态：主操作条/管理页签按钮与顶部副行要它驱动
   } catch (e) {
     if (e.status === 404 || e.status === 410) { toast("条目不存在或已删除", { type: "warn" }); closeDetail(); }
     else handleErr(e, "详情加载失败：");
   }
   detailLoading = false;
 }
-// ---- 详情状态轻量刷新：拉流水线 + （B 站）转写状态，只重画头部与操作行，不动页签内容 ----
+// 打开/刷新详情后拉一次转写状态（B 站/网页/上传录音条目）；竞态用 detailSeq 防串条目
+async function loadAsrStatus() {
+  const id = detailId, seq = detailSeq;
+  if (!id || !detailData || !mayHaveAudio(detailData.item)) return;
+  let asr = null;
+  try { asr = await api("/v1/items/" + encodeURIComponent(id) + "/asr"); }
+  catch (e) { return; }
+  if (seq !== detailSeq || detailId !== id) return;
+  const hadCands = !!((asrStatus && asrStatus.audio_candidates) || []).length;
+  asrStatus = asr || null;
+  const cands = (asrStatus && asrStatus.audio_candidates) || [];
+  renderDetailHeader(detailData.item);
+  const actions = $("manageActions");
+  if (actions) actions.innerHTML = manageActionsHTML(detailData.item);
+  if (cands.length && !hadCands && detailTab === "manage") renderDetail();  // 多音频选择列表出现
+}
+// ---- 详情状态轻量刷新：拉流水线 + （可转写条目）转写状态，只重画头部与操作行，不动页签内容 ----
 async function refreshDetailStatus() {
   if (!detailId || !detailData || $("detailView").hidden) return;
   const seq = detailSeq;
   const jobs = [api("/v1/items/" + encodeURIComponent(detailId) + "/reading")];
-  if (isBiliItem(detailData.item)) {
+  if (mayHaveAudio(detailData.item)) {
     jobs.push(api("/v1/items/" + encodeURIComponent(detailId) + "/asr").catch(() => null));
   }
   let reading, asr;
   try { [reading, asr] = await Promise.all(jobs); } catch (e) { return; }
   if (seq !== detailSeq || detailId == null || !reading) return;
+  const prevCands = ((asrStatus && asrStatus.audio_candidates) || []).length;
   asrStatus = asr || null;
+  const candsShown = (((asrStatus && asrStatus.audio_candidates) || []).length > prevCands);
   const changed = reading.item.pipeline_state !== detailData.item.pipeline_state;
   detailData = reading;
   renderDetailHeader(reading.item);
   const actions = $("manageActions");
   if (actions) actions.innerHTML = manageActionsHTML(reading.item);
-  if (changed) {
-    // 流水线阶段跳变（如加工完成）：补充框没在输入时整页刷新拿到新提炼，否则只提示不打断
+  if (changed || (candsShown && detailTab === "manage")) {
+    // 流水线阶段跳变（如加工完成）或多音频候选出现（页面多条录音待选择）：
+    // 补充框没在输入时整页刷新拿到新内容，否则只提示不打断
     const sup = $("supText");
     if (sup && sup.value.trim()) {
       const ps = reading.item.pipeline_state;
@@ -1390,8 +1411,7 @@ function renderSourcePane(d) {
   const sm = d.source_material;
   const rows = [];
   rows.push('<div class="grid2">' +
-    '<div class="kv"><b>来源</b>' + sourceIconHTML(it) + " " + esc(sourceLabel(it)) +
-      (it.source_type !== "bilibili" && isBiliItem(it) ? "（B 站）" : "") + "</div>" +
+    '<div class="kv"><b>来源</b>' + esc(sourceLabel(it)) + "</div>" +
     '<div class="kv"><b>作者</b>' + esc(it.author || "未取得") + "</div>" +
     '<div class="kv"><b>来源 URL</b>' + (it.original_url
       ? '<a href="' + esc(it.original_url) + '" target="_blank" rel="noopener">' + esc(shortUrl(it.original_url)) + "</a>"
@@ -1544,12 +1564,16 @@ function manageActionsHTML(it) {
   const hasUrl = !!it.original_url;
   const st = asrStatus;
   // 音频能力由服务端字段决定（B 站 / 网页音频 / 音频直链 / 上传录音都能转写）
-  const supported = st ? (st.asr_supported !== false) : (isBiliItem(it) || it.source_type === "audio_upload");
+  const supported = st ? (st.asr_supported !== false) : mayHaveAudio(it);
+  const isBili = isBiliItem(it);
   let html = '<button onclick="doReprocess()">重新加工</button>';
   if (hasUrl) html += '<button onclick="doRefetch()">重新提取来源</button>';
   if (supported) {
     const busy = st && st.exists && ASR_BUSY_STATES.includes(st.state);
-    html += '<button onclick="doAsrTrigger()">' + (st && st.exists ? "重新转写" : "音频转写") + "</button>";
+    const label = st && st.exists
+      ? (isBili ? "重新转写" : "重新提取音轨")
+      : (isBili ? "音频转写" : "提取音轨");
+    html += '<button onclick="doAsrTrigger()">' + label + "</button>";
     if (busy) html += '<button onclick="doAsrCancel()">取消转写</button>';
   }
   return html;
@@ -1572,7 +1596,7 @@ function renderManagePane(d) {
   }
   const helps = [];
   if (hasUrl) helps.push("「重新提取来源」10 分钟内限一次，会生成新的来源版本；内容无变化不会新增版本。");
-  helps.push("「音频转写」在服务器空闲时执行，进度见顶部；" +
+  helps.push("音轨提取与转写在服务器空闲时执行，进度见顶部；" +
     "支持最长 10 小时、单文件最大 8GiB。");
   if (it.audio_original_retained && it.audio_original_download) {
     helps.push("上传录音原件保留在服务器，可下载；不会随 Bundle 自动同步到 Vault。");
@@ -1665,12 +1689,13 @@ async function doRefetch() {
   } catch (e) { handleErr(e, "重新提取失败："); }
 }
 
-// ---- 音频转写（docs/11 §9.2：按钮在管理页签操作行，状态由顶部进度条 + 轻量轮询展示） ----
+// ---- 音频转写（docs/11 §9.2：按钮在主操作条/管理页签，状态由顶部进度条 + 轻量轮询展示） ----
 async function doAsrTrigger(candidateId) {
   if (!detailId) return;
   try {
-    await api("/v1/items/" + encodeURIComponent(detailId) + "/asr",
+    const res = await api("/v1/items/" + encodeURIComponent(detailId) + "/asr",
       { method: "POST", body: candidateId ? { audio_candidate_id: candidateId } : {} });
+    asrStatus = res;  // 触发即有 run：主按钮立刻让位，顶部副行与轮询接手
     toast("已加入转写队列（服务器空闲时执行）", { type: "ok" });
     await refreshDetailStatus();  // 拉到 queued 后轮询自动接手，进度条开始走
     refreshItems();

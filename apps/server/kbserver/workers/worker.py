@@ -516,11 +516,19 @@ def _extract_webpage(db: Session, store: ObjectStore, job: Job, item: Item,
         ))
 
     warnings = list(ext.warnings) + ["已从网页正文生成规范文字稿；AI 加工待执行。"]
+    from ..domain.source_labels import source_fields
+
+    # 公众号仍是 wechat_mp（标签"微信公众号"），只有普通网页才是"网页"
+    web_fields = source_fields(ext.platform, "text")
     _publish_segments_revision(
         db, store, job, item, source,
         segments=ext.segments, warnings=warnings, extra_files=extra_files,
         meta_updates={
-            "platform": ext.platform,
+            "platform": web_fields["platform"],
+            "media_kind": web_fields["media_kind"],
+            "source_type": web_fields["source_type"],
+            "source_label": web_fields["source_label"],
+            "icon_key": web_fields["icon_key"],
             "title": ext.title,
             "author": ext.author,
             "published_at": ext.published_at,

@@ -332,32 +332,30 @@ def validate_capture_payload(payload: dict, uploads_index: dict[str, Upload]) ->
 
 
 def _capture_platform(payload: dict) -> tuple[str, str]:
-    """确定来源平台与 media_kind：来源由服务端按真实输入判定，不信任客户端 hint。
+    """确定来源平台与 media_kind：只按真实输入判定，不信任客户端 hint（渠道不是平台）。
 
     - 音频转写意图 + 音频主体上传 → audio_upload/audio；
-    - 音频转写意图 + 链接（B 站 → bilibili/video，其余 → web/audio）；
-    - 其余沿用原有平台推断（网页 → web/text 等）。
+    - 音频转写意图 + 链接（B 站 → bilibili/video，公众号/网页 → 该平台/audio）；
+    - 其余按 URL 推断平台（公众号仍是 wechat_mp，只有普通网页才是 web）。
+
+    `source_hint`/`capture_channel` 只记采集渠道，不参与平台判定（docs/13 §5.2）。
     """
     from .platforms import guess_platform
-    from .source_labels import default_media_kind
+    from .source_labels import default_media_kind, normalize_platform
 
     intent = payload.get("processing_intent") or "default"
     url = (payload.get("original_url") or "").strip()
+    guessed = normalize_platform(guess_platform(url)) if url else "unknown"
     if intent == "transcribe_audio":
         if url:
-            guessed = guess_platform(url)
-            if guessed == "bilibili":
-                return "bilibili", "video"
-            return "web", "audio"
+            return ("bilibili", "video") if guessed == "bilibili" else (guessed, "audio")
         if payload.get("primary_audio_upload_id") or payload.get("input_kind") == "audio":
             return "audio_upload", "audio"
-    hint = payload.get("source_hint")
-    platform = hint if hint and hint != "unknown" else guess_platform(url)
     if payload.get("input_kind") == "audio":
-        if platform in ("unknown", "wechat_mp", "xiaohongshu"):
+        if payload.get("primary_audio_upload_id") or not url:
             return "audio_upload", "audio"
-        return platform, "audio"
-    return platform, default_media_kind(platform)
+        return guessed, "audio"
+    return guessed, default_media_kind(guessed)
 
 
 def create_capture(db: Session, store: ObjectStore, *, user_id: str, payload: dict,
@@ -409,7 +407,7 @@ def create_capture(db: Session, store: ObjectStore, *, user_id: str, payload: di
         "original_media_retained": primary_audio_id is not None,
         "missing_materials": _initial_missing(payload),
         "user_note": payload.get("user_note"),
-        "capture_channel": payload.get("source_hint") or None,
+        "capture_channel": payload.get("capture_channel") or payload.get("source_hint") or None,
         "processing_intent": payload.get("processing_intent") or "default",
         "result_file_id": None,
     }

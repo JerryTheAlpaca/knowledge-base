@@ -29,6 +29,8 @@ class CaptureInput(BaseModel):
     client_capture_id: str = Field(min_length=8, max_length=64)
     input_kind: str
     source_hint: str | None = "unknown"
+    # 采集渠道（web_inbox / plugin / phone…）：只作渠道记录，不是平台（docs/13 §5.2）
+    capture_channel: str | None = None
     original_url: str | None = None
     share_text: str | None = None
     text: str | None = None

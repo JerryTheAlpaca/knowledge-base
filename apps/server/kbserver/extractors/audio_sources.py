@@ -28,7 +28,11 @@ from ..audio.types import (
     RemoteAudioInput,
     ResolvedAudioSource,
 )
-from ..domain.source_labels import default_media_kind, normalize_platform
+from ..domain.source_labels import (
+    WEB_LIKE_PLATFORMS,
+    default_media_kind,
+    resolve_platform,
+)
 from ..models import AudioAsset, Capture, Item, SourceRevision, Upload
 from ..security.safe_fetch import SafeFetchError, probe_url, safe_fetch
 from ..storage.objects import ObjectStore
@@ -381,15 +385,16 @@ def resolve_audio_source(db: Session, item: Item, *, selection: str | None = Non
         .one_or_none()
     )
     meta = source.metadata_json if source else {}
-    platform = normalize_platform(meta.get("platform") or payload.get("source_hint") or "")
+    url = (payload.get("original_url") or "").strip() or webpage_util.extract_first_url(payload.get("share_text"))
+    # 渠道取值（旧客户端的 source_hint=web_inbox）不能当平台：回退按 URL 推断
+    platform = resolve_platform(meta.get("platform") or payload.get("source_hint"), url)
     media_kind = meta.get("media_kind") or _guess_media_kind(payload, meta)
 
     if platform == "bilibili":
         return _bilibili_resolved(db, item, payload, settings)
-    if platform == "audio_upload" or media_kind == "audio" and _has_primary_upload(payload):
+    if platform == "audio_upload" or (media_kind == "audio" and _has_primary_upload(payload)):
         return _upload_object_input(db, item, payload, store)
-    url = (payload.get("original_url") or "").strip() or webpage_util.extract_first_url(payload.get("share_text"))
-    if platform == "web" and url:
+    if url and platform in WEB_LIKE_PLATFORMS:
         return _web_direct_or_page(url, settings, selection)
     if media_kind == "audio" and payload.get("upload_ids"):
         return _upload_object_input(db, item, payload, store)
@@ -442,13 +447,13 @@ def audio_capability(db: Session, item: Item) -> tuple[bool, str]:
         .one_or_none()
     )
     meta = source.metadata_json if source else {}
-    platform = normalize_platform(meta.get("platform") or payload.get("source_hint") or "")
-    media_kind = meta.get("media_kind") or _guess_media_kind(payload, meta)
     url = (payload.get("original_url") or "").strip() or webpage_util.extract_first_url(payload.get("share_text"))
+    platform = resolve_platform(meta.get("platform") or payload.get("source_hint"), url)
+    media_kind = meta.get("media_kind") or _guess_media_kind(payload, meta)
     if platform == "bilibili":
         return True, "bilibili"
     if platform == "audio_upload" or payload.get("primary_audio_upload_id") or media_kind == "audio":
         return True, "upload"
-    if platform == "web" and url:
+    if platform in WEB_LIKE_PLATFORMS and url:
         return True, "web"
     return False, ""

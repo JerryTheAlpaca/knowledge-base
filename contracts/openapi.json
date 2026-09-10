@@ -2374,6 +2374,17 @@
             "title": "Source Hint",
             "default": "unknown"
           },
+          "capture_channel": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Capture Channel"
+          },
           "original_url": {
             "anyOf": [
               {
