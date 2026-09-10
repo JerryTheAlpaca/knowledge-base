@@ -260,14 +260,14 @@
            border-radius: 6px; font-size: 11px; font-weight: 600; flex: none; }
   .fkind.k-raw { background: var(--surface-2); color: var(--text-2); }
   .fkind.k-refine { background: var(--accent-soft); color: var(--accent); }
-  .asrtoggle { position: relative; display: flex; gap: 12px; align-items: flex-start; margin-top: 14px; padding: 12px 14px;
+  .asrtoggle { position: relative; display: flex; gap: 12px; align-items: center; margin-top: 14px; padding: 12px 14px;
                border: 1px solid var(--border); border-radius: var(--radius-ctl);
                background: var(--surface-2); cursor: pointer; }
   .asrtoggle:hover { border-color: var(--border-strong); }
   .asrtoggle[hidden] { display: none; }
   .asrtoggle input { position: absolute; opacity: 0; width: 0; height: 0; }  /* 视觉隐藏，键盘可达 */
   .switch { width: 40px; height: 22px; border-radius: 999px; background: var(--border); flex: none;
-            position: relative; margin-top: 1px; transition: background var(--t-fast); }
+            position: relative; margin-left: auto; transition: background var(--t-fast); }
   .switch i { position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%;
               background: #fff; box-shadow: 0 1px 3px rgb(0 0 0 / 0.25);
               transition: transform var(--t-fast) var(--ease); }
@@ -529,9 +529,9 @@
       </div>
       <label class="asrtoggle" id="asrAutoRow" for="asrAuto" hidden>
         <input type="checkbox" id="asrAuto">
-        <span class="switch" aria-hidden="true"><i></i></span>
         <span class="asrtoggle-text"><b>无字幕时自动转写</b>
         <span class="muted">B 站视频没有字幕轨时，服务器空闲时自动转写（机器转写、未经人工校对）。</span></span>
+        <span class="switch" aria-hidden="true"><i></i></span>
       </label>
     </div>
 
