@@ -1325,7 +1325,9 @@ function renderManagePane(d) {
     '<summary>导出文件</summary><div class="disclosure-body">' +
     '<div id="exportBody" class="filelist"><span class="muted">展开时加载…</span></div>' +
     "</div></details>");
-  if (it.platform === "bilibili") {
+  // B 站条目判定：it.platform 存的是采集渠道（web_inbox/plugin），内容平台要看 original_url
+  //（与服务端 _is_bilibili_item 的 URL 分支一致；元数据分支由触发接口兜底校验）
+  if (/(^|\.)bilibili\.com\b|b23\.tv\b/.test(it.original_url || "")) {
     rows.push('<details class="disclosure" id="asrDisc"' +
       ' ontoggle="if(this.open&amp;&amp;!this.dataset.loaded){this.dataset.loaded=1;loadAsrStatus();}">' +
       '<summary>音频转写（视频没有字幕轨时）</summary>' +
