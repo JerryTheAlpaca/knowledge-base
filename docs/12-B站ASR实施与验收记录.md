@@ -73,17 +73,22 @@
 
 既有 `test_m1/m2/m4/m4_web/web_inbox/reading_view/reconcile/digest` 全量回归通过（135 passed）。
 
-## 5. 未验证事项（不可凭本地测试宣称）
+## 5. 验证状态（2026-09-10 生产探测后更新）
 
-以下按 docs/11 §8/§9.4 属于上线门槛，本轮**均未执行**：
+**已验证（2026-09-10 生产环境，见 §7.4 执行记录）**：
 
-1. **真实模型**：Dolphin INT8 未下载、`sherpa-onnx-offline` 运行时未构建/部署；真实识别质量（漏句、术语、数字、否定词、静音幻觉）无任何实测数据。
-2. **真实音频流**：播放接口在目标服务器上的可用性（匿名/登录态、风控、码率档位）未实测；`resolve_audio_stream` 的字段路径以 yt-dlp 锁定版本为参考，未经生产样本核对。
-3. **资源峰值**：Worker cgroup 全流程峰值 ≤550MiB 的验收线未测；`/proc` 空闲判定未在宿主机实测校准；单段 15 分钟超时与 RTF 均为工程初值。
-4. **端到端探测**：`scripts/probe_bilibili_asr.py` 已交付但未跑过真实样本（工具 `--help` 与导入路径已验证）。
-5. **备用模型**：SenseVoice 按用户决定未部署未下载；`retry_model` 路径仅经集成测试。
-6. **生产迁移**：`d6b8a2c4e9f7` 未在生产库执行。
-7. **长时间吞吐**：48 小时试点、空闲窗口吞吐、普通任务 P95 对比未进行。
+- **真实引擎+模型**：两个真实无字幕视频共 104 段全部识别成功（0 失败）；中文语义完整连贯，数字/百分比转写正确；存在 base 级模型预期内的错别字（如「屠舱→头等舱」），最终质量判定归用户（§7.2 第 7 条）。
+- **真实音频流**：播放接口匿名（无 SESSDATA）即可取到 DASH 低带宽 AAC（386s→3.2MB / 1661s→13.6MB），受限流→FFmpeg 管道 2.3s/6.9s 完成解码，无风控。
+- **资源峰值**：子进程累计峰值 RSS **326.9MiB**（getrusage RUSAGE_CHILDREN；长视频 84 段无增长，排除泄漏）；两项探测 RTF 0.13/0.127，27.7 分钟视频引擎耗时 3.5 分钟。
+- **空闲准入**：worker 启动日志确认「ASR 已启用（仅服务器空闲时执行…）」；宿主机 MemAvailable ~1.2GiB > 512MiB 门槛。
+- **生产迁移**：`d6b8a2c4e9f7` 已执行，asr_runs 表在库；`/health/ready` 全 true。
+
+**仍未验证**：
+
+1. **转写质量人工判定**：用户对照音频听文本 → 保留 dolphin 或换 SenseVoice 复测（备用模型仍未部署未下载，用户决定）。
+2. **业务闭环真机**：采集→extract→no_track 自动入队→检查点恢复→发布→入 enrich 的完整生产路径未跑（probe 只覆盖提取+转写，不进队列/数据库）；UI 真机走查（设置开关、手动触发/取消/进度）未做。
+3. **worker 容器 cgroup 全流程峰值**（640MiB 上限下的 memory.peak 实测）未采集；probe 是独立进程不受该限额约束。
+4. **长时间吞吐**：48 小时试点、空闲窗口吞吐、普通任务 P95 对比未进行。
 
 ## 6. 下一步（按 docs/11 §8 第一步）
 
@@ -92,7 +97,7 @@
 3. 用 `scripts/probe_bilibili_asr.py` 对 3–5 条确无字幕的常看视频（含多 P 的 P2）做真实探测：记录准备耗时、每段 RTF、cgroup 峰值、样本转写文本人工对照（开头/中间/结尾各 30–60s）。
 4. 质量可接受 → 部署开关开启后真机走查 UI（自动入队、进度、让出、取消）；质量不达标 → 按 §8 第 6 条用 SenseVoice 同样本复测（届时再部署备用模型）。
 
-## 7. 生产部署暂停点（2026-09-09 深夜暂停，次日按 §7.2 收尾）
+## 7. 生产部署记录（2026-09-09 深夜暂停 → 2026-09-10 上午收尾完成，执行记录见 §7.4）
 
 ### 7.1 已完成
 
@@ -103,6 +108,8 @@
 - **服务器状态**：`kb-auto-deploy.timer` 已 `systemctl stop`（分支期间避免每分钟 pull 失败刷日志；enable 未撤销，恢复用 `sudo systemctl enable --now kb-auto-deploy.timer`）。
 
 ### 7.2 次日收尾清单（按序）
+
+> 状态：第 0–6、9 条已于 2026-09-10 上午执行完毕（结果见 §7.4）；第 7、8、10 条待用户。
 
 0. **构建收尾**：昨晚有一个脱离会话的构建进程在跑（日志 `/tmp/kb-asr-build.log`，最后停在 ffmpeg 的 apt 依赖下载，~133MB 归档/466MB 解压）。先 `pgrep -f "docker compose -f deploy/docker-compose.yml build"` 判断：还在跑→等完看日志；已退出→确认日志末尾 `writing image`/`naming to` 成功；失败则重跑 build（层缓存续传，非从头构建）。
 1. **确认镜像**：`sudo docker images` 中 deploy-api/deploy-worker 应变为新构建时间。
@@ -121,3 +128,22 @@
 - 生产容器仍运行 main @`1b3490c` 旧镜像，健康正常；切分支不影响运行中容器（restart 沿用既有配置，旧镜像 + 旧环境变量）。
 - 即使容器意外被 `up -d` 重建：镜像仍是旧代码，忽略 ASR 环境变量，无行为变化；asr_runs 表另有 worker 启动时 create_all 兜底。
 - 未做任何 main 变更；SenseVoice 备用模型按用户决定未下载未部署。
+
+### 7.4 收尾执行记录（2026-09-10 08:40–09:00，§7.2 第 0–6 条完成）
+
+1. **构建确认**：隔夜脱离会话构建成功（日志末尾 `api Built` / `worker Built`，deploy-api/deploy-worker 镜像生成于 ~01:40），无需重跑。
+2. **分支同步**：服务器 `~/kb-inbox` `git pull --ff-only origin feat-bilibili-asr` → `12454f3`。
+3. **备份**：`~/backups/kb-data-pre-asr-20260910-0841.tar.gz`（94.8MB，deploy_data 卷迁移前快照）。
+4. **迁移**：`run --rm api alembic upgrade head` → `b7e4c1a9d2f3 → d6b8a2c4e9f7` 成功；sqlite_master 确认 `asr_runs` 在库。
+5. **重建容器**：`up -d` → `curl localhost:8000/health/ready` = `{"ready":true,"database":true,"storage":true,"master_key":true}`。
+6. **容器内验证**：/opt/models、/opt/sherpa 挂载可见；env 正确（ASR_ENABLED=true、门槛 512MiB、LD_LIBRARY_PATH=/opt/sherpa/lib）；`model_available("dolphin")=True`；worker 日志输出「ASR 已启用（仅服务器空闲时执行…）」。
+7. **probe 真实样本**（容器内 `docker exec -e PYTHONPATH=/app deploy-worker-1 python /tmp/probe.py`，匿名无 SESSDATA）：
+
+   | 样本 | 时长 | 音频 | 准备 | 段数 | 引擎耗时 | 有效 RTF | 峰值 RSS |
+   |---|---|---|---|---|---|---|---|
+   | BV12Ybn6GEab 坐飞机头等舱… | 386s | 3.2MB | 2.3s | 20/20 ✅ | 50.1s | 0.130 | 326.9MiB |
+   | BV1bG7J6mEbB 一条视频看6月… | 1661s | 13.6MB | 6.9s | 84/84 ✅ | 210.8s | 0.127 | 326.9MiB |
+
+   转写文本语义完整连贯，数字/百分比正确；有 base 级预期内错别字（「屠舱→头等舱」等）。报告：容器 /tmp/asr-probe{,-long}/report.json，宿主机 /tmp/asr-report.json。
+
+**余下待办（§7.2 第 7–10 条，需用户）**：7 质量人工判定；8 UI 真机走查；9 本节文档（本轮已完成）；10 合 main 决策——合入后服务器切回 main 并 `sudo systemctl enable --now kb-auto-deploy.timer` 恢复自动部署（**timer 目前仍停着，勿忘**）。
