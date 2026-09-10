@@ -73,6 +73,10 @@
   input:focus, textarea:focus, select:focus { border-color: var(--accent);
                                               box-shadow: 0 0 0 3px var(--accent-soft); outline: none; }
   textarea { resize: vertical; }
+  /* iOS Safari：聚焦 <16px 的输入控件会自动缩放页面；触屏设备把表单字号提到 16px 规避 */
+  @media (pointer: coarse) {
+    input, textarea, select { font-size: 16px; }
+  }
   label { display: block; font-size: var(--fs-small); color: var(--text-2); margin: 14px 0 6px; }
   .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
   .error { color: var(--bad); background: var(--bad-soft); border-radius: 8px;
