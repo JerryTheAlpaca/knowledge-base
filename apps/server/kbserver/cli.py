@@ -5,7 +5,7 @@
     python -m kbserver.cli bind-auth-subject --user <kb_user_id> --auth-user <中心user.id> [--dry-run]
     python -m kbserver.cli recover-waiting-budget
     python -m kbserver.cli reconcile [--resolve unknown_outcome|failed] [--min-age-hours 1]
-    python -m kbserver.cli reextract [--user <kb_user_id>] [--limit N] [--dry-run]
+    python -m kbserver.cli reparagraph [--user <kb_user_id>] [--dry-run]
 
 统一登录上线后不再签发配对码；设备授权走浏览器流程（docs/05 §4.5）。
 """
@@ -131,52 +131,94 @@ def cmd_recover_waiting_budget(args) -> None:
             print("没有等待预算的条目。")
 
 
-def cmd_reextract(args) -> None:
-    """批量重新提取来源（只为拿到新的派生材料，例如阅读层段落）。
+def cmd_reparagraph(args) -> None:
+    """给已有来源版本补算阅读层段落（不重新提取、不调用模型）。
 
-    等价于逐条点「重新提取来源」：重新跑提取器，旧来源版本保留；提取结果
-    无变化则不新增版本，有变化会重新入队加工（会用模型额度）。
-    只处理未删除、有来源 URL、且当前不在提取/加工中的条目；`--dry-run` 只列出。
+    按现有 segments 计算 paragraphs，补发 `readable.md` 与带段落映射的
+    `segments.json`，发布一个新的 Bundle 版本（来源版本不变）。已经算过或
+    没有片段索引的条目跳过；`--dry-run` 只列出。
     """
+    import json
+
     sf = _prepare()
     from .domain import pipeline
+    from .extractors import paragraphs as parafmt
+    from .repositories import core as repo
+    from .storage.objects import ObjectStore
 
-    busy_states = ("queued", "extracting", "enriching")
+    store = ObjectStore()
     with sf() as db:
-        query = db.query(Item).filter(Item.deleted_at.is_(None))
+        query = db.query(Item).filter(Item.deleted_at.is_(None), Item.bundle_revision.isnot(None))
         if args.user:
             query = query.filter(Item.user_id == args.user)
         items = query.order_by(Item.created_at).all()
-        planned = []
+        done = skipped = 0
         for it in items:
-            src = (
+            bundle = repo.get_bundle(db, it.user_id, it.id, it.bundle_revision)
+            if bundle is None:
+                skipped += 1
+                continue
+            manifest = json.loads(store.read_object(bundle.manifest_key).decode("utf-8"))
+            entries = manifest.get("files") or []
+            if any(f.get("relative_path") == "readable.md" for f in entries):
+                skipped += 1  # 已有段落版
+                continue
+            seg_entry = next((f for f in entries if f.get("relative_path") == "segments.json"), None)
+            seg_file = None
+            if seg_entry is not None:
+                seg_file = repo.get_file(db, it.user_id, seg_entry["file_id"], item_id=it.id)
+            if seg_file is None or not store.object_exists(seg_file.storage_key):
+                skipped += 1
+                continue
+            doc = json.loads(store.read_object(seg_file.storage_key).decode("utf-8"))
+            segments = doc.get("segments") or []
+            if not segments:
+                skipped += 1
+                continue
+            paragraphs = parafmt.group_paragraphs(segments)
+            mapping = parafmt.segment_paragraph_map(paragraphs)
+            print(f"  {it.id[:8]}  rev={it.source_revision}  片段 {len(segments)} → 段落 {len(paragraphs)}")
+            if args.dry_run:
+                continue
+            files = []
+            for f in entries:
+                path = f.get("relative_path")
+                if path in ("readable.md", "segments.json"):
+                    continue
+                row = repo.get_file(db, it.user_id, f["file_id"], item_id=it.id)
+                if row is not None:
+                    files.append(row)
+            files.append(pipeline.register_file(
+                db, store, user_id=it.user_id, item_id=it.id,
+                data=parafmt.paragraphs_to_readable_md(paragraphs).encode("utf-8"),
+                relative_path="readable.md", role="source_material", mime="text/markdown",
+            ))
+            files.append(pipeline.register_file(
+                db, store, user_id=it.user_id, item_id=it.id,
+                data=pipeline.canonical_json({
+                    "source_revision": manifest.get("source_revision", it.source_revision),
+                    "segments": [dict(s, paragraph_id=mapping.get(s.get("segment_id"))) for s in segments],
+                    "paragraphs": paragraphs,
+                }),
+                relative_path="segments.json", role="source_material", mime="application/json",
+            ))
+            source = (
                 db.query(SourceRevision)
                 .filter(SourceRevision.item_id == it.id, SourceRevision.revision == it.source_revision)
-                .one_or_none()
+                .one()
             )
-            if src is None or not (src.metadata_json or {}).get("original_url"):
-                continue  # 没有可重新提取的来源 URL（纯文字/上传/已转写条目）
-            if it.pipeline_state in busy_states:
-                continue
-            planned.append((it, src))
-        if args.limit:
-            planned = planned[: args.limit]
-        print(f"待重新提取 {len(planned)} 条（共扫描 {len(items)} 条）。")
-        for it, src in planned:
-            print(f"  {it.id}  rev={it.source_revision}  state={it.pipeline_state}"
-                  f"  {(src.metadata_json or {}).get('platform') or '?'}")
-        if args.dry_run:
-            print("仅列出，未入队。去掉 --dry-run 执行。")
-            return
-        for it, _src in planned:
-            pipeline.enqueue_stage(
-                db, user_id=it.user_id, item_id=it.id, source_revision=it.source_revision,
-                stage="extract", reset_attempt=True,
+            pipeline.publish_bundle(
+                db, store, item=it, source=source, files=files,
+                processing_state=bundle.processing_state,
+                pipeline_state=it.pipeline_state,
+                warnings=manifest.get("warnings"),
+                result_file_id=(manifest.get("processing") or {}).get("result_file_id"),
             )
-            it.pipeline_state = "queued"
-            it.state_detail = "重新提取来源（补新的派生材料）"
+            done += 1
         db.commit()
-        print(f"完成：已入队 {len(planned)} 条。")
+        if args.dry_run:
+            print(f"仅列出：{len(items) - skipped} 条待补算，去掉 --dry-run 执行。")
+        print(f"完成：补算 {done} 条，跳过 {skipped} 条（已有段落版或无片段索引）。")
 
 
 def cmd_reconcile(args) -> None:
@@ -237,11 +279,10 @@ def main() -> None:
     p = sub.add_parser("recover-waiting-budget", help="恢复旧 waiting_budget 条目（可重复执行）")
     p.set_defaults(func=cmd_recover_waiting_budget)
 
-    p = sub.add_parser("reextract", help="批量重新提取来源（补新的派生材料，如阅读层段落）")
+    p = sub.add_parser("reparagraph", help="给已有来源版本补算阅读层段落（不重新提取）")
     p.add_argument("--user", default=None, help="只处理该 KB user_id；默认全部用户")
-    p.add_argument("--limit", type=int, default=None, help="最多处理多少条")
-    p.add_argument("--dry-run", action="store_true", help="只列出将要重新提取的条目")
-    p.set_defaults(func=cmd_reextract)
+    p.add_argument("--dry-run", action="store_true", help="只列出将要补算的条目")
+    p.set_defaults(func=cmd_reparagraph)
 
     p = sub.add_parser("reconcile", help="处置滞留的供应商操作（sent/prepared）")
     p.add_argument("--resolve", default="report", choices=["report", "unknown_outcome", "failed"],

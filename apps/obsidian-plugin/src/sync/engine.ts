@@ -32,6 +32,9 @@ import {
   replacePartition,
   rewriteCloudDigestLinks,
   sha256Hex,
+  SOURCE_BODY_END,
+  SOURCE_BODY_START,
+  stripSegmentIds,
 } from "../vault/template";
 import { CommitStore, Suppression } from "../vault/records";
 import type { VaultFs } from "../vault/vaultfs";
@@ -413,12 +416,35 @@ export class SyncEngine {
       `kb_captured_at: ${manifest.source.captured_at ? `"${manifest.source.captured_at}"` : ""}`.trimEnd(),
       `kb_source_url: ${manifest.source.original_url ? `"${manifest.source.original_url}"` : ""}`.trimEnd(),
     ].filter((l) => !l.endsWith(":")));
-    const updated = mergeManagedTags(withFm, managedTags("source", status));
+    const updated0 = mergeManagedTags(withFm, managedTags("source", status));
+    // 正文区随来源版本更新：用户没改过正文时才替换（首次会补上分区标记）
+    const updated = await this.refreshSourceBody(updated0, assetsBase, normalizedText);
     if (updated !== current) await fs.write(notePath, updated);
     return {
       role: "source", note_path: notePath,
       managed_digest: previous?.managed_digest ?? null, state: "written", conflicts: [],
     };
+  }
+
+  /**
+   * Source 正文区：有分区标记就整块替换；旧笔记没有标记时，只有正文仍等于
+   * 本地旧逐片段正文（说明用户没改过）才迁移一次，用户改过的一律保留。
+   */
+  private async refreshSourceBody(current: string, assetsBase: string,
+                                  bodyText: string | null): Promise<string> {
+    if (!bodyText || !bodyText.trim()) return current;
+    const inner = stripSegmentIds(bodyText).trim();
+    if (extractPartition(current, SOURCE_BODY_START, SOURCE_BODY_END) !== null) {
+      return replacePartition(current, SOURCE_BODY_START, SOURCE_BODY_END, inner);
+    }
+    const m = /## 完整文字稿[ \t]*\n+([\s\S]*)$/.exec(current);
+    if (!m) return current;
+    const fs = this.deps.fs;
+    const legacyPath = joinUnder(assetsBase, "normalized.md");
+    if (!(await fs.exists(legacyPath))) return current;
+    if (m[1].trim() !== stripSegmentIds(await fs.read(legacyPath)).trim()) return current;
+    return current.slice(0, m.index) +
+      `## 完整文字稿\n\n${SOURCE_BODY_START}\n${inner}\n${SOURCE_BODY_END}\n`;
   }
 
   /** Digest 笔记：只替换 kb:cloud-digest 区，本地整理区与人工区保留（docs/08 §3.2）。 */

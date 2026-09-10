@@ -27,6 +27,9 @@ export const LOCAL_ORGANIZE_START = "<!-- kb:local-organize:start -->";
 export const LOCAL_ORGANIZE_END = "<!-- kb:local-organize:end -->";
 export const KNOWLEDGE_START = "<!-- kb:knowledge:start -->";
 export const KNOWLEDGE_END = "<!-- kb:knowledge:end -->";
+/** Source 正文区：可随来源版本更新（提取器改进后旧条目也能用上新正文）。 */
+export const SOURCE_BODY_START = "<!-- kb:source-body:start -->";
+export const SOURCE_BODY_END = "<!-- kb:source-body:end -->";
 
 export const COVERAGE_NOTES: Record<string, string> = {
   full_text: "已取得本次正文范围全文",
@@ -282,11 +285,13 @@ export function renderSourceNote(
   }
   if (links.length === 0) links.push("（无）");
   lines.push(...links, "", "## 完整文字稿", "");
+  lines.push(SOURCE_BODY_START);
   if (opts.normalizedText && opts.normalizedText.trim()) {
-    lines.push(stripSegmentIds(opts.normalizedText).trim(), "");
+    lines.push(stripSegmentIds(opts.normalizedText).trim());
   } else {
-    lines.push("（未取得可读正文；覆盖说明如实反映缺失，不用标题补写。）", "");
+    lines.push("（未取得可读正文；覆盖说明如实反映缺失，不用标题补写。）");
   }
+  lines.push(SOURCE_BODY_END, "");
   return lines.join("\n");
 }
 
