@@ -115,6 +115,22 @@ def _capture_url(client, token, key: str, url: str | None = None, share: str | N
     )
 
 
+@pytest.fixture(autouse=True)
+def _clear_stale_queue(session_factory):
+    """共享库里跨用例遗留的排队任务会抢走 _drain 的领取顺序，导致本用例提取没跑完。
+
+    这些任务不属于当前用例（每个用例自己入队并 drain），因此开始时先取消。
+    """
+    from kbserver.workers import worker
+
+    with session_factory() as db:
+        for j in db.query(worker.Job).filter(
+                worker.Job.state.in_(("queued", "retry_wait"))).all():
+            j.state = "cancelled"
+        db.commit()
+    yield
+
+
 def _drain(session_factory, max_rounds=20):
     from kbserver.workers import worker
 
@@ -151,7 +167,7 @@ def test_page_slug_deterministic():
 # ---- 公众号路径 ----
 
 def test_wechat_mp_extract_success(client, user_a, session_factory, web_net):
-    """公众号已知结构：标题/作者/发布时间/正文段落/图片按 data-src 取得。"""
+    """公众号已知结构：标题/作者/发布时间/正文段落；图片默认不下载，「提取图片」重新提取才存。"""
     net = web_net(make_page_net())
     c = _capture_url(client, user_a["phone"]["token"], "m4wx", url=WECHAT_URL)
     assert c.status_code == 202
@@ -161,6 +177,7 @@ def test_wechat_mp_extract_success(client, user_a, session_factory, web_net):
     it = _get_item(client, user_a["desktop"]["token"], item_id)
     assert it["source_revision"] == 2
     assert it["pipeline_state"] == "waiting_key"
+    assert it["images_archived"] == 0
     m = _manifest(client, user_a["desktop"]["token"], it)
     src = m["source"]
     assert src["platform"] == "wechat_mp"
@@ -171,10 +188,26 @@ def test_wechat_mp_extract_success(client, user_a, session_factory, web_net):
     paths = [f["relative_path"] for f in m["files"]]
     assert not any(p == "originals/webpage/page.html" for p in paths)  # 路径带 slug
     assert any(p.startswith("originals/webpage/") and p.endswith("page.html") for p in paths)
-    assert any(p.endswith("img-001.jpg") for p in paths)
+    assert not any("img-" in p for p in paths)  # 默认不下载配图
     assert "normalized.md" in paths and "segments.json" in paths
-    # 页面 + 图片共 2 次请求
-    assert len(net.calls) == 2
+    assert any("正文图片" in w and "未下载" in w for w in m["warnings"])
+    # 只有页面 1 次请求
+    assert len(net.calls) == 1
+
+    # 「提取图片」：refetch 带 include_images，新来源版本带图
+    r = client.post(f"/v1/items/{item_id}/refetch", json={"include_images": True},
+                    headers=auth(user_a["desktop"]["token"]))
+    assert r.status_code == 202
+    _drain(session_factory)
+
+    it2 = _get_item(client, user_a["desktop"]["token"], item_id)
+    assert it2["source_revision"] == 3
+    assert it2["images_archived"] == 1
+    m2 = _manifest(client, user_a["desktop"]["token"], it2)
+    paths2 = [f["relative_path"] for f in m2["files"]]
+    assert any(p.endswith("img-001.jpg") for p in paths2)
+    # 重新提取：页面 + 图片各 1 次
+    assert len(net.calls) == 3
 
 
 def test_wechat_publishes_paragraph_reading_layer(client, user_a, session_factory, web_net):
@@ -233,7 +266,7 @@ def test_wechat_missing_content_structure(client, user_a, session_factory, web_n
 # ---- 普通网页路径 ----
 
 def test_generic_web_extract_success(client, user_a, session_factory, web_net):
-    """启发式正文聚类：排除导航/页脚，标题与元数据来自 meta，相对图片地址展开。"""
+    """启发式正文聚类：排除导航/页脚，标题与元数据来自 meta；图片默认不下载。"""
     net = web_net(make_page_net())
     c = _capture_url(client, user_a["phone"]["token"], "m4web", url=GENERIC_URL)
     item_id = c.json()["item_id"]
@@ -249,9 +282,9 @@ def test_generic_web_extract_success(client, user_a, session_factory, web_net):
     assert src["published_at"] == "2026-08-15T10:00:00+08:00"
     assert src["coverage"] == "full_text"
     paths = [f["relative_path"] for f in m["files"]]
-    assert any(p.endswith("img-001.png") for p in paths)
-    # 相对地址按最终页面 URL 展开
-    assert "https://example.com/img/cover.png" in net.calls
+    assert not any("img-" in p for p in paths)
+    # 默认不下载配图：相对地址也不展开请求
+    assert "https://example.com/img/cover.png" not in net.calls
 
 
 def test_generic_web_excludes_nav_and_footer(web_net):
@@ -262,6 +295,20 @@ def test_generic_web_excludes_nav_and_footer(web_net):
     assert "正文第一段，长度足够参与聚类打分，用来验证容器选择。" in texts
     assert "首页" not in texts and "版权所有" not in texts
     assert ext.title == "普通网页标题"
+
+
+def test_webpage_include_images_switch(web_net):
+    """单元级：extract 默认不下载图片；include_images=True 恢复限量下载。"""
+    net = web_net(make_page_net())
+    default_ext = webpages.extract(GENERIC_URL)
+    assert default_ext.images == []
+    assert any("未下载" in w for w in default_ext.warnings)
+    assert len(net.calls) == 1  # 只抓了页面
+
+    ext = webpages.extract(GENERIC_URL, include_images=True)
+    assert [i.ext for i in ext.images] == ["png"]
+    # 两次 extract 各抓一次页面，第二次另抓图片：共 3 次请求
+    assert len(net.calls) == 3
 
 
 def test_generic_js_shell_needs_input(client, user_a, session_factory, web_net):
@@ -317,7 +364,7 @@ def test_webpage_network_error_retries_not_needs_input(client, user_a, session_f
 
 
 def test_webpage_images_missing_materials(client, user_a, session_factory, web_net):
-    """一张图片成功、一张失败：失败图片进 missing_materials 并有警告。"""
+    """「提取图片」重新提取：一张成功、一张失败，失败图片进 missing_materials 并有警告。"""
     html_two_imgs = GENERIC_HTML.decode("utf-8").replace(
         '<img src="/img/cover.png">',
         '<img src="/img/cover.png"><img src="https://cdn.example.com/fail.jpg">',
@@ -334,14 +381,24 @@ def test_webpage_images_missing_materials(client, user_a, session_factory, web_n
     _drain(session_factory)
 
     it = _get_item(client, user_a["desktop"]["token"], item_id)
-    assert it["source_revision"] == 2  # 正文仍在，图片缺失不阻塞
+    assert it["source_revision"] == 2  # 正文仍在，默认无图片请求
     m = _manifest(client, user_a["desktop"]["token"], it)
-    image_missing = [e for e in m["missing_materials"] if isinstance(e, str) and "fail.jpg" in e]
+    assert not any(isinstance(e, str) and "fail.jpg" in e for e in m["missing_materials"])
+
+    r = client.post(f"/v1/items/{item_id}/refetch", json={"include_images": True},
+                    headers=auth(user_a["desktop"]["token"]))
+    assert r.status_code == 202
+    _drain(session_factory)
+
+    it2 = _get_item(client, user_a["desktop"]["token"], item_id)
+    assert it2["source_revision"] == 3  # 图片缺失不阻塞正文发布
+    m2 = _manifest(client, user_a["desktop"]["token"], it2)
+    image_missing = [e for e in m2["missing_materials"] if isinstance(e, str) and "fail.jpg" in e]
     assert len(image_missing) == 1
     assert "正文图片未取得" in image_missing[0]
-    assert any("正文图片" in w for w in m["warnings"])
-    paths = [f["relative_path"] for f in m["files"]]
-    assert any(p.endswith("img-001.png") for p in paths)  # 成功的图仍在
+    assert any("正文图片" in w for w in m2["warnings"])
+    paths = [f["relative_path"] for f in m2["files"]]
+    assert any(p.endswith("img-001.png") for p in paths)  # 成功的图已归档
 
 
 def test_xiaohongshu_not_handled_as_webpage(client, user_a, session_factory, web_net):

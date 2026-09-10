@@ -1249,22 +1249,28 @@ function renderDetailHeader(it) {
 }
 
 // 主操作条主按钮（docs/10 §3.1：failed→重试 / needs_input→去补充）；
-// 网页等非 B 站可转写条目还没转过写时给一个显眼「提取音轨」入口（B 站无字幕会自动转写，不需要）
+// 网页等非 B 站可转写条目还没转过写时给一个显眼「提取音轨」入口（B 站无字幕会自动转写，不需要）；
+// 网页/公众号条目还没提取过图片时给「提取图片」入口（默认不下载配图，点按钮才重新提取）
 function asrPrimaryAvailable(it) {
   if (isBiliItem(it)) return false;
   const st = asrStatus;
   const supported = st ? (st.asr_supported !== false) : mayHaveAudio(it);
   return supported && !(st && st.exists);
 }
+function isWebItem(it) {
+  // 网页/公众号条目（服务端归一后 platform=web 且带来源 URL）
+  return !!(it && it.platform === "web" && it.original_url);
+}
+function imagePrimaryAvailable(it) {
+  return isWebItem(it) && !(it.images_archived > 0);
+}
 function primaryActionHTML(it) {
   if (it.pipeline_state === "failed") return '<button class="primary" onclick="doReprocess()">重试加工</button>';
-  if (it.pipeline_state === "needs_input") {
-    let html = '<button class="primary" onclick="focusSupplement()">去补充</button>';
-    if (asrPrimaryAvailable(it)) html += '<button class="primary" onclick="doAsrTrigger()">提取音轨</button>';
-    return html;
-  }
-  if (asrPrimaryAvailable(it)) return '<button class="primary" onclick="doAsrTrigger()">提取音轨</button>';
-  return "";
+  let html = "";
+  if (it.pipeline_state === "needs_input") html += '<button class="primary" onclick="focusSupplement()">去补充</button>';
+  if (asrPrimaryAvailable(it)) html += '<button class="primary" onclick="doAsrTrigger()">提取音轨</button>';
+  if (imagePrimaryAvailable(it)) html += '<button class="primary" onclick="doRefetchImages()">提取图片</button>';
+  return html;
 }
 
 async function openDetail(itemId, opts = {}) {
@@ -1568,6 +1574,10 @@ function manageActionsHTML(it) {
   const isBili = isBiliItem(it);
   let html = '<button onclick="doReprocess()">重新加工</button>';
   if (hasUrl) html += '<button onclick="doRefetch()">重新提取来源</button>';
+  if (isWebItem(it)) {
+    html += '<button onclick="doRefetchImages()">' +
+      (it.images_archived > 0 ? "重新提取图片" : "提取图片") + "</button>";
+  }
   if (supported) {
     const busy = st && st.exists && ASR_BUSY_STATES.includes(st.state);
     const label = st && st.exists
@@ -1595,7 +1605,8 @@ function renderManagePane(d) {
         "</div>").join("") + "</div>");
   }
   const helps = [];
-  if (hasUrl) helps.push("「重新提取来源」10 分钟内限一次，会生成新的来源版本；内容无变化不会新增版本。");
+  if (hasUrl) helps.push("「重新提取来源」「提取图片」10 分钟内限一次，会生成新的来源版本；内容无变化不会新增版本。");
+  if (isWebItem(it)) helps.push("网页/公众号配图默认不下载，点「提取图片」会重新提取来源并保存正文图片。");
   helps.push("音轨提取与转写在服务器空闲时执行，进度见顶部；" +
     "支持最长 10 小时、单文件最大 8GiB。");
   if (it.audio_original_retained && it.audio_original_download) {
@@ -1687,6 +1698,17 @@ async function doRefetch() {
     refreshDetail();
     refreshItems();
   } catch (e) { handleErr(e, "重新提取失败："); }
+}
+// 提取图片：一次带 include_images 的重新提取（受 10 分钟限频约束），图片进新来源版本
+async function doRefetchImages() {
+  if (!detailId) return;
+  try {
+    await api("/v1/items/" + encodeURIComponent(detailId) + "/refetch",
+      { method: "POST", body: { include_images: true } });
+    toast("已请求重新提取（含正文图片）", { type: "ok" });
+    refreshDetail();
+    refreshItems();
+  } catch (e) { handleErr(e, "提取图片失败："); }
 }
 
 // ---- 音频转写（docs/11 §9.2：按钮在主操作条/管理页签，状态由顶部进度条 + 轻量轮询展示） ----

@@ -23,7 +23,7 @@ from ..db import get_db
 from ..domain import pipeline
 from ..domain.errors import ApiError
 from ..api.deps import require_scope
-from ..models import AudioAsset, BundleRevision, Item, SourceRevision, Job, new_id, utcnow
+from ..models import AudioAsset, BundleRevision, Capture, Item, SourceRevision, Job, new_id, utcnow
 from ..repositories import core as repo
 from ..storage.objects import ObjectStore
 
@@ -64,6 +64,8 @@ class ItemOut(BaseModel):
     # 音频原件（上传录音）保留状态与下载入口；远程临时音频为 False
     audio_original_retained: bool
     audio_original_download: str | None
+    # 当前来源版本已归档的正文图片数（0 = 未提取图片，可点「提取图片」重新提取）
+    images_archived: int
 
 
 class ItemList(BaseModel):
@@ -87,6 +89,12 @@ class ReprocessInput(BaseModel):
     reason: str | None = None
 
 
+class RefetchInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    # 网页/公众号：本次重新提取时下载正文图片（默认维持现状不提取）
+    include_images: bool = False
+
+
 def _analysis_bundle(db: Session, item: Item) -> BundleRevision | None:
     """最新一个带提炼产物的 Bundle（用于显式版本选择，docs/08 §8.4）。"""
     return (
@@ -102,13 +110,16 @@ def _analysis_bundle(db: Session, item: Item) -> BundleRevision | None:
 
 
 def _item_out(item: Item, source: SourceRevision, db: Session | None = None) -> ItemOut:
-    from ..domain.source_labels import source_fields
+    from ..domain.source_labels import resolve_platform, source_fields
 
     meta = source.metadata_json
     analysis_bundle = _analysis_bundle(db, item) if db is not None else None
     expires_at = analysis_bundle.expires_at if analysis_bundle else None
     now = utcnow()
-    fields = source_fields(meta.get("platform"), meta.get("media_kind"))
+    # 旧客户端把采集渠道（web_inbox）写进了 platform：展示时按 URL 回退到真实来源，
+    # 不把渠道当平台名显示（docs/13 §5.2）
+    platform = resolve_platform(meta.get("platform"), meta.get("original_url"))
+    fields = source_fields(platform, meta.get("media_kind"))
     audio_retained = bool(meta.get("original_media_retained")) and fields["source_type"] == "audio_upload"
     return ItemOut(
         item_id=item.id,
@@ -116,7 +127,7 @@ def _item_out(item: Item, source: SourceRevision, db: Session | None = None) -> 
         state_detail=item.state_detail,
         source_revision=item.source_revision,
         bundle_revision=item.bundle_revision,
-        platform=meta.get("platform", "unknown"),
+        platform=fields["platform"],
         media_kind=fields["media_kind"],
         source_type=fields["source_type"],
         source_label=fields["source_label"],
@@ -140,6 +151,7 @@ def _item_out(item: Item, source: SourceRevision, db: Session | None = None) -> 
         analysis_created_at=analysis_bundle.created_at.isoformat() if analysis_bundle else None,
         audio_original_retained=audio_retained,
         audio_original_download=(f"/v1/items/{item.id}/audio-original" if audio_retained else None),
+        images_archived=int(meta.get("images_archived") or 0),
     )
 
 
@@ -543,8 +555,13 @@ _REFETCH_MIN_INTERVAL_SECONDS = 600
 
 
 @router.post("/{item_id}/refetch", response_model=ItemOut, status_code=202)
-def refetch(item_id: str, principal=Depends(require_scope("items:edit")), db: Session = Depends(get_db)) -> ItemOut:
-    """显式重新提取来源（重新抓站点）：限频；旧来源版本保留，由 worker 比较内容变化。"""
+def refetch(item_id: str, body: RefetchInput | None = None,
+            principal=Depends(require_scope("items:edit")), db: Session = Depends(get_db)) -> ItemOut:
+    """显式重新提取来源（重新抓站点）：限频；旧来源版本保留，由 worker 比较内容变化。
+
+    include_images=True 时把图片开关写进采集 payload（只开不关）：本次及之后的
+    网页提取都会带上正文图片，直到来源版本自然更替。
+    """
     user = principal.user
     item = _require_item(db, user.id, item_id)
     source = _latest_source(db, item)
@@ -558,12 +575,20 @@ def refetch(item_id: str, principal=Depends(require_scope("items:edit")), db: Se
         raise ApiError("RATE_LIMITED", f"重新提取每 {_REFETCH_MIN_INTERVAL_SECONDS // 60} 分钟限一次", status_code=429)
     _REFETCH_LAST_AT[key] = now
 
+    if body is not None and body.include_images and item.capture_id:
+        capture = db.get(Capture, item.capture_id)
+        if capture is not None:
+            payload = dict(capture.input_json or {})
+            payload["include_images"] = True
+            capture.input_json = payload
+
     pipeline.enqueue_stage(
         db, user_id=user.id, item_id=item.id, source_revision=item.source_revision,
         stage="extract", reset_attempt=True,
     )
     item.pipeline_state = "queued"
-    item.state_detail = "用户请求重新提取来源"
+    item.state_detail = ("用户请求重新提取来源（含正文图片）"
+                         if body is not None and body.include_images else "用户请求重新提取来源")
     db.commit()
     db.refresh(item)
     return _item_out(item, source, db)

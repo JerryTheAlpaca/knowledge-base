@@ -6,7 +6,8 @@
 - 公众号页面用已知公开结构（#activity-name/#js_content/#js_name/#publish_time）；
   其余网页用通用启发式（段落聚类选正文容器）。
 - 原始 HTML 响应作为来源材料留存；不声称完整浏览器镜像，脚本/样式/动态
-  内容未归档写入说明。正文图片限量下载，未取得的写入 missing_materials。
+  内容未归档写入说明。正文图片默认不下载，显式 include_images 时限量
+  下载，未取得的写入 missing_materials。
 - 取不到正文（JS 渲染、登录墙、反爬页）时如实进入 needs_input，不伪造
   正文；失败状态区分 blocked / network_error / empty_content / unsupported。
 - 没有依据的作者/日期留空，不用标题或猜测冒充原文（docs/02 §5.3）。
@@ -413,11 +414,14 @@ def _browser_headers() -> dict[str, str]:
     }
 
 
-def extract(url: str | None, *, share_text: str | None = None) -> WebpageExtraction:
+def extract(url: str | None, *, share_text: str | None = None,
+            include_images: bool = False) -> WebpageExtraction:
     """提取一个网页/公众号文章的静态正文；失败抛 WebpageError。
 
     只处理用户指定的这一个页面。正文启发式基于静态 HTML：动态渲染页面
     取不到正文时抛 empty_content，由 worker 进入补充材料，不伪造内容。
+    正文图片默认不下载（include_images=False，避免无关配图占用存储）；
+    显式请求（条目管理「提取图片」重新提取）时限量下载。
     """
     from ..config import get_settings
 
@@ -516,30 +520,37 @@ def extract(url: str | None, *, share_text: str | None = None) -> WebpageExtract
             tree.metas.get("article:published_time") or tree.metas.get("pubdate") or tree.metas.get("date")
         )
 
-    # 正文图片：限量下载；未取得的如实记入缺失清单（与 ItemOut 契约一致的字符串）
+    # 正文图片：默认不下载（配图不进存储，warnings 交代数量）；
+    # 显式 include_images 时限量下载，未取得的如实记入缺失清单（与 ItemOut 契约一致的字符串）
     images: list[ImageDownload] = []
     missing: list[str] = []
     warnings: list[str] = []
     image_urls = _collect_image_urls(container, res.url, wechat=wechat)
-    for iu in image_urls:
-        if len(images) >= MAX_CONTENT_IMAGES:
-            missing.append(f"正文图片未下载（超出单条 {MAX_CONTENT_IMAGES} 张上限）：{iu}")
-            continue
-        try:
-            ir = safe_fetch(iu, max_bytes=settings.max_image_bytes, timeout=20.0,
-                            mime_prefixes=("image/",))
-        except SafeFetchError as exc:
-            missing.append(f"正文图片未取得：{iu}（{exc}）")
-            continue
-        if ir.status_code >= 400:
-            missing.append(f"正文图片未取得：{iu}（HTTP {ir.status_code}）")
-            continue
-        images.append(ImageDownload(url=iu, mime=ir.mime,
-                                    ext=_IMG_EXT.get(ir.mime, "img"), data=ir.content))
-    if len(image_urls) > len(images):
+    if include_images:
+        for iu in image_urls:
+            if len(images) >= MAX_CONTENT_IMAGES:
+                missing.append(f"正文图片未下载（超出单条 {MAX_CONTENT_IMAGES} 张上限）：{iu}")
+                continue
+            try:
+                ir = safe_fetch(iu, max_bytes=settings.max_image_bytes, timeout=20.0,
+                                mime_prefixes=("image/",))
+            except SafeFetchError as exc:
+                missing.append(f"正文图片未取得：{iu}（{exc}）")
+                continue
+            if ir.status_code >= 400:
+                missing.append(f"正文图片未取得：{iu}（HTTP {ir.status_code}）")
+                continue
+            images.append(ImageDownload(url=iu, mime=ir.mime,
+                                        ext=_IMG_EXT.get(ir.mime, "img"), data=ir.content))
+        if len(image_urls) > len(images):
+            warnings.append(
+                f"页面含 {len(image_urls)} 张正文图片，已取得 {len(images)} 张；"
+                "未取得的已列入缺失清单。"
+            )
+    elif image_urls:
         warnings.append(
-            f"页面含 {len(image_urls)} 张正文图片，已取得 {len(images)} 张；"
-            "未取得的已列入缺失清单。"
+            f"页面含 {len(image_urls)} 张正文图片，本次未下载（默认不提取图片，"
+            "需要时可在条目管理点「提取图片」重新提取）。"
         )
 
     warnings.append("已留存原始 HTML 响应；页面脚本、样式与动态内容未归档，不构成完整网站镜像。")

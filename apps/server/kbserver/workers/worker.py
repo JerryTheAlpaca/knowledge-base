@@ -494,7 +494,9 @@ def _extract_webpage(db: Session, store: ObjectStore, job: Job, item: Item,
     """
     target = _webpage_target(payload) or ""
     try:
-        ext = webpage.extract(target, share_text=payload.get("share_text"))
+        # 正文图片默认不提取；「提取图片」按钮走 refetch 时由 payload 带上开关
+        ext = webpage.extract(target, share_text=payload.get("share_text"),
+                              include_images=bool(payload.get("include_images")))
     except webpage.WebpageError as exc:
         if exc.status == "network_error":
             raise  # 有限退避重试，由 run_once 顶层落到任务表
