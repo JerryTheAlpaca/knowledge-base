@@ -5,6 +5,7 @@
 #   1. fetch origin/main，无新提交则静默退出（服务不健康时仅记日志告警）
 #   2. 有新提交：git pull --ff-only -> docker compose build -> alembic 迁移
 #      -> up -d -> 健康检查（127.0.0.1:8000/health/ready 期望 HTTP 200）
+#   3. 部署成功后 docker builder prune 清理构建缓存（保留最近 3GB）
 #
 # 安装（服务器上执行）：
 #   sudo cp ~/kb-inbox/deploy/systemd/kb-auto-deploy.{service,timer} /etc/systemd/system/
@@ -64,6 +65,10 @@ sleep 8
 HTTP=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$HEALTH_URL" || true)
 if [ "$HTTP" = "200" ]; then
   echo "[$(date '+%F %T')] DEPLOY OK: $(git rev-parse --short HEAD) (health=200)"
+  # 部署成功后清理构建缓存，仅保留最近 3GB，防止缓存随部署无限膨胀；
+  # 失败不影响本次部署结果（下次成功部署会再清）
+  sudo docker builder prune --keep-storage 3GB -f >/dev/null \
+    || echo "[$(date '+%F %T')] WARNING: builder prune failed (non-fatal)"
 else
   echo "[$(date '+%F %T')] WARNING: health check returned '$HTTP'; inspect: sudo docker compose -f deploy/docker-compose.yml logs api --tail 50"
   exit 1
