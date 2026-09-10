@@ -1012,7 +1012,7 @@
           "items"
         ],
         "summary": "Refetch",
-        "description": "显式重新提取来源（重新抓站点）：限频；旧来源版本保留，由 worker 比较内容变化。",
+        "description": "显式重新提取来源（重新抓站点）：限频；旧来源版本保留，由 worker 比较内容变化。\n\ninclude_images=True 时把图片开关写进采集 payload（只开不关）：本次及之后的\n网页提取都会带上正文图片，直到来源版本自然更替。",
         "operationId": "refetch_v1_items__item_id__refetch_post",
         "parameters": [
           {
@@ -1025,6 +1025,23 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/RefetchInput"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
         "responses": {
           "202": {
             "description": "Successful Response",
@@ -3068,6 +3085,10 @@
               }
             ],
             "title": "Audio Original Download"
+          },
+          "images_archived": {
+            "type": "integer",
+            "title": "Images Archived"
           }
         },
         "additionalProperties": false,
@@ -3101,7 +3122,8 @@
           "analysis_bundle_revision",
           "analysis_created_at",
           "audio_original_retained",
-          "audio_original_download"
+          "audio_original_download",
+          "images_archived"
         ],
         "title": "ItemOut"
       },
@@ -3544,6 +3566,18 @@
           "status"
         ],
         "title": "ReceiptResult"
+      },
+      "RefetchInput": {
+        "properties": {
+          "include_images": {
+            "type": "boolean",
+            "title": "Include Images",
+            "default": false
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "RefetchInput"
       },
       "ReprocessInput": {
         "properties": {

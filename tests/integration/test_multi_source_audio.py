@@ -566,6 +566,30 @@ def test_trigger_on_uploaded_audio_item_is_supported(client, user_a, asr_object_
             worker.Job.item_id == item_id, worker.Job.stage == "asr_prepare").count() == 1
 
 
+def test_legacy_channel_platform_renders_real_source(client, user_a):
+    """旧记录把渠道 web_inbox 写进 platform：展示按 URL 回退，不显示渠道名。"""
+    from kbserver.db import get_session_factory
+    from kbserver.models import SourceRevision
+
+    r = client.post("/v1/captures", json={
+        "client_capture_id": "legacy-wx-0001-1111-2222-3333-444444444444",
+        "input_kind": "url", "capture_channel": "web_inbox", "source_hint": "unknown",
+        "original_url": "https://mp.weixin.qq.com/s/abcdef",
+    }, headers={**auth(user_a["phone"]["token"]), "Idempotency-Key": "legacy-wx-0001"})
+    item_id = r.json()["item_id"]
+    # 模拟旧记录：platform 字段里存的是采集渠道而不是平台
+    with get_session_factory()() as db:
+        src = db.query(SourceRevision).filter(SourceRevision.item_id == item_id).one()
+        meta = dict(src.metadata_json)
+        meta["platform"] = "web_inbox"
+        src.metadata_json = meta
+        db.commit()
+
+    doc = client.get(f"/v1/items/{item_id}", headers=auth(user_a["desktop"]["token"])).json()
+    assert doc["platform"] == "wechat_mp" and doc["source_label"] == "微信公众号"
+    assert doc["source_type"] == "wechat_mp"
+
+
 def test_normal_web_capture_does_not_enter_asr(client, user_a, monkeypatch):
     """网页仅正文、上传普通附件：沿用旧流程，不自动进入 ASR。"""
     from kbserver.db import get_session_factory
