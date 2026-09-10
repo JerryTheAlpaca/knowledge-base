@@ -193,7 +193,8 @@
   .detail-title { font-weight: 600; font-size: var(--fs-h1); flex: 1; min-width: 0;
                   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .stepper { display: flex; align-items: center; margin: 16px 0 2px; }
-  .step { display: flex; align-items: center; flex: 1; min-width: 0; }
+  .stepper.hassub { margin-bottom: 24px; }  /* 「提取」下方挂转写小字副行 */
+  .step { display: flex; align-items: center; flex: 1; min-width: 0; position: relative; }
   .step.last { flex: 0 0 auto; }  /* 按内容取宽；flex:0(basis 0%) 会让内容溢出容器 */
   .sball { width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--border-strong);
            display: flex; align-items: center; justify-content: center; font-size: var(--fs-caption);
@@ -220,6 +221,16 @@
     background-size: 200% 100%;
     animation: flowline 1.6s linear infinite; }
   @keyframes flowline { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+  /* 转写进度挂在「提取」下方的小字副行（2026-09-10 走查：不单独占进度条圆点） */
+  .ssub { position: absolute; left: 29px; top: calc(100% + 5px); display: inline-flex; align-items: center; gap: 5px;
+          font-size: 11px; line-height: 1; white-space: nowrap; color: var(--text-2); }
+  .ssubdot { width: 6px; height: 6px; border-radius: 50%; flex: none; }
+  .ssub.tone-active { color: var(--accent); }
+  .ssub.tone-active .ssubdot { background: var(--accent); animation: breathe 1.6s var(--ease) infinite; }
+  .ssub.tone-paused { color: var(--warn); }
+  .ssub.tone-paused .ssubdot { background: var(--warn); }
+  .ssub.tone-bad { color: var(--bad); }
+  .ssub.tone-done { color: var(--ok); }
   #primaryBar .primaryrow { margin: 10px 0 0; }
   .readtabs { display: flex; gap: 4px; margin: 18px 0 0; border-bottom: 1px solid var(--border); }
   .readtabs button { border: none; background: transparent; padding: 8px 14px; border-radius: 0;
@@ -249,12 +260,20 @@
            border-radius: 6px; font-size: 11px; font-weight: 600; flex: none; }
   .fkind.k-raw { background: var(--surface-2); color: var(--text-2); }
   .fkind.k-refine { background: var(--accent-soft); color: var(--accent); }
-  .asrtoggle { display: flex; gap: 12px; align-items: flex-start; margin-top: 14px; padding: 12px 14px;
+  .asrtoggle { position: relative; display: flex; gap: 12px; align-items: flex-start; margin-top: 14px; padding: 12px 14px;
                border: 1px solid var(--border); border-radius: var(--radius-ctl);
                background: var(--surface-2); cursor: pointer; }
   .asrtoggle:hover { border-color: var(--border-strong); }
   .asrtoggle[hidden] { display: none; }
-  .asrtoggle input { width: 18px; height: 18px; margin: 2px 0 0; accent-color: var(--accent); flex: none; cursor: pointer; }
+  .asrtoggle input { position: absolute; opacity: 0; width: 0; height: 0; }  /* 视觉隐藏，键盘可达 */
+  .switch { width: 40px; height: 22px; border-radius: 999px; background: var(--border); flex: none;
+            position: relative; margin-top: 1px; transition: background var(--t-fast); }
+  .switch i { position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%;
+              background: #fff; box-shadow: 0 1px 3px rgb(0 0 0 / 0.25);
+              transition: transform var(--t-fast) var(--ease); }
+  .asrtoggle input:checked ~ .switch { background: var(--ok); }
+  .asrtoggle input:checked ~ .switch i { transform: translateX(18px); }
+  .asrtoggle input:focus-visible ~ .switch { outline: 2px solid var(--accent); outline-offset: 2px; }
   .asrtoggle-text b { display: block; margin-bottom: 2px; font-size: var(--fs-body); }
   .asrtoggle-text .muted { display: block; font-size: var(--fs-small); line-height: 1.55; }
   .primaryrow { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 14px; }
@@ -510,8 +529,9 @@
       </div>
       <label class="asrtoggle" id="asrAutoRow" for="asrAuto" hidden>
         <input type="checkbox" id="asrAuto">
+        <span class="switch" aria-hidden="true"><i></i></span>
         <span class="asrtoggle-text"><b>无字幕时自动转写</b>
-        <span class="muted">B 站确认没有字幕轨的条目，会在服务器空闲时用本地语音识别转写（机器转写、未经人工校对，耗时较长，不占用你的电脑）。</span></span>
+        <span class="muted">B 站视频没有字幕轨时，服务器空闲时自动转写（机器转写、未经人工校对）。</span></span>
       </label>
     </div>
 
@@ -1081,37 +1101,35 @@ function isBiliItem(it) {
   return /(^|\.)bilibili\.com\b|b23\.tv\b/.test((it && it.original_url) || "");
 }
 const ASR_BUSY_STATES = ["queued", "preparing", "transcribing", "paused"];
-// 转写 run → stepper 第 4 段（发布之后）：进行中带段数进度，完成/失败/暂停各自着色
-function asrStep() {
+// 转写状态 → 「提取」下方小字副行（2026-09-10 走查：不单独占进度条圆点；有 run 才显示）
+function asrSubText() {
   const s = asrStatus.state;
-  if (s === "succeeded") return { label: "转写完成", cls: "done", mark: "✓" };
-  if (s === "failed") return { label: "转写失败", cls: "bad", mark: "!" };
-  if (s === "cancelled") return { label: "转写已取消", cls: "", mark: "" };
-  if (s === "paused") return { label: "转写已暂停", cls: "paused", mark: "" };
-  if (s === "preparing") return { label: "转写·读取音频", cls: "active", mark: "" };
+  if (s === "succeeded") return { text: "转写完成", tone: "done", dot: false };
+  if (s === "failed") return { text: "转写失败", tone: "bad", dot: false };
+  if (s === "cancelled") return { text: "转写已取消", tone: "muted", dot: false };
+  if (s === "paused") return { text: "转写已暂停", tone: "paused", dot: true };
+  if (s === "preparing") return { text: "转写·读取音频", tone: "active", dot: true };
   if (s === "transcribing") {
     const prog = asrStatus.chunk_count
       ? " " + asrStatus.done_chunks + "/" + asrStatus.chunk_count + " 段" : "";
-    return { label: "转写中" + prog, cls: "active", mark: "" };
+    return { text: "转写中" + prog, tone: "active", dot: true };
   }
-  return { label: "转写排队中", cls: "active", mark: "" };
+  return { text: "转写排队中", tone: "active", dot: true };
 }
 function stepperHTML(it) {
   const st = stepperState(it.pipeline_state);
   const labels = ["提取", "加工", "发布"];
-  const steps = [];
+  const sub = asrStatus && asrStatus.exists ? asrSubText() : null;
+  let html = '<div class="stepper' + (sub ? " hassub" : "") + '">';
   for (let i = 0; i < 3; i++) {
     const cls = i < st.done ? "done" : (i === st.cur ? st.tone : "");
-    steps.push({ label: labels[i], cls: cls, mark: i < st.done ? "✓" : (cls === "bad" ? "!" : "") });
-  }
-  if (asrStatus && asrStatus.exists) steps.push(asrStep());  // 有转写记录的 B 站条目追加第 4 段
-  let html = '<div class="stepper">';
-  for (let i = 0; i < steps.length; i++) {
-    const s = steps[i];
-    html += '<div class="step ' + s.cls + (i === steps.length - 1 ? " last" : "") + '">' +
-      '<span class="sball">' + s.mark + "</span>" +
-      '<span class="slabel">' + esc(s.label) + "</span>" +
-      (i < steps.length - 1 ? '<span class="sline"></span>' : "") + "</div>";
+    const mark = i < st.done ? "✓" : (cls === "bad" ? "!" : "");
+    const subHtml = (i === 0 && sub)
+      ? '<span class="ssub tone-' + sub.tone + '">' + (sub.dot ? '<i class="ssubdot"></i>' : "") + esc(sub.text) + "</span>" : "";
+    html += '<div class="step ' + cls + (i === 2 ? " last" : "") + '">' +
+      '<span class="sball">' + mark + "</span>" +
+      '<span class="slabel">' + labels[i] + "</span>" + subHtml +
+      (i < 2 ? '<span class="sline"></span>' : "") + "</div>";
   }
   html += "</div>";
   return html;
