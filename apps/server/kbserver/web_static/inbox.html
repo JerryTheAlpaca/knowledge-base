@@ -168,7 +168,6 @@
   .item-main { display: flex; gap: 12px; align-items: baseline; min-width: 0; }
   .item-title { font-weight: 600; font-size: var(--fs-body); color: var(--text); flex: 1; min-width: 0;
                 overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  a.item-title:hover { color: var(--accent); }
   .item-time { font-size: var(--fs-caption); color: var(--text-2); flex: none; }
   .item-aux { display: flex; gap: 8px; align-items: center; margin-top: 7px;
               font-size: var(--fs-small); color: var(--text-2); flex-wrap: wrap; }
@@ -859,12 +858,14 @@ function itemInner(it) {
   const failed = it.pipeline_state === "failed";
   const needsInput = it.pipeline_state === "needs_input";
   const display = it.title || shortUrl(it.original_url) || "文字 / 文件采集";
-  const main = it.original_url
-    ? '<a class="item-title" href="' + esc(it.original_url) + '" target="_blank" rel="noopener" title="' +
-      esc(it.original_url) + '" onclick="event.stopPropagation()">' + esc(display) + "</a>"
-    : '<span class="item-title">' + esc(display) + "</span>";
+  // 标题不再渲染为外链：卡片整体点击进详情，原文改为 aux 行显式「原文 ↗」链接
+  const main = '<span class="item-title">' + esc(display) + "</span>";
   const miss = it.missing_materials && it.missing_materials.length
     ? '<span>·</span><span>缺：' + esc(it.missing_materials.join("、")) + "</span>" : "";
+  const link = it.original_url
+    ? '<a class="btn small" href="' + esc(it.original_url) + '" target="_blank" rel="noopener" ' +
+      'title="打开原文链接（' + esc(it.original_url) + '）">原文 ↗</a>'
+    : "";
   const showDetail = (failed || needsInput) && it.state_detail;
   const auxextra =
     (showDetail ? '<span class="sdetail' + (failed ? " bad" : "") + '" title="' + esc(it.state_detail) + '">' +
@@ -873,7 +874,7 @@ function itemInner(it) {
       esc(it.item_id) + '\')">重试</button>' : "");
   return '<div class="item-main">' + main +
     '<span class="item-time num" title="创建于 ' + esc(fmtTime(it.created_at)) + '">' + esc(fmtShort(it.created_at)) + "</span></div>" +
-    '<div class="item-aux">' + stateBadge(it.pipeline_state) + "<span>·</span><span>" + esc(platformLabel(it.platform)) + "</span>" + miss +
+    '<div class="item-aux">' + stateBadge(it.pipeline_state) + "<span>·</span><span>" + esc(platformLabel(it.platform)) + "</span>" + miss + link +
     (auxextra ? '<span class="auxextra">' + auxextra + "</span>" : "") +
     "</div>";
 }
