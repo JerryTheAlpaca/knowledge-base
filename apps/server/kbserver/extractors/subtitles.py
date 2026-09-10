@@ -202,3 +202,24 @@ def segments_to_srt(segments: list[dict]) -> str:
 def segments_to_normalized_md(segments: list[dict]) -> str:
     """带块 ID 的规范文字稿，格式与 worker 文本路径一致（`文本 ^s0001`）。"""
     return "".join(f"{seg['text']} ^{seg['segment_id']}\n" for seg in segments)
+
+
+# ---- 字幕轨质量 ----
+
+_PUNCT_CHARS = set("，。！？；、：,.!?;:…—~～\"'“”‘’（）()《》〈〉【】[]")
+
+UNPUNCTUATED_MIN_CHARS = 200  # 全文不足此长度不做判定（样本太小）
+UNPUNCTUATED_MAX_RATIO = 0.01  # 标点密度低于 1% 视为无标点（正常口语字幕约 8-10%）
+
+
+def looks_unpunctuated(segments: list[dict]) -> bool:
+    """字幕轨是否没有标点（B 站 AI 字幕常见，读起来是一串断不开的字）。
+
+    提取层不改写原文；判定结果只用来决定是否降级转写，以及在留存原文时
+    如实标注。全文不够长时不判定（返回 False，按有标点处理）。
+    """
+    text = "".join((s.get("text") or "") for s in segments)
+    if len(text.strip()) < UNPUNCTUATED_MIN_CHARS:
+        return False
+    hits = sum(1 for ch in text if ch in _PUNCT_CHARS)
+    return hits / max(1, len(text)) < UNPUNCTUATED_MAX_RATIO

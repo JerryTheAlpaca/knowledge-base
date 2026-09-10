@@ -405,6 +405,15 @@ def _extract_bilibili(db: Session, store: ObjectStore, job: Job, item: Item,
         data=ext.raw_subtitle, relative_path=original_path,
         role="source_material", mime="application/json",
     )
+
+    if subfmt.looks_unpunctuated(ext.segments) and _auto_asr_ready(db, item.user_id):
+        # 无标点字幕轨（B 站 AI 字幕常见）读不下去，自动转本地 ASR 换带标点的
+        # 转写稿；无标点字幕的原始 JSON 仍留存作证据（docs/04 §4.6 不改写原文）。
+        settings = get_settings()
+        asr_stage.start_asr(db, item=item, source=source,
+                            model_alias=settings.asr_model, requested_by="auto")
+        job.state = "succeeded"
+        return
     srt_file = pipeline.register_file(
         db, store, user_id=item.user_id, item_id=item.id,
         data=subfmt.segments_to_srt(ext.segments).encode("utf-8"),
@@ -413,6 +422,11 @@ def _extract_bilibili(db: Session, store: ObjectStore, job: Job, item: Item,
     warnings = list(ext.warnings) + ["已从 B 站字幕生成规范文字稿；AI 加工待执行。"]
     if title_note:
         warnings.append(f"随采集附上的「{title_note}」是视频标题，未当作正文。")
+    if subfmt.looks_unpunctuated(ext.segments):
+        warnings.append(
+            "该字幕轨没有标点（B 站 AI 字幕常见），已按原文保留；"
+            "如需可读稿可开启自动转写或补充带标点的字幕文件。"
+        )
     _publish_segments_revision(
         db, store, job, item, source,
         segments=ext.segments, warnings=warnings, extra_files=[original_file, srt_file],

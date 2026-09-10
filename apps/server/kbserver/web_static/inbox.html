@@ -251,8 +251,8 @@
   .para:target, .para.highlight { background: var(--accent-soft); border-radius: 6px; }
   .parahead { font-size: 15px; font-weight: 600; margin: 20px 0 8px; }
   .segid { font-size: 11px; color: var(--text-2); margin-right: 6px; font-variant-numeric: tabular-nums; }
-  .evlink { font-size: var(--fs-caption); color: var(--accent); cursor: pointer; border: none; background: none;
-            padding: 0 4px; text-decoration: underline; min-height: 0; }
+  .loclink { font-size: 11px; color: var(--accent); background: var(--accent-soft); border: none;
+             border-radius: 999px; padding: 2px 9px; cursor: pointer; margin-left: 6px; min-height: 0; }
   .filelist { font-size: var(--fs-small); }
   .filelist > div { display: flex; align-items: center; gap: 8px; padding: 3px 0; flex-wrap: wrap; min-width: 0; }
   .filelist a { overflow-wrap: anywhere; }
@@ -1332,7 +1332,7 @@ function renderParagraphLine(line) {
   if (m[1]) return '<h5 class="para parahead" id="' + esc(m[3]) + '">' + esc(m[2]) + "</h5>";
   return '<p class="para" id="' + esc(m[3]) + '">' + esc(m[2]) + "</p>";
 }
-// ---- 提炼（证据锚点保留、弱化样式） ----
+// ---- 提炼（观点/摘录不显示编号，行尾「原文」小按钮定位到原文出处，2026-09-10） ----
 function renderDigestPane(d) {
   const g = d.cloud_digest;
   const rows = [];
@@ -1348,26 +1348,24 @@ function renderDigestPane(d) {
   rows.push('<h4>一句话总结</h4><div class="readbody">' + esc(g.summary || "—") + "</div>");
   rows.push('<h4>核心观点与证据</h4><div class="readbody">');
   if (g.key_points.length) {
-    rows.push("<ul>" + g.key_points.map((kp) =>
-      "<li>" + (kp.claim_id ? '<span class="segid">' + esc(kp.claim_id) + "</span>" : "") +
-      esc(kp.text) + (kp.conditions ? "（适用条件：" + esc(kp.conditions) + "）" : "") +
-      evidenceButtons(kp.evidence_ids, g) + "</li>").join("") + "</ul>");
+    rows.push("<ul>" + g.key_points.map((kp, i) =>
+      "<li>" + esc(kp.text) + (kp.conditions ? "（适用条件：" + esc(kp.conditions) + "）" : "") +
+      evidenceButtons("kp:" + i, kp.evidence_ids, g) + "</li>").join("") + "</ul>");
   } else {
     rows.push("材料不足以提取核心观点。");
   }
   rows.push("</div>");
   rows.push('<h4>值得保留的原文摘录</h4><div class="readbody">');
   if (g.excerpts.length) {
-    rows.push(g.excerpts.map((ex) =>
-      "<blockquote>" + (ex.claim_id ? '<span class="segid">' + esc(ex.claim_id) + "</span>" : "") +
-      esc(ex.text) + evidenceButtons(ex.evidence_ids, g) + "</blockquote>").join(""));
+    rows.push(g.excerpts.map((ex, i) =>
+      "<blockquote>" + esc(ex.text) + evidenceButtons("ex:" + i, ex.evidence_ids, g) + "</blockquote>").join(""));
   } else {
     rows.push('<span class="muted">没有合适的逐字摘录。</span>');
   }
   rows.push("</div>");
   rows.push('<h4>方法、适用条件与局限</h4><div class="readbody">');
   if (g.methods.length) {
-    rows.push("<ul>" + g.methods.map((m) => "<li>" + esc(m.text) + evidenceButtons(m.evidence_ids, g) +
+    rows.push("<ul>" + g.methods.map((m, i) => "<li>" + esc(m.text) + evidenceButtons("m:" + i, m.evidence_ids, g) +
       (m.steps && m.steps.length ? "<ul>" + m.steps.map((s) => "<li>" + esc(s) + "</li>").join("") + "</ul>" : "") +
       (m.conditions ? '<div class="muted">适用条件：' + esc(m.conditions) + "</div>" : "") + "</li>").join("") + "</ul>");
   } else {
@@ -1384,13 +1382,23 @@ function renderDigestPane(d) {
   rows.push("</div>");
   return rows.join("");
 }
-function evidenceButtons(ids, g) {
+// 证据定位：不显示编号，每条观点/摘录后放一个「原文」小按钮；多处出处时每次点击依次定位下一处
+const evidenceCursor = {};
+function evidenceButtons(key, ids, g) {
   if (!ids || !ids.length) return "";
-  return ids.map((sid) => {
-    const known = g.segments && Object.prototype.hasOwnProperty.call(g.segments, sid);
-    return '<button class="evlink" ' + (known ? 'onclick="jumpToSegment(\'' + esc(sid) + '\')"' : "disabled") +
-      ' title="' + (known ? "定位到本条原文片段" : "该片段不属于此提炼版本的原文") + '">' + esc(sid) + "</button>";
-  }).join("");
+  const known = ids.filter((sid) => g.segments && Object.prototype.hasOwnProperty.call(g.segments, sid));
+  if (!known.length) return "";
+  return ' <button class="loclink" data-key="' + esc(key) + '" data-ids="' + esc(known.join(",")) +
+    '" onclick="jumpEvidence(this)" title="定位到原文出处">原文</button>';
+}
+function jumpEvidence(btn) {
+  const ids = (btn.getAttribute("data-ids") || "").split(",").filter(Boolean);
+  const key = btn.getAttribute("data-key") || "";
+  if (!ids.length) return;
+  const step = (evidenceCursor[key] || 0) % ids.length;
+  evidenceCursor[key] = step + 1;
+  jumpToSegment(ids[step]);
+  if (ids.length > 1) btn.title = "定位到原文出处（第 " + (step + 1) + "/" + ids.length + " 处，再点看下一处）";
 }
 function jumpToSegment(sid) {
   const g = detailData && detailData.cloud_digest;
