@@ -346,7 +346,7 @@ def create_capture(db: Session, store: ObjectStore, *, user_id: str, payload: di
         "original_url": payload.get("original_url"),
         "canonical_url": None,
         "published_at": None,
-        "captured_at": payload.get("captured_at"),
+        "captured_at": payload.get("captured_at") or now.isoformat(),
         "source_locator": {},
         "coverage": "full_text" if (payload.get("text") or payload.get("share_text")) else ("metadata_only" if payload.get("original_url") else "metadata_only"),
         "content_scope": payload.get("content_scope") or "unknown",
