@@ -58,7 +58,7 @@ services:
       PYTHONUNBUFFERED: "1"
       # 本地 ASR（docs/11 §9.3）：引擎与模型已部署（制品 SHA-256 见 /opt/models/MANIFEST-sha256.txt）
       ASR_ENABLED: "true"
-      ASR_MODEL: "dolphin"
+      ASR_MODEL: "sense_voice"
       ASR_MODEL_DIR: /opt/models
       ASR_ENGINE_BIN: /opt/sherpa/bin/sherpa-onnx-offline
       # 引擎为动态链接（sherpa-onnx v1.13.7 linux-x64 shared-no-tts），运行时库在同包 lib/ 下
