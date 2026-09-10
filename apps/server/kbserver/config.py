@@ -28,6 +28,10 @@ class Settings:
     max_capture_total_bytes: int = int(os.environ.get("MAX_CAPTURE_TOTAL_BYTES", str(100 * 1024 * 1024)))
     html_download_limit: int = int(os.environ.get("HTML_DOWNLOAD_LIMIT", str(5 * 1024 * 1024)))
     subtitle_download_limit: int = int(os.environ.get("SUBTITLE_DOWNLOAD_LIMIT", str(10 * 1024 * 1024)))
+    # 音频主体独立额度（docs/13 §7.1）：普通附件限额不放宽
+    max_audio_upload_bytes: int = int(os.environ.get("MAX_AUDIO_UPLOAD_BYTES", str(8 * 1024 * 1024 * 1024)))
+    audio_upload_chunk_bytes: int = int(os.environ.get("AUDIO_UPLOAD_CHUNK_BYTES", str(16 * 1024 * 1024)))
+    audio_upload_session_ttl_hours: int = int(os.environ.get("AUDIO_UPLOAD_SESSION_TTL_HOURS", "24"))
 
     # 流式读取（docs/11 §5.2）：HTTP→FFmpeg 管道的块大小
     stream_chunk_bytes: int = int(os.environ.get("STREAM_CHUNK_BYTES", str(64 * 1024)))
@@ -41,8 +45,8 @@ class Settings:
     asr_threads: int = int(os.environ.get("ASR_THREADS", "1"))
     asr_chunk_seconds: int = int(os.environ.get("ASR_CHUNK_SECONDS", "20"))
     asr_chunk_context_seconds: float = float(os.environ.get("ASR_CHUNK_CONTEXT_SECONDS", "1"))
-    asr_max_duration_seconds: int = int(os.environ.get("ASR_MAX_DURATION_SECONDS", "3600"))
-    asr_max_input_bytes: int = int(os.environ.get("ASR_MAX_INPUT_BYTES", str(128 * 1024 * 1024)))
+    asr_max_duration_seconds: int = int(os.environ.get("ASR_MAX_DURATION_SECONDS", "36000"))
+    asr_max_input_bytes: int = int(os.environ.get("ASR_MAX_INPUT_BYTES", str(8 * 1024 * 1024 * 1024)))
     asr_tmp_ttl_hours: int = int(os.environ.get("ASR_TMP_TTL_HOURS", "24"))
     asr_chunk_timeout_seconds: int = int(os.environ.get("ASR_CHUNK_TIMEOUT_SECONDS", "900"))
     # 服务器空闲准入（docs/11 §6.2）：整机 CPU 忙碌比例阈值与可用内存（MiB）
@@ -156,8 +160,11 @@ def get_settings() -> Settings:
         asr_threads=int(os.environ.get("ASR_THREADS", "1")),
         asr_chunk_seconds=int(os.environ.get("ASR_CHUNK_SECONDS", "20")),
         asr_chunk_context_seconds=float(os.environ.get("ASR_CHUNK_CONTEXT_SECONDS", "1")),
-        asr_max_duration_seconds=int(os.environ.get("ASR_MAX_DURATION_SECONDS", "3600")),
-        asr_max_input_bytes=int(os.environ.get("ASR_MAX_INPUT_BYTES", str(128 * 1024 * 1024))),
+        asr_max_duration_seconds=int(os.environ.get("ASR_MAX_DURATION_SECONDS", "36000")),
+        asr_max_input_bytes=int(os.environ.get("ASR_MAX_INPUT_BYTES", str(8 * 1024 * 1024 * 1024))),
+        max_audio_upload_bytes=int(os.environ.get("MAX_AUDIO_UPLOAD_BYTES", str(8 * 1024 * 1024 * 1024))),
+        audio_upload_chunk_bytes=int(os.environ.get("AUDIO_UPLOAD_CHUNK_BYTES", str(16 * 1024 * 1024))),
+        audio_upload_session_ttl_hours=int(os.environ.get("AUDIO_UPLOAD_SESSION_TTL_HOURS", "24")),
         asr_tmp_ttl_hours=int(os.environ.get("ASR_TMP_TTL_HOURS", "24")),
         asr_chunk_timeout_seconds=int(os.environ.get("ASR_CHUNK_TIMEOUT_SECONDS", "900")),
         asr_idle_cpu_start=float(os.environ.get("ASR_IDLE_CPU_START", "0.25")),

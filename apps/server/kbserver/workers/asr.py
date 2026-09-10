@@ -31,14 +31,25 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session
 
+from ..audio import prepare as audio_prepare
+from ..audio.types import (
+    ACQ_UPLOADED,
+    AudioPrepareAborted,
+    AudioPrepareError,
+    AudioSourceError,
+    ObjectAudioInput,
+    PreparedAudio,
+    RemoteAudioInput,
+    ResolvedAudioSource,
+)
 from ..config import get_settings
 from ..domain import pipeline
+from ..domain.source_labels import source_fields
+from ..extractors import audio_sources
 from ..extractors import bilibili as bili
-from ..extractors import bilibili_audio as baudio
 from ..extractors import subtitles as subfmt
 from ..models import (
     AsrRun,
-    Capture,
     Item,
     Job,
     SourceRevision,
@@ -150,12 +161,13 @@ def _enqueue_asr_stage(db: Session, run: AsrRun, stage: str, *,
 
 
 def start_asr(db: Session, *, item: Item, source: SourceRevision, model_alias: str,
-              requested_by: str) -> tuple[AsrRun, bool]:
+              requested_by: str, selection: str | None = None) -> tuple[AsrRun, bool]:
     """为条目创建/复位 ASR run 并入队准备任务；返回 (run, created)。
 
     幂等：同 (user,item,revision,recipe) 已有排队/执行中的 run 直接返回；
     已结束（成功/失败/取消）的 run 重跑时复位检查点（同 recipe 重新识别，
     发布幂等由 content_hash 保证，不产生重复版本）。
+    选择不同音频候选（selection 变化）时重置检查点：不能继续旧的部分结果。
     """
     settings = get_settings()
     if model_alias not in ASR_MODELS:
@@ -166,18 +178,21 @@ def start_asr(db: Session, *, item: Item, source: SourceRevision, model_alias: s
         AsrRun.source_revision == source.revision, AsrRun.recipe_hash == recipe_hash,
     ).one_or_none()
     created = False
+    selection_changed = bool(run is not None
+                             and (run.input_json or {}).get("selection") != selection)
     if run is None:
         run = AsrRun(
             user_id=item.user_id, item_id=item.id, source_revision=source.revision,
             recipe_hash=recipe_hash, model_alias=model_alias,
             model_id=ASR_MODELS[model_alias], state="queued",
             requested_by=requested_by, work_dir=f"asr/{new_id()}",
+            input_json={"selection": selection},
         )
         db.add(run)
         db.flush()
         created = True
-    elif run.state in ("succeeded", "failed", "cancelled"):
-        # 重跑：清空工作目录与检查点，从头准备
+    elif run.state in ("succeeded", "failed", "cancelled") or selection_changed:
+        # 重跑/换媒体：清空工作目录与检查点，从头准备
         _remove_work_dir(settings, run)
         run.state = "queued"
         run.pause_reason = ""
@@ -188,6 +203,8 @@ def start_asr(db: Session, *, item: Item, source: SourceRevision, model_alias: s
         run.manifest_json = {}
         run.last_error = ""
         run.requested_by = requested_by
+        run.input_json = {"selection": selection}
+        run.input_fingerprint = ""
         db.flush()
     _enqueue_asr_stage(db, run, "asr_prepare", reset_attempt=True)
     item.pipeline_state = "queued"
@@ -375,15 +392,6 @@ def _user_sessdata(db: Session, user_id: str) -> tuple[str | None, str | None]:
     return value, None
 
 
-def _bilibili_target(db: Session, item: Item) -> str | None:
-    capture = db.get(Capture, item.capture_id)
-    payload = (capture.input_json or {}) if capture else {}
-    url = (payload.get("original_url") or "").strip()
-    if url:
-        return url
-    return bili.extract_first_url(payload.get("share_text"))
-
-
 def _make_monitor(session_factory, job_id: str, lease_token: str,
                   gate: idle_mod.AsrGate | None):
     """进度回调工厂：节流执行续租、空闲检查与归属检查；返回 "yield"/"cancel"/None。"""
@@ -435,12 +443,8 @@ def execute_prepare(session_factory, job_id: str, lease_token: str,
         if ctx is None:
             return
         if not asr_enabled(settings):
+            ctx.item.state_detail = "音频已保存；转写等待部署启用（ASR 开关未开启）"
             _pause_run(db, ctx.run, ctx.job, "disabled", 300)
-            db.commit()
-            return
-        target = _bilibili_target(db, ctx.item)
-        if not target:
-            _fail_run(db, ctx.run, ctx.job, ctx.item, "条目中没有 B 站链接", final=True)
             db.commit()
             return
         ctx.run.state = "preparing"
@@ -450,20 +454,23 @@ def execute_prepare(session_factory, job_id: str, lease_token: str,
         _emit_state(db, ctx.run)
         db.commit()
         plan = {
-            "target": target,
             "user_id": ctx.item.user_id,
             "work_dir": ctx.run.work_dir,
             "item_id": ctx.item.id,
+            "selection": (ctx.run.input_json or {}).get("selection"),
         }
 
-    # Phase B：事务外完成网络与解码
+    # Phase B：事务外完成来源解析、网络与解码
     try:
-        prepared, attempt_name = _prepare_outside(
+        prepared, attempt_name, resolved = _prepare_outside(
             session_factory, job_id, lease_token, plan, gate, settings)
-    except baudio.AudioPrepareAborted as exc:
+    except AudioPrepareAborted as exc:
         _abort_ctx(session_factory, job_id, lease_token, exc.reason)
         return
-    except (baudio.BilibiliAudioError, bili.BilibiliError) as exc:
+    except audio_sources.AudioSourceSelectionRequired as exc:
+        _park_for_selection(session_factory, job_id, lease_token, exc.candidates)
+        return
+    except (AudioSourceError, AudioPrepareError, bili.BilibiliError) as exc:
         _handle_prepare_failure(session_factory, job_id, lease_token, exc)
         return
 
@@ -472,7 +479,7 @@ def execute_prepare(session_factory, job_id: str, lease_token: str,
         ctx = _load_context(db, job_id, lease_token)
         if ctx is None:
             return  # 租约已丢失：清单未提交，下次 prepare 用新 attempt 重做
-        _commit_manifest(db, ctx.run, prepared, attempt_name, settings)
+        _commit_manifest(db, ctx.run, prepared, attempt_name, settings, resolved)
         ctx.job.state = "succeeded"
         _enqueue_asr_stage(db, ctx.run, "asr_transcribe")
         ctx.run.state = "transcribing"
@@ -483,47 +490,65 @@ def execute_prepare(session_factory, job_id: str, lease_token: str,
 
 
 def _prepare_outside(session_factory, job_id: str, lease_token: str, plan: dict,
-                     gate, settings) -> tuple[baudio.PreparedAudio, str]:
-    """解析音轨并把整条音频准备成短 WAV 段；期间不持有数据库事务。"""
+                     gate, settings) -> tuple[PreparedAudio, str, ResolvedAudioSource]:
+    """解析来源并把整条音频准备成短 WAV 段；期间不持有数据库事务。
+
+    来源解析（B 站/直链/网页/上传原件）在 audio_sources 分发，识别阶段不感知网站。
+    """
     monitor = _make_monitor(session_factory, job_id, lease_token, gate)
     with session_factory() as db:
-        sessdata, sess_err = _user_sessdata(db, plan["user_id"])
-    if sess_err:
-        raise baudio.BilibiliAudioError("login_required", sess_err)
-
-    ref = bili.resolve_share_url(plan["target"])
-    page = bili.resolve_video_part(ref, settings.subtitle_download_limit)
-    time.sleep(bili._REQUEST_GAP_S)
-    stream = baudio.resolve_audio_stream(ref, page, sessdata=sessdata,
-                                         max_bytes=settings.subtitle_download_limit)
+        item = db.get(Item, plan["item_id"])
+        if item is None:
+            raise AudioSourceError("network_error", "条目不存在，无法准备音频。")
+        resolved = audio_sources.resolve_audio_source(db, item, selection=plan.get("selection"))
 
     work_dir = settings.tmp_dir / plan["work_dir"]
     work_dir.mkdir(parents=True, exist_ok=True)
     attempt_name = f"attempt-{int(time.time() * 1000)}"
     attempt_dir = work_dir / attempt_name
     attempt_dir.mkdir(parents=True, exist_ok=True)
-    prepared = baudio.prepare_audio(
-        stream, attempt_dir,
-        ffmpeg_bin=settings.asr_ffmpeg_bin,
-        chunk_seconds=settings.asr_chunk_seconds,
-        max_bytes=settings.asr_max_input_bytes,
-        max_duration_s=settings.asr_max_duration_seconds,
+    prepared = audio_prepare.prepare_audio(
+        resolved.input, attempt_dir,
+        limits=audio_prepare.AudioLimits(
+            ffmpeg_bin=settings.asr_ffmpeg_bin,
+            chunk_seconds=settings.asr_chunk_seconds,
+            max_bytes=settings.asr_max_input_bytes,
+            max_duration_s=settings.asr_max_duration_seconds,
+        ),
         monitor=monitor,
     )
-    # 归属信息随清单提交（docs/11 §7：BV/P/cid 与音轨标识）
-    prepared.meta = {
-        "type": "bilibili_video",
-        "bvid": ref.bvid, "aid": ref.aid,
-        "cid": page["cid"], "part": page["page"],
-        "pages_count": page["pages_count"],
-        "title": page.get("title"),
-        "author": page.get("author"),
-        "published_at": page.get("published_at"),
-        "canonical_url": page.get("canonical_url"),
-        "stream_id": stream.stream_id, "codec": stream.codec,
-        "bandwidth": stream.bandwidth,
-    }
-    return prepared, attempt_name
+    # 归属信息随清单提交：来源事实 + 音轨标识（不写临时签名 URL）
+    meta = dict(resolved.source.locator())
+    meta["adapter_id"] = resolved.source.adapter_id
+    meta["adapter_version"] = resolved.source.adapter_version
+    if isinstance(resolved.input, RemoteAudioInput):
+        meta.update(resolved.input.stream_meta)
+    prepared.meta = meta
+    return prepared, attempt_name, resolved
+
+
+def _park_for_selection(session_factory, job_id: str, lease_token: str,
+                        candidates: list[dict]) -> None:
+    """页面有多条音频：暂停 run 并缓存候选，等用户在详情里选择一次（docs/13 §4.3）。"""
+    with session_factory() as db:
+        ctx = _load_context(db, job_id, lease_token)
+        if ctx is None:
+            return
+        payload = dict(ctx.run.input_json or {})
+        payload["candidates"] = audio_sources.candidate_list(candidates)
+        ctx.run.input_json = payload
+        ctx.run.state = "paused"
+        ctx.run.pause_reason = "selection_required"
+        ctx.job.state = "succeeded"  # 不再自动重试，等用户选择
+        ctx.item.pipeline_state = "needs_input"
+        ctx.item.state_detail = "页面有多条音频，请在详情中选择要转写的一条。"
+        _emit_state(db, ctx.run)
+        pipeline.emit_event(
+            db, ctx.item.user_id, item_id=ctx.item.id, bundle_revision=ctx.item.bundle_revision,
+            event_type="asr_state_changed",
+            payload={**_run_event_payload(ctx.run), "reason": "audio_source_selection"},
+        )
+        db.commit()
 
 
 def _handle_prepare_failure(session_factory, job_id: str, lease_token: str,
@@ -531,17 +556,19 @@ def _handle_prepare_failure(session_factory, job_id: str, lease_token: str,
     """准备失败分类：网络错误有限退避；其余终态进补充材料（docs/11 §5.3）。"""
     status = getattr(exc, "status", "unknown")
     message = getattr(exc, "message", str(exc))
-    retryable = status == "network_error"
+    retryable = status in ("network_error",)
     with session_factory() as db:
         ctx = _load_context(db, job_id, lease_token)
         if ctx is None:
             return
+        # 记录失败分类，供 /audio-sources 区分 unsupported 与暂时失败
+        ctx.run.input_json = {**(ctx.run.input_json or {}), "last_prepare_status": status}
         _fail_run(db, ctx.run, ctx.job, ctx.item, message, final=not retryable)
         db.commit()
 
 
-def _commit_manifest(db: Session, run: AsrRun, prepared: baudio.PreparedAudio,
-                     attempt_name: str, settings) -> None:
+def _commit_manifest(db: Session, run: AsrRun, prepared: PreparedAudio,
+                     attempt_name: str, settings, resolved: ResolvedAudioSource) -> None:
     """完整准备成功后原子提交清单：先磁盘 manifest，再短事务更新检查点。"""
     manifest = {
         "schema": ASR_SCHEMA,
@@ -577,6 +604,29 @@ def _commit_manifest(db: Session, run: AsrRun, prepared: baudio.PreparedAudio,
         "expected_duration_s": prepared.expected_duration,
         "source_locator": dict(prepared.meta or {}),
     }
+    # 冻结本次输入：只存来源稳定定位或对象引用（不存 headers/签名 URL）
+    locator = resolved.source.locator()
+    run.input_kind = resolved.input.kind
+    run.input_json = {
+        **(run.input_json or {}),
+        "source": {
+            "platform": resolved.source.platform,
+            "media_kind": resolved.source.media_kind,
+            "adapter_id": resolved.source.adapter_id,
+            "adapter_version": resolved.source.adapter_version,
+            "original_url": resolved.source.original_url,
+            "canonical_url": resolved.source.canonical_url,
+            "title": resolved.source.title,
+            "author": resolved.source.author,
+            "published_at": resolved.source.published_at,
+            "acquisition": resolved.source.acquisition,
+        },
+        "locator": locator,
+        "object_ref": ({"storage_sha256": resolved.input.sha256,
+                        "bytes": resolved.input.size_bytes}
+                       if isinstance(resolved.input, ObjectAudioInput) else None),
+    }
+    run.input_fingerprint = resolved.input_fingerprint
     run.chunk_count = len(prepared.chunks)
     run.next_chunk_index = 0
     run.updated_at = utcnow()
@@ -664,7 +714,7 @@ def execute_transcribe(session_factory, job_id: str, lease_token: str,
         result = _transcribe_one(session_factory, job_id, lease_token, gate, settings,
                                  work_dir_rel=work_dir_rel, manifest=manifest,
                                  index=index, model_alias=model_alias)
-    except baudio.AudioPrepareAborted as exc:
+    except AudioPrepareAborted as exc:
         _abort_ctx(session_factory, job_id, lease_token, exc.reason)
         return
     except AsrEngineError as exc:
@@ -756,16 +806,16 @@ def _transcribe_one(session_factory, job_id: str, lease_token: str, gate, settin
             if not _lease_refresh(session_factory, job_id, lease_token):
                 _terminate_tree(proc)
                 reader.join(timeout=2)
-                raise baudio.AudioPrepareAborted("cancel")
+                raise AudioPrepareAborted("cancel")
             if gate is not None and not gate.check_running(settings):
                 _terminate_tree(proc)
                 gate.note_busy()
                 reader.join(timeout=2)
-                raise baudio.AudioPrepareAborted("yield")
+                raise AudioPrepareAborted("yield")
             if not _still_owned(session_factory, job_id, lease_token):
                 _terminate_tree(proc)
                 reader.join(timeout=2)
-                raise baudio.AudioPrepareAborted("cancel")
+                raise AudioPrepareAborted("cancel")
         reader.join(timeout=5)
         stdout = b"".join(out_chunks)
         if proc.returncode != 0:
@@ -999,22 +1049,38 @@ def _finish_if_complete(session_factory, job_id: str, lease_token: str) -> None:
         ]
         failed_ranges = _failed_ranges(manifest, results)
         locator = manifest.get("source_locator") or {}
-        asr_meta = _asr_meta(run, manifest, silence, failed_ranges)
+        frozen = (run.input_json or {}).get("source") or {}
+        platform = frozen.get("platform") or locator.get("platform") or "bilibili"
+        media_kind = (frozen.get("media_kind") or locator.get("media_kind")
+                      or ("video" if platform == "bilibili" else "audio"))
+        fields = source_fields(platform, media_kind)
+        # 只有真实留存的上传原件才为 true（docs/13 §6.3）
+        retained = bool(run.input_kind == "object")
+        asr_meta = _asr_meta(run, manifest, silence, failed_ranges, retained=retained)
         meta_updates = {
-            "platform": "bilibili",
-            "title": locator.get("title"),
-            "author": locator.get("author"),
-            "published_at": locator.get("published_at"),
-            "canonical_url": locator.get("canonical_url"),
+            "platform": fields["platform"],
+            "media_kind": fields["media_kind"],
+            "source_type": fields["source_type"],
+            "source_label": fields["source_label"],
+            "icon_key": fields["icon_key"],
+            "title": frozen.get("title") or locator.get("title"),
+            "author": frozen.get("author") or locator.get("author"),
+            "published_at": frozen.get("published_at") or locator.get("published_at"),
+            "canonical_url": frozen.get("canonical_url") or locator.get("canonical_url"),
             "coverage": "partial_text" if failed_ranges else "full_text",
-            "original_media_retained": False,  # 音频仅为临时输入，清理后无法重听
+            "original_media_retained": retained,
             "source_locator": locator,
             "asr": asr_meta,
-            "extractor": {"name": "bilibili_asr", "version": "bilibili_asr-1.0.0",
-                          "discovery_status": "available", "login_state_used": False},
+            "extractor": {
+                "name": frozen.get("adapter_id") or locator.get("adapter_id") or "audio_asr",
+                "version": frozen.get("adapter_version") or locator.get("adapter_version") or "1.0.0",
+                "discovery_status": "available",
+                "login_state_used": platform == "bilibili",
+            },
         }
         store = ObjectStore()
-        extra_files = _register_asr_files(db, store, item, run, manifest, results, segments)
+        extra_files = _register_asr_files(db, store, item, run, manifest, results, segments,
+                                          retained=retained)
         publish_segments_revision(
             db, store, job, item, ctx_source(db, item, run),
             segments=segments, warnings=warnings, extra_files=extra_files,
@@ -1051,8 +1117,10 @@ def _failed_ranges(manifest: dict, results: list[dict]) -> list[list[float]]:
     return ranges
 
 
-def _asr_meta(run: AsrRun, manifest: dict, silence: list, failed_ranges: list) -> dict:
+def _asr_meta(run: AsrRun, manifest: dict, silence: list, failed_ranges: list,
+              *, retained: bool = False) -> dict:
     settings = get_settings()
+    locator = manifest.get("source_locator") or {}
     return {
         "source": "asr",
         "engine": "sherpa-onnx",
@@ -1067,16 +1135,20 @@ def _asr_meta(run: AsrRun, manifest: dict, silence: list, failed_ranges: list) -
         "processed_audio_seconds": round(float(run.processed_seconds or 0.0), 1),
         "chunk_count": run.chunk_count,
         "pcm_manifest_sha256": (run.manifest_json or {}).get("manifest_sha256"),
-        "acquisition": "player_audio_stream",
-        "audio_retained": False,
+        # 获取方式按真实来源赋值；audio_retained 与真实存储状态一致
+        "acquisition": locator.get("acquisition") or (
+            ACQ_UPLOADED if run.input_kind == "object" else "player_audio_stream"),
+        "audio_retained": retained,
+        "input_fingerprint": run.input_fingerprint or None,
         "timestamp_kind": "estimated",
         "silence_ranges": silence,
         "failed_ranges": failed_ranges,
     }
 
 
-def _register_asr_files(db, store, item, run, manifest, results, segments) -> list:
-    """原始模型输出与执行清单进 Bundle（永久保留；PCM 仅为临时输入）。"""
+def _register_asr_files(db, store, item, run, manifest, results, segments,
+                        *, retained: bool = False) -> list:
+    """原始模型输出与执行清单进 Bundle；原件（大录音）不进自动投递文件列表。"""
     raw_doc = {
         "schema": "asr-raw-v1",
         "model_id": run.model_id,
@@ -1087,8 +1159,12 @@ def _register_asr_files(db, store, item, run, manifest, results, segments) -> li
         "schema": "asr-manifest-v1",
         "model_id": run.model_id,
         "recipe_hash": run.recipe_hash,
+        "input_kind": run.input_kind,
+        "input_fingerprint": run.input_fingerprint or None,
         "pcm_manifest": manifest,
-        "note": "音频为临时输入，未长期保留；无法离线重新听原音频。",
+        "note": ("上传原件在服务器保留，可在条目详情下载；本次转写使用其本地副本。"
+                 if retained else
+                 "音频为临时输入，未长期保留；无法离线重新听原音频。"),
     }
     files = []
     for path, data, mime in (
@@ -1099,6 +1175,20 @@ def _register_asr_files(db, store, item, run, manifest, results, segments) -> li
         files.append(pipeline.register_file(
             db, store, user_id=item.user_id, item_id=item.id,
             data=data, relative_path=path, role="source_material", mime=mime,
+        ))
+    if retained:
+        # 只投递一个原件引用说明，不把 GB 级音频放进 Bundle（docs/13 §6.3）
+        ref_doc = {
+            "schema": "audio-original-ref-v1",
+            "retained": True,
+            "download": f"/v1/items/{item.id}/audio-original",
+            "note": "原件保留在服务器；插件默认不自动下载大文件。",
+        }
+        files.append(pipeline.register_file(
+            db, store, user_id=item.user_id, item_id=item.id,
+            data=pipeline.canonical_json(ref_doc),
+            relative_path="asr/original_audio.json", role="generated",
+            mime="application/json",
         ))
     return files
 

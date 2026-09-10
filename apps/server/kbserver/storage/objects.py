@@ -103,6 +103,78 @@ class ObjectStore:
     def object_exists(self, storage_key: str) -> bool:
         return self.object_path(storage_key).exists()
 
+    # ---- 上传 staging（docs/13 §6.2）：分块续传的临时输入，完成后原子收纳 ----
+
+    def audio_upload_dir(self) -> Path:
+        d = self.tmp_dir / "audio-uploads"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def new_staging_path(self) -> str:
+        """生成受控 staging 文件名（不使用用户路径/文件名）。"""
+        return f"up-{os.urandom(16).hex()}.part"
+
+    def staging_file(self, name: str) -> Path:
+        if "/" in name or "\\" in name or ".." in name or not name:
+            raise ValueError(f"非法 staging 名：{name!r}")
+        return self.audio_upload_dir() / name
+
+    def append_staging(self, name: str, data: bytes) -> int:
+        """向 staging 追加已校验块；返回写入后的字节数。"""
+        path = self.staging_file(name)
+        with open(path, "ab") as out:
+            out.write(data)
+            out.flush()
+            os.fsync(out.fileno())
+        return path.stat().st_size
+
+    def truncate_staging(self, name: str, size: int) -> None:
+        """按最后确认 offset 截去崩溃留下的未提交尾部。"""
+        path = self.staging_file(name)
+        if not path.exists():
+            return
+        with open(path, "r+b") as f:
+            f.truncate(size)
+
+    def discard_staging(self, name: str) -> None:
+        try:
+            self.staging_file(name).unlink()
+        except (OSError, ValueError):
+            pass
+
+    def adopt_staging(self, name: str, sha256_hex: str) -> tuple[str, str, int]:
+        """把同卷 staging 文件原子收纳为不可变对象（不再复制整份原件）。
+
+        返回 (sha256, storage_key, bytes)。目标已存在（同内容）时丢弃 staging。
+        """
+        src = self.staging_file(name)
+        if not src.exists():
+            raise FileNotFoundError(f"staging 文件缺失：{name}")
+        size = src.stat().st_size
+        key = self.storage_key(sha256_hex)
+        final = self.object_path(key)
+        final.parent.mkdir(parents=True, exist_ok=True)
+        if final.exists():
+            try:
+                src.unlink()
+            except OSError:
+                pass
+            return sha256_hex, key, size
+        try:
+            os.replace(src, final)
+        except OSError:
+            # 跨卷回退：流式复制后删除 staging（部署同卷时不会走到这里）
+            with open(src, "rb") as f_in, open(final, "wb") as f_out:
+                for block in iter(lambda: f_in.read(1024 * 1024), b""):
+                    f_out.write(block)
+                f_out.flush()
+                os.fsync(f_out.fileno())
+            try:
+                src.unlink()
+            except OSError:
+                pass
+        return sha256_hex, key, size
+
     def delete_object(self, storage_key: str) -> bool:
         """删除不可变对象；只接受存储 key，不接受任意路径。返回是否真的删除了文件。"""
         path = self.object_path(storage_key)

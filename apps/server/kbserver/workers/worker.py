@@ -32,6 +32,8 @@ from ..extractors import subtitles as subfmt
 from ..extractors import webpages as webpage
 from ..models import (
     AsrRun,
+    AudioAsset,
+    AudioUploadSession,
     BundleRevision,
     Capture,
     Credential,
@@ -170,15 +172,21 @@ def run_extract(db: Session, store: ObjectStore, job: Job, item: Item) -> None:
             origin="user_submission" if (user_text or share_text) else "user_supplement",
         )
         return
-    # 4) B 站链接：字幕适配器（docs/04）
+    # 4) 音频条目（上传录音/网页音频）：正文由机器转写产生，这里不伪造
+    if payload.get("primary_audio_upload_id") or meta.get("media_kind") == "audio":
+        _needs_input(db, job, item,
+                     "音频条目：请在详情等待/触发机器转写，或补充字幕、正文。",
+                     "audio_transcribe_pending")
+        return
+    # 5) B 站链接：字幕适配器（docs/04）
     if is_bili:
         _extract_bilibili(db, store, job, item, source, payload, title_note=title_note)
         return
-    # 5) 普通网页/公众号链接：正文适配器（docs/02 §5.1）
+    # 6) 普通网页/公众号链接：正文适配器（docs/02 §5.1）
     if web_target:
         _extract_webpage(db, store, job, item, source, payload)
         return
-    # 6) 其余只有分享文字/图片/音频：M4 其他适配器提供前不做伪造提取
+    # 7) 其余只有分享文字/图片/音频：M4 其他适配器提供前不做伪造提取
     if share_text:
         _extract_plain_text(
             db, store, job, item, source, body=share_text, origin="user_submission"
@@ -414,6 +422,7 @@ def _extract_bilibili(db: Session, store: ObjectStore, job: Job, item: Item,
                             model_alias=settings.asr_model, requested_by="auto")
         job.state = "succeeded"
         return
+
     srt_file = pipeline.register_file(
         db, store, user_id=item.user_id, item_id=item.id,
         data=subfmt.segments_to_srt(ext.segments).encode("utf-8"),
@@ -427,11 +436,18 @@ def _extract_bilibili(db: Session, store: ObjectStore, job: Job, item: Item,
             "该字幕轨没有标点（B 站 AI 字幕常见），已按原文保留；"
             "如需可读稿可开启自动转写或补充带标点的字幕文件。"
         )
+    from ..domain.source_labels import source_fields
+
+    bili_fields = source_fields("bilibili", "video")
     _publish_segments_revision(
         db, store, job, item, source,
         segments=ext.segments, warnings=warnings, extra_files=[original_file, srt_file],
         meta_updates={
-            "platform": "bilibili",
+            "platform": bili_fields["platform"],
+            "media_kind": bili_fields["media_kind"],
+            "source_type": bili_fields["source_type"],
+            "source_label": bili_fields["source_label"],
+            "icon_key": bili_fields["icon_key"],
             "title": ext.title,
             "author": ext.author,
             "published_at": ext.published_at,
@@ -537,14 +553,34 @@ def cleanup_expired_uploads(db: Session, store: ObjectStore) -> int:
     expired = db.query(Upload).filter(Upload.state == "completed", Upload.expires_at.isnot(None), Upload.expires_at < now).all()
     cleaned = 0
     for up in expired:
-        referenced = db.query(StoredFile).filter(StoredFile.storage_key == up.storage_key).one_or_none()
-        if referenced is None:
+        # 存在性查询：同 storage_key 可能有多条 StoredFile 登记（docs/13 §6.3）
+        referenced = db.query(StoredFile).filter(StoredFile.storage_key == up.storage_key).first()
+        audio_ref = db.query(AudioAsset).filter(AudioAsset.upload_id == up.id).first()
+        if referenced is None and audio_ref is None:
             up.state = "expired"
             cleaned += 1
         else:
-            up.expires_at = None  # 已被引用，保护
+            up.expires_at = None  # 已被引用（含音频原件），保护
     db.commit()
     return cleaned
+
+
+def cleanup_audio_upload_sessions(db: Session, store: ObjectStore) -> int:
+    """音频上传会话 24 小时无活动过期；释放未完成会话的 staging 占用。"""
+    now = utcnow()
+    expired = (
+        db.query(AudioUploadSession)
+        .filter(AudioUploadSession.state == "receiving",
+                AudioUploadSession.expires_at.isnot(None),
+                AudioUploadSession.expires_at < now)
+        .all()
+    )
+    for sess in expired:
+        store.discard_staging(sess.staging_path)
+        sess.state = "expired"
+    if expired:
+        db.commit()
+    return len(expired)
 
 
 def retention_sweep(session_factory, store: ObjectStore) -> dict[str, int]:
@@ -555,10 +591,12 @@ def retention_sweep(session_factory, store: ObjectStore) -> dict[str, int]:
     """
     settings = get_settings()
     now = utcnow()
-    stats = {"expired_uploads": 0, "expired_bundles": 0, "orphan_files": 0, "events": 0, "idempotency": 0, "device_auth": 0}
+    stats = {"expired_uploads": 0, "expired_bundles": 0, "orphan_files": 0, "events": 0,
+             "idempotency": 0, "device_auth": 0, "audio_sessions": 0}
     with session_factory() as db:
-        # 未引用上传（24h 过期，docs/02 §14.3）
+        # 未引用上传（24h 过期，docs/02 §14.3）与音频上传会话（docs/13 §6.2）
         stats["expired_uploads"] = cleanup_expired_uploads(db, store)
+        stats["audio_sessions"] = cleanup_audio_upload_sessions(db, store)
 
         # 到期 Bundle：未回执超过未回执保留期，或已回执超过回执后保留期
         acked_cutoff = now - timedelta(days=settings.acked_bundle_retention_days)
@@ -577,7 +615,8 @@ def retention_sweep(session_factory, store: ObjectStore) -> dict[str, int]:
             stats["expired_bundles"] += 1
         db.commit()
 
-        # 孤儿文件：读取所有存续清单，收集仍被引用的对象
+        # 孤儿文件：读取所有存续清单，收集仍被引用的对象。
+        # 音频原件由 AudioAsset 持有独立引用，不随 Bundle 到期解除（docs/13 §6.3）。
         referenced: set[str] = set()
         for bundle in db.query(BundleRevision).all():
             try:
@@ -591,6 +630,23 @@ def retention_sweep(session_factory, store: ObjectStore) -> dict[str, int]:
                 ).one_or_none()
                 if sf is not None:
                     referenced.add(sf.storage_key)
+        # 音频原件引用（含未完成但已登记的会话原件）
+        for asset in db.query(AudioAsset).filter(AudioAsset.retention_state == "retained").all():
+            up = db.get(Upload, asset.upload_id)
+            if up is not None:
+                referenced.add(up.storage_key)
+            if asset.stored_file_id:
+                sf = db.query(StoredFile).filter(
+                    StoredFile.user_id == asset.user_id,
+                    StoredFile.file_id == asset.stored_file_id,
+                ).one_or_none()
+                if sf is not None:
+                    referenced.add(sf.storage_key)
+        # 未完成/已完成待引用的上传会话对象
+        for up in db.query(Upload).filter(Upload.state == "completed",
+                                          Upload.expires_at.isnot(None)).all():
+            if up.expires_at > now:
+                referenced.add(up.storage_key)
         for f in db.query(StoredFile).all():
             if f.storage_key not in referenced:
                 store.delete_object(f.storage_key)

@@ -35,6 +35,9 @@ class CaptureInput(BaseModel):
     user_note: str | None = None
     content_scope: str | None = "unknown"
     upload_ids: list[str] = Field(default_factory=list)
+    # 音频转写意图与主体录音（docs/13 §8）：旧请求默认 default，语义不变
+    processing_intent: str = "default"
+    primary_audio_upload_id: str | None = None
     processing_profile_id: str | None = "profile-default"
     archive_policy: str = "source_materials"
     captured_at: datetime | None = None
@@ -75,7 +78,10 @@ def create_capture(
         return CaptureAccepted(**existing.response_json)
 
     uploads_index = {}
-    for uid in payload.get("upload_ids") or []:
+    wanted = list(payload.get("upload_ids") or [])
+    if payload.get("primary_audio_upload_id"):
+        wanted.append(payload["primary_audio_upload_id"])
+    for uid in dict.fromkeys(wanted):
         up = repo.get_upload(db, user.id, uid)
         if up is None or up.state != "completed":
             raise ApiError("SCHEMA_INVALID", f"upload_id 不存在或未完成：{uid}")

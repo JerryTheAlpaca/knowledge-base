@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from ..config import get_settings
 from ..models import (
+    AudioAsset,
     BundleRevision,
     Capture,
     Event,
@@ -26,7 +27,6 @@ from ..models import (
     utcnow,
 )
 from ..storage.objects import ObjectStore
-from .platforms import guess_platform
 
 RECIPE_VERSION = "source-light-v1"
 SCHEMA_VERSION = "1.0"
@@ -81,6 +81,10 @@ def build_manifest(
         "created_at": utcnow().isoformat(),
         "source": {
             "platform": meta.get("platform", "unknown"),
+            "media_kind": meta.get("media_kind", "text"),
+            "source_type": meta.get("source_type"),
+            "source_label": meta.get("source_label"),
+            "icon_key": meta.get("icon_key"),
             "title": meta.get("title"),
             "author": meta.get("author"),
             "original_url": meta.get("original_url"),
@@ -271,6 +275,7 @@ def enqueue_stage(db: Session, *, user_id: str, item_id: str, source_revision: i
 
 ALLOWED_INPUT_KINDS = {"url", "text", "share", "images", "audio", "conversation", "workflow", "file"}
 ALLOWED_ARCHIVE_POLICIES = {"source_materials", "minimal"}
+ALLOWED_PROCESSING_INTENTS = {"default", "transcribe_audio"}
 
 
 def validate_capture_payload(payload: dict, uploads_index: dict[str, Upload]) -> None:
@@ -282,12 +287,16 @@ def validate_capture_payload(payload: dict, uploads_index: dict[str, Upload]) ->
     kind = payload.get("input_kind")
     if kind not in ALLOWED_INPUT_KINDS:
         raise ApiError("SCHEMA_INVALID", f"input_kind 非法：{kind}")
+    intent = payload.get("processing_intent") or "default"
+    if intent not in ALLOWED_PROCESSING_INTENTS:
+        raise ApiError("SCHEMA_INVALID", f"processing_intent 非法：{intent}")
     settings = get_settings()
 
     url = payload.get("original_url")
     text = payload.get("text") or ""
     share = payload.get("share_text") or ""
     upload_ids = payload.get("upload_ids") or []
+    primary_audio = payload.get("primary_audio_upload_id")
 
     if url:
         if len(url) > 8192:
@@ -299,7 +308,7 @@ def validate_capture_payload(payload: dict, uploads_index: dict[str, Upload]) ->
     note = payload.get("user_note") or ""
     if len(note) > 10000:
         raise ApiError("SCHEMA_INVALID", "user_note 超过 10000 字符")
-    if not (url or text or share or upload_ids):
+    if not (url or text or share or upload_ids or primary_audio):
         raise ApiError("SCHEMA_INVALID", "至少需要 URL、文字或已上传文件之一")
     if len(upload_ids) > settings.max_attachments_per_capture:
         raise ApiError("PAYLOAD_TOO_LARGE", f"每条采集最多 {settings.max_attachments_per_capture} 个附件")
@@ -309,8 +318,46 @@ def validate_capture_payload(payload: dict, uploads_index: dict[str, Upload]) ->
         if up is None:
             raise ApiError("SCHEMA_INVALID", f"upload_id 不存在或未完成：{uid}")
 
+    if primary_audio:
+        up = uploads_index.get(primary_audio)
+        if up is None:
+            raise ApiError("SCHEMA_INVALID",
+                           f"primary_audio_upload_id 不存在或未完成：{primary_audio}")
+        if up.bytes > settings.max_audio_upload_bytes:
+            raise ApiError("PAYLOAD_TOO_LARGE",
+                           f"音频主体上限 {settings.max_audio_upload_bytes} 字节", status_code=413)
+
     if payload.get("archive_policy") not in ALLOWED_ARCHIVE_POLICIES:
         raise ApiError("SCHEMA_INVALID", "archive_policy 非法")
+
+
+def _capture_platform(payload: dict) -> tuple[str, str]:
+    """确定来源平台与 media_kind：来源由服务端按真实输入判定，不信任客户端 hint。
+
+    - 音频转写意图 + 音频主体上传 → audio_upload/audio；
+    - 音频转写意图 + 链接（B 站 → bilibili/video，其余 → web/audio）；
+    - 其余沿用原有平台推断（网页 → web/text 等）。
+    """
+    from .platforms import guess_platform
+    from .source_labels import default_media_kind
+
+    intent = payload.get("processing_intent") or "default"
+    url = (payload.get("original_url") or "").strip()
+    if intent == "transcribe_audio":
+        if url:
+            guessed = guess_platform(url)
+            if guessed == "bilibili":
+                return "bilibili", "video"
+            return "web", "audio"
+        if payload.get("primary_audio_upload_id") or payload.get("input_kind") == "audio":
+            return "audio_upload", "audio"
+    hint = payload.get("source_hint")
+    platform = hint if hint and hint != "unknown" else guess_platform(url)
+    if payload.get("input_kind") == "audio":
+        if platform in ("unknown", "wechat_mp", "xiaohongshu"):
+            return "audio_upload", "audio"
+        return platform, "audio"
+    return platform, default_media_kind(platform)
 
 
 def create_capture(db: Session, store: ObjectStore, *, user_id: str, payload: dict,
@@ -318,7 +365,9 @@ def create_capture(db: Session, store: ObjectStore, *, user_id: str, payload: di
     """接收一条采集：原始输入 + 初始来源版本 + 原始材料 Bundle + 首个任务，同一提交边界。"""
     settings = get_settings()
 
-    total_bytes = sum(u.bytes for u in uploads.values())
+    primary_audio_id = payload.get("primary_audio_upload_id")
+    # 音频主体按独立额度；普通附件仍按普通额度计总和（docs/13 §7.1）
+    total_bytes = sum(u.bytes for uid, u in uploads.items() if uid != primary_audio_id)
     if total_bytes > settings.max_capture_total_bytes:
         from .errors import ApiError
         raise ApiError("PAYLOAD_TOO_LARGE", "附件总计超过单条采集上限")
@@ -338,9 +387,16 @@ def create_capture(db: Session, store: ObjectStore, *, user_id: str, payload: di
     db.add(item)
     db.flush()
 
-    hint = payload.get("source_hint")
+    from .source_labels import source_fields
+
+    platform, media_kind = _capture_platform(payload)
+    fields = source_fields(platform, media_kind)
     meta = {
-        "platform": hint if hint and hint != "unknown" else guess_platform(payload.get("original_url") or ""),
+        "platform": fields["platform"],
+        "media_kind": fields["media_kind"],
+        "source_type": fields["source_type"],
+        "source_label": fields["source_label"],
+        "icon_key": fields["icon_key"],
         "title": None,
         "author": None,
         "original_url": payload.get("original_url"),
@@ -350,9 +406,11 @@ def create_capture(db: Session, store: ObjectStore, *, user_id: str, payload: di
         "source_locator": {},
         "coverage": "full_text" if (payload.get("text") or payload.get("share_text")) else ("metadata_only" if payload.get("original_url") else "metadata_only"),
         "content_scope": payload.get("content_scope") or "unknown",
-        "original_media_retained": False,
+        "original_media_retained": primary_audio_id is not None,
         "missing_materials": _initial_missing(payload),
         "user_note": payload.get("user_note"),
+        "capture_channel": payload.get("source_hint") or None,
+        "processing_intent": payload.get("processing_intent") or "default",
         "result_file_id": None,
     }
     source = SourceRevision(
@@ -376,6 +434,20 @@ def create_capture(db: Session, store: ObjectStore, *, user_id: str, payload: di
         up = uploads.get(uid)
         if up:
             files.append(ensure_upload_file(db, up, user_id=user_id, item_id=item.id))
+    # 音频原件引用：登记 AudioAsset，让原件不再被当未引用上传清理（docs/13 §6.3）
+    primary_upload = uploads.get(primary_audio_id) if primary_audio_id else None
+    if primary_upload is not None:
+        audio_file = ensure_upload_file(db, primary_upload, user_id=user_id, item_id=item.id)
+        files.append(audio_file)
+        db.add(AudioAsset(
+            user_id=user_id, item_id=item.id, source_revision=1,
+            upload_id=primary_upload.id, stored_file_id=audio_file.file_id,
+            sha256=primary_upload.sha256, bytes=primary_upload.bytes,
+            filename=primary_upload.filename or "audio.bin", mime=primary_upload.mime,
+            role="original_audio", retention_state="retained",
+        ))
+        # 原件已登记引用：不再按未引用上传 24h 过期
+        primary_upload.expires_at = None
 
     db.flush()
     publish_bundle(
@@ -384,7 +456,18 @@ def create_capture(db: Session, store: ObjectStore, *, user_id: str, payload: di
         warnings=["已保存原始材料；AI 加工尚未开始。"],
     )
 
-    enqueue_stage(db, user_id=user_id, item_id=item.id, source_revision=1, stage="extract")
+    # 用户主动提交音频（上传录音或选择网页音频）即为本次转写请求，
+    # 不再要求打开 B 站自动转写开关（docs/13 §6.1）；部署关闭时照常保留
+    # 原件并由 prepare 显示「等待启用」。
+    audio_request = (payload.get("processing_intent") == "transcribe_audio"
+                     and bool(primary_audio_id or payload.get("original_url")))
+    if audio_request:
+        from ..workers import asr as asr_stage
+
+        asr_stage.start_asr(db, item=item, source=source,
+                            model_alias=settings.asr_model, requested_by="manual")
+    else:
+        enqueue_stage(db, user_id=user_id, item_id=item.id, source_revision=1, stage="extract")
 
     emit_event(db, user_id, item_id=item.id, bundle_revision=1, event_type="capture_received",
                payload={"item_id": item.id})
@@ -398,6 +481,6 @@ def _initial_missing(payload: dict) -> list[str]:
         missing.append("main_content")
     if kind == "images":
         missing.append("ocr_text")
-    if kind == "audio":
+    if kind == "audio" or payload.get("processing_intent") == "transcribe_audio":
         missing.append("transcript")
     return missing

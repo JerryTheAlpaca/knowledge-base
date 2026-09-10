@@ -63,6 +63,71 @@ def _check_url_allowed(url: str) -> None:
             raise SafeFetchError("SOURCE_BLOCKED", f"拒绝非公网目的地：{ip}")
 
 
+@dataclass
+class ProbeResult:
+    """轻量探针结果：最终地址、状态、MIME、声明的 Content-Length、是否可 range。"""
+    url: str
+    status_code: int
+    mime: str
+    content_length: int | None
+    accept_ranges: bool
+    sample: bytes = b""
+
+
+def probe_url(url: str, *, headers: dict[str, str] | None = None,
+              sample_bytes: int = 64 * 1024, timeout: float = 15.0) -> ProbeResult:
+    """只读取响应头与最多 sample_bytes 字节，用于判断直链是否音频（docs/13 §4.2）。
+
+    与其他出口同规则：每跳重定向重新校验 DNS/IP，跨主机剥离敏感头；不落完整响应。
+    """
+    _check_url_allowed(url)
+    transport = httpx.HTTPTransport(retries=0)
+    with httpx.Client(
+        transport=transport,
+        timeout=httpx.Timeout(timeout, connect=10.0, read=timeout),
+        follow_redirects=False,
+        headers={"User-Agent": "KnowledgeInbox/0.1 (+restricted-fetcher)"},
+    ) as client:
+        current = url
+        current_host = (urlparse(current).hostname or "").lower()
+        origin_host = current_host
+        for _ in range(MAX_REDIRECTS + 1):
+            hop_headers = dict(headers or {})
+            if current_host != origin_host:
+                hop_headers = {k: v for k, v in hop_headers.items()
+                               if k.lower() not in _SENSITIVE_HEADERS}
+            # 只要开头若干字节；服务器忽略 Range 时也最多读 sample_bytes
+            hop_headers.setdefault("Range", f"bytes=0-{max(0, sample_bytes - 1)}")
+            try:
+                with client.stream("GET", current, headers=hop_headers) as resp:
+                    if resp.is_redirect:
+                        next_url = _verify_redirect(current, resp)
+                        if next_url is None:
+                            raise SafeFetchError("SOURCE_BLOCKED", "重定向缺少 Location")
+                        current = next_url
+                        current_host = (urlparse(current).hostname or "").lower()
+                        continue
+                    mime = resp.headers.get("content-type", "").split(";")[0].strip().lower()
+                    declared = resp.headers.get("content-length")
+                    try:
+                        length = int(declared) if declared else None
+                    except ValueError:
+                        length = None
+                    ranges = (resp.headers.get("accept-ranges", "").lower() == "bytes")
+                    buf = bytearray()
+                    for chunk in resp.iter_bytes(chunk_size=16 * 1024):
+                        buf += chunk
+                        if len(buf) >= sample_bytes:
+                            break
+                    return ProbeResult(
+                        url=str(resp.url), status_code=resp.status_code, mime=mime,
+                        content_length=length, accept_ranges=ranges, sample=bytes(buf),
+                    )
+            except httpx.HTTPError as exc:
+                raise SafeFetchError("NETWORK_ERROR", f"探针请求失败：{exc}") from exc
+        raise SafeFetchError("SOURCE_BLOCKED", f"重定向超过 {MAX_REDIRECTS} 跳")
+
+
 def _verify_redirect(request_url: str, response: httpx.Response) -> str | None:
     if response.is_redirect:
         location = response.headers.get("location")

@@ -162,6 +162,58 @@ class Upload(Base, TimestampMixin):
     expires_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
 
 
+class AudioUploadSession(Base, TimestampMixin):
+    """音频大文件的分块续传会话（docs/13 §6.2）。
+
+    - staging_path 是受控临时目录里的相对文件名，不使用用户路径；
+    - offset 只按已确认块原子推进；同一 offset 同摘要重传幂等；
+    - 完成时用 ObjectStore 的「同卷 staging 原子收纳」变成不可变对象并登记
+      Upload，会话只保留 upload_id 供 Capture 引用；
+    - 临时输入不是 object store 中的"已完成原件"，24 小时无活动过期。
+    """
+
+    __tablename__ = "audio_upload_sessions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    filename: Mapped[str] = mapped_column(String(255), default="")
+    mime: Mapped[str] = mapped_column(String(120), default="application/octet-stream")
+    total_bytes: Mapped[int] = mapped_column(Integer)
+    offset: Mapped[int] = mapped_column(Integer, default=0)
+    chunk_size: Mapped[int] = mapped_column(Integer, default=16 * 1024 * 1024)
+    staging_path: Mapped[str] = mapped_column(String(300))
+    # 已完成块的累积摘要（增量 SHA-256），避免完成时二次读取整文件
+    digest_state: Mapped[str] = mapped_column(String(64), default="")
+    state: Mapped[str] = mapped_column(String(20), default="receiving")  # receiving|completed|cancelled|expired
+    upload_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    sha256: Mapped[str] = mapped_column(String(64), default="")
+    expires_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
+
+
+class AudioAsset(Base, TimestampMixin):
+    """音频原件引用（docs/13 §6.3）：用户上传的原始材料不被当临时 PCM 清理。
+
+    记录原件与条目/来源版本的绑定；ASR 取消、模型报错、空间等待、文字稿已
+    投递都不解除引用。默认随有效条目保留，用户删除条目时才按删除流程清理。
+    """
+
+    __tablename__ = "audio_assets"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    item_id: Mapped[str] = mapped_column(ForeignKey("items.id"), index=True)
+    source_revision: Mapped[int] = mapped_column(Integer, default=1)
+    upload_id: Mapped[str] = mapped_column(ForeignKey("uploads.id"), index=True)
+    stored_file_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    sha256: Mapped[str] = mapped_column(String(64))
+    bytes: Mapped[int] = mapped_column(Integer, default=0)
+    filename: Mapped[str] = mapped_column(String(255), default="")
+    mime: Mapped[str] = mapped_column(String(120), default="application/octet-stream")
+    role: Mapped[str] = mapped_column(String(40), default="original_audio")
+    retention_state: Mapped[str] = mapped_column(String(20), default="retained")  # retained|released
+
+
 class Item(Base, TimestampMixin):
     __tablename__ = "items"
     __table_args__ = (
@@ -417,5 +469,10 @@ class AsrRun(Base, TimestampMixin):
     requested_by: Mapped[str] = mapped_column(String(20), default="manual")  # auto|manual
     work_dir: Mapped[str] = mapped_column(String(300), default="")  # 相对 tmp 的受控目录
     manifest_json: Mapped[dict] = mapped_column(JSON, default=dict)  # 已提交的 PCM 清单摘要
+    # 冻结的本次输入（docs/13 §8）：只存来源稳定定位或对象引用，
+    # 不存敏感 headers / 带时效签名的 URL。
+    input_kind: Mapped[str] = mapped_column(String(20), default="remote")  # remote|object
+    input_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    input_fingerprint: Mapped[str] = mapped_column(String(120), default="")
     last_error: Mapped[str] = mapped_column(Text, default="")
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)

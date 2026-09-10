@@ -63,10 +63,14 @@ class BusyGate(AlwaysAllowGate):
 
 
 def _make_wrapper(directory: Path, name: str, target: Path) -> Path:
-    """跨平台命令包装器：把单字符串可执行位变成 `python target 参数...`。"""
+    """跨平台命令包装器：把单字符串可执行位变成 `python target 参数...`。
+
+    Windows 下 .cmd 由 cmd.exe 按 OEM 代码页解析：非 ASCII 路径（如中文工作区）
+    必须按 mbcs 写，否则会读到乱码路径导致「找不到文件」。
+    """
     if os.name == "nt":
         path = directory / f"{name}.cmd"
-        path.write_text(f'@"{sys.executable}" "{target}" %*\r\n', encoding="utf-8")
+        path.write_text(f'@"{sys.executable}" "{target}" %*\r\n', encoding="mbcs")
     else:
         path = directory / name
         path.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{target}" "$@"\n', encoding="utf-8")
@@ -129,7 +133,12 @@ def asr_env(monkeypatch):
                 streamer: FakeStreamToSink | None = None):
         stream = stream or _fake_audio_stream()
         monkeypatch.setattr(baudio, "resolve_audio_stream", lambda ref, page, **kw: stream)
-        monkeypatch.setattr(baudio, "stream_to_sink", streamer or FakeStreamToSink())
+        sink = streamer or FakeStreamToSink()
+        # 受限流读取现在位于通用音频层 audio/prepare；两处都替换，覆盖新旧调用点
+        from kbserver.audio import prepare as audio_prepare_mod
+
+        monkeypatch.setattr(audio_prepare_mod, "stream_to_sink", sink)
+        monkeypatch.setattr(baudio, "stream_to_sink", sink)
         # resolve_video_part 触网（view API）：桩为固定 page 元数据
         monkeypatch.setattr(bili, "resolve_video_part", lambda ref, limit: {
             "canonical_url": f"https://www.bilibili.com/video/{BV}/",

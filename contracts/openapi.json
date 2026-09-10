@@ -391,6 +391,259 @@
         }
       }
     },
+    "/v1/audio-uploads": {
+      "post": {
+        "tags": [
+          "audio-uploads"
+        ],
+        "summary": "Create Audio Upload",
+        "operationId": "create_audio_upload_v1_audio_uploads_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AudioUploadCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AudioUploadSessionOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/audio-uploads/{session_id}": {
+      "get": {
+        "tags": [
+          "audio-uploads"
+        ],
+        "summary": "Get Audio Upload",
+        "operationId": "get_audio_upload_v1_audio_uploads__session_id__get",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AudioUploadSessionOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "audio-uploads"
+        ],
+        "summary": "Cancel Audio Upload",
+        "description": "取消未完成会话释放临时占用；已完成对象按引用规则处理，不删共享对象。",
+        "operationId": "cancel_audio_upload_v1_audio_uploads__session_id__delete",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Cancel Audio Upload V1 Audio Uploads  Session Id  Delete"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/audio-uploads/{session_id}/chunks": {
+      "put": {
+        "tags": [
+          "audio-uploads"
+        ],
+        "summary": "Put Audio Chunk",
+        "description": "一次一个块；同一 offset 同摘要重传幂等，不同摘要冲突，不接受跳段/重叠。",
+        "operationId": "put_audio_chunk_v1_audio_uploads__session_id__chunks_put",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AudioUploadSessionOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/audio-uploads/{session_id}/complete": {
+      "post": {
+        "tags": [
+          "audio-uploads"
+        ],
+        "summary": "Complete Audio Upload",
+        "description": "长度一致后分块计算整文件 SHA-256，并把 staging 原子收纳为不可变对象。",
+        "operationId": "complete_audio_upload_v1_audio_uploads__session_id__complete_post",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AudioUploadResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/items/{item_id}/audio-original": {
+      "get": {
+        "tags": [
+          "audio-uploads"
+        ],
+        "summary": "Download Audio Original",
+        "description": "鉴权流式下载上传原件：只按登记的 AudioAsset 定位，不暴露服务器路径。",
+        "operationId": "download_audio_original_v1_items__item_id__audio_original_get",
+        "parameters": [
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Item Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/captures": {
       "post": {
         "tags": [
@@ -1688,7 +1941,7 @@
           "asr"
         ],
         "summary": "Trigger Asr",
-        "description": "手动触发音频转写；模型别名幂等，重复点击不重复建任务。",
+        "description": "手动触发音频转写；模型别名/选中的音频幂等，重复点击不重复建任务。",
         "operationId": "trigger_asr_v1_items__item_id__asr_post",
         "parameters": [
           {
@@ -1778,6 +2031,51 @@
         }
       }
     },
+    "/v1/items/{item_id}/audio-sources": {
+      "get": {
+        "tags": [
+          "asr"
+        ],
+        "summary": "Get Audio Sources",
+        "description": "页面音频候选：Worker 首次解析后缓存；返回 pending/ready/unsupported。\n\n只有一个逻辑音频时无需选择（ready 且 candidates 为空即\"可直接转写\"）。",
+        "operationId": "get_audio_sources_v1_items__item_id__audio_sources_get",
+        "parameters": [
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Item Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Get Audio Sources V1 Items  Item Id  Audio Sources Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/items/{item_id}/asr/cancel": {
       "post": {
         "tags": [
@@ -1847,11 +2145,157 @@
               }
             ],
             "title": "Retry Model"
+          },
+          "audio_candidate_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Audio Candidate Id"
           }
         },
         "additionalProperties": false,
         "type": "object",
         "title": "AsrTriggerIn"
+      },
+      "AudioUploadCreate": {
+        "properties": {
+          "filename": {
+            "type": "string",
+            "title": "Filename"
+          },
+          "total_bytes": {
+            "type": "integer",
+            "title": "Total Bytes"
+          },
+          "mime": {
+            "type": "string",
+            "title": "Mime",
+            "default": "application/octet-stream"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "filename",
+          "total_bytes"
+        ],
+        "title": "AudioUploadCreate"
+      },
+      "AudioUploadResult": {
+        "properties": {
+          "upload_id": {
+            "type": "string",
+            "title": "Upload Id"
+          },
+          "sha256": {
+            "type": "string",
+            "title": "Sha256"
+          },
+          "bytes": {
+            "type": "integer",
+            "title": "Bytes"
+          },
+          "mime": {
+            "type": "string",
+            "title": "Mime"
+          },
+          "filename": {
+            "type": "string",
+            "title": "Filename"
+          }
+        },
+        "type": "object",
+        "required": [
+          "upload_id",
+          "sha256",
+          "bytes",
+          "mime",
+          "filename"
+        ],
+        "title": "AudioUploadResult"
+      },
+      "AudioUploadSessionOut": {
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "filename": {
+            "type": "string",
+            "title": "Filename"
+          },
+          "mime": {
+            "type": "string",
+            "title": "Mime"
+          },
+          "total_bytes": {
+            "type": "integer",
+            "title": "Total Bytes"
+          },
+          "offset": {
+            "type": "integer",
+            "title": "Offset"
+          },
+          "chunk_size": {
+            "type": "integer",
+            "title": "Chunk Size"
+          },
+          "upload_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Upload Id"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "max_duration_seconds": {
+            "type": "integer",
+            "title": "Max Duration Seconds"
+          },
+          "max_audio_bytes": {
+            "type": "integer",
+            "title": "Max Audio Bytes"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "session_id",
+          "state",
+          "filename",
+          "mime",
+          "total_bytes",
+          "offset",
+          "chunk_size",
+          "upload_id",
+          "expires_at",
+          "max_duration_seconds",
+          "max_audio_bytes"
+        ],
+        "title": "AudioUploadSessionOut"
       },
       "Body_upload_v1_uploads_post": {
         "properties": {
@@ -1992,6 +2436,22 @@
             },
             "type": "array",
             "title": "Upload Ids"
+          },
+          "processing_intent": {
+            "type": "string",
+            "title": "Processing Intent",
+            "default": "default"
+          },
+          "primary_audio_upload_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Primary Audio Upload Id"
           },
           "processing_profile_id": {
             "anyOf": [
@@ -2418,6 +2878,22 @@
             "type": "string",
             "title": "Platform"
           },
+          "media_kind": {
+            "type": "string",
+            "title": "Media Kind"
+          },
+          "source_type": {
+            "type": "string",
+            "title": "Source Type"
+          },
+          "source_label": {
+            "type": "string",
+            "title": "Source Label"
+          },
+          "icon_key": {
+            "type": "string",
+            "title": "Icon Key"
+          },
           "title": {
             "anyOf": [
               {
@@ -2566,6 +3042,21 @@
               }
             ],
             "title": "Analysis Created At"
+          },
+          "audio_original_retained": {
+            "type": "boolean",
+            "title": "Audio Original Retained"
+          },
+          "audio_original_download": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Audio Original Download"
           }
         },
         "additionalProperties": false,
@@ -2577,6 +3068,10 @@
           "source_revision",
           "bundle_revision",
           "platform",
+          "media_kind",
+          "source_type",
+          "source_label",
+          "icon_key",
           "title",
           "author",
           "original_url",
@@ -2593,7 +3088,9 @@
           "expired",
           "analysis_source_revision",
           "analysis_bundle_revision",
-          "analysis_created_at"
+          "analysis_created_at",
+          "audio_original_retained",
+          "audio_original_download"
         ],
         "title": "ItemOut"
       },
@@ -3136,6 +3633,24 @@
             ],
             "title": "Normalized Md"
           },
+          "readable_md": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Readable Md"
+          },
+          "segment_paragraph": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Segment Paragraph"
+          },
           "normalized_available": {
             "type": "boolean",
             "title": "Normalized Available"
@@ -3181,6 +3696,8 @@
           "source_revision",
           "bundle_revision",
           "normalized_md",
+          "readable_md",
+          "segment_paragraph",
           "normalized_available",
           "truncated",
           "files",

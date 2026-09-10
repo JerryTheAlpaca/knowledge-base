@@ -23,7 +23,7 @@ from ..db import get_db
 from ..domain import pipeline
 from ..domain.errors import ApiError
 from ..api.deps import require_scope
-from ..models import BundleRevision, Item, SourceRevision, Job, new_id, utcnow
+from ..models import AudioAsset, BundleRevision, Item, SourceRevision, Job, new_id, utcnow
 from ..repositories import core as repo
 from ..storage.objects import ObjectStore
 
@@ -38,6 +38,10 @@ class ItemOut(BaseModel):
     source_revision: int
     bundle_revision: int
     platform: str
+    media_kind: str
+    source_type: str
+    source_label: str
+    icon_key: str
     title: str | None
     author: str | None
     original_url: str | None
@@ -57,6 +61,9 @@ class ItemOut(BaseModel):
     analysis_source_revision: int | None
     analysis_bundle_revision: int | None
     analysis_created_at: str | None
+    # 音频原件（上传录音）保留状态与下载入口；远程临时音频为 False
+    audio_original_retained: bool
+    audio_original_download: str | None
 
 
 class ItemList(BaseModel):
@@ -95,10 +102,14 @@ def _analysis_bundle(db: Session, item: Item) -> BundleRevision | None:
 
 
 def _item_out(item: Item, source: SourceRevision, db: Session | None = None) -> ItemOut:
+    from ..domain.source_labels import source_fields
+
     meta = source.metadata_json
     analysis_bundle = _analysis_bundle(db, item) if db is not None else None
     expires_at = analysis_bundle.expires_at if analysis_bundle else None
     now = utcnow()
+    fields = source_fields(meta.get("platform"), meta.get("media_kind"))
+    audio_retained = bool(meta.get("original_media_retained")) and fields["source_type"] == "audio_upload"
     return ItemOut(
         item_id=item.id,
         pipeline_state=item.pipeline_state,
@@ -106,6 +117,10 @@ def _item_out(item: Item, source: SourceRevision, db: Session | None = None) -> 
         source_revision=item.source_revision,
         bundle_revision=item.bundle_revision,
         platform=meta.get("platform", "unknown"),
+        media_kind=fields["media_kind"],
+        source_type=fields["source_type"],
+        source_label=fields["source_label"],
+        icon_key=fields["icon_key"],
         title=meta.get("title"),
         author=meta.get("author"),
         original_url=meta.get("original_url"),
@@ -123,6 +138,8 @@ def _item_out(item: Item, source: SourceRevision, db: Session | None = None) -> 
         analysis_source_revision=analysis_bundle.source_revision if analysis_bundle else None,
         analysis_bundle_revision=analysis_bundle.revision if analysis_bundle else None,
         analysis_created_at=analysis_bundle.created_at.isoformat() if analysis_bundle else None,
+        audio_original_retained=audio_retained,
+        audio_original_download=(f"/v1/items/{item.id}/audio-original" if audio_retained else None),
     )
 
 
@@ -564,6 +581,10 @@ def delete_item(item_id: str, principal=Depends(require_scope("items:edit")), db
         db.query(Job).filter(Job.item_id == item.id, Job.state.in_(["queued", "retry_wait"])).update(
             {"state": "cancelled"}, synchronize_session=False
         )
+        # 删除条目时解除音频原件引用（docs/13 §6.3）：在线对象随后由清理任务回收
+        db.query(AudioAsset).filter(
+            AudioAsset.user_id == user.id, AudioAsset.item_id == item.id
+        ).update({"retention_state": "released"}, synchronize_session=False)
         pipeline.emit_event(db, user.id, item_id=item.id, bundle_revision=None, event_type="item_deleted")
         db.commit()
     return {"item_id": item.id, "deleted": True}
