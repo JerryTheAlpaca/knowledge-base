@@ -166,23 +166,6 @@
   .kvurl a, .kvurl span { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden;
                           text-overflow: ellipsis; }
 
-  /* ============ 管理页签（仅管理员） ============ */
-  .statgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; }
-  .statcard { border: 1px solid var(--border); border-radius: var(--radius-inner);
-              padding: 12px 14px; background: var(--surface-2); min-width: 0; }
-  .statnum { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
-  .statlabel { font-size: var(--fs-caption); color: var(--text-2); margin-top: 2px; }
-  .invrow { display: flex; align-items: center; gap: 10px; padding: 10px 2px;
-            border-bottom: 1px dashed var(--border); flex-wrap: wrap; min-width: 0; }
-  .invrow:last-child { border-bottom: none; }
-  .invcode { font-weight: 600; font-variant-numeric: tabular-nums; }
-  .asruser { display: flex; align-items: baseline; gap: 10px; padding: 10px 2px;
-             border-bottom: 1px dashed var(--border); flex-wrap: wrap; min-width: 0; }
-  .asruser:last-child { border-bottom: none; }
-  .bar { height: 6px; border-radius: 999px; background: var(--border); overflow: hidden; margin-top: 6px; }
-  .bar i { display: block; height: 100%; background: var(--accent); border-radius: 999px;
-           transition: width var(--t-slow) var(--ease); }
-
   /* ============ 列表 ============ */
   .list-head { display: flex; align-items: center; gap: 12px; }
   .list-head h2 { flex: 1; margin: 0; }
@@ -449,6 +432,7 @@
       </button>
       <div class="menu" id="userMenu" hidden>
         <button class="menu-item" id="menuSettings">设置</button>
+        <button class="menu-item" id="menuAdmin" hidden>管理</button>
         <button class="menu-item danger" id="logoutBtn">退出登录</button>
       </div>
     </div>
@@ -459,7 +443,6 @@
   <div class="tabs-inner">
     <button id="tabInbox" class="active">收件箱</button>
     <button id="tabSettings">设置</button>
-    <button id="tabAdmin" hidden>管理</button>
   </div>
 </nav>
 
@@ -492,7 +475,7 @@
             <input type="checkbox" id="capImages"> 提取图片
             <span class="switch" aria-hidden="true"><i></i></span>
           </label>
-          <label class="opttoggle" for="capAsr" title="开启后，本次提交的条目在提取完成时会自动排队机器转写">
+          <label class="opttoggle" for="capAsr" title="开启后，本次提交的网页/公众号条目在提取完成时会自动排队机器转写（上传录音始终自动转写）">
             <input type="checkbox" id="capAsr"> 提取音轨
             <span class="switch" aria-hidden="true"><i></i></span>
           </label>
@@ -517,7 +500,7 @@
           <input id="capFiles" type="file" multiple hidden>
         </div>
       </div>
-      <p class="help">选择文件时音频自动进入机器转写队列（一次最多 10 个，每个录音生成一条转写条目），其余作为附件保存。开启「提取音轨」后，本次提交的条目在提取完成时会自动排队转写；B 站视频、网页音频与音频直链同样在服务器空闲时转写。</p>
+      <p class="help">选择文件时音频自动进入机器转写队列，其余作为附件保存。</p>
     </div>
 
     <div class="card" id="listWrap">
@@ -616,45 +599,6 @@
       <div class="row" style="margin-top:14px">
         <button class="danger" id="accountLogoutBtn">退出登录</button>
       </div>
-    </div>
-  </section>
-
-  <!-- ============ 管理（仅管理员：邀请码 / ASR 状态 / 服务器状态） ============ -->
-  <section id="adminTab" hidden>
-    <div class="card">
-      <div class="list-head">
-        <h2 style="flex:1">邀请码管理</h2>
-        <button class="primary" id="invCreateBtn">新建邀请码</button>
-      </div>
-      <p class="help" style="margin:0 0 4px">新用户凭邀请码注册；每条邀请码单次使用、默认 7 天有效，完整码只在创建时显示一次。</p>
-      <div id="invList"><div class="muted" style="padding:8px 0">加载中…</div></div>
-    </div>
-
-    <div class="card">
-      <div class="list-head">
-        <h2 style="flex:1">ASR 处理状态</h2>
-        <button class="icon" id="asrAdminRefresh" title="刷新" aria-label="刷新">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-               stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/>
-          </svg>
-        </button>
-      </div>
-      <div class="statgrid" id="asrTotals"></div>
-      <div id="asrUsers" style="margin-top:12px"><div class="muted" style="padding:8px 0">加载中…</div></div>
-    </div>
-
-    <div class="card">
-      <div class="list-head">
-        <h2 style="flex:1">服务器状态</h2>
-        <button class="icon" id="srvStatsRefresh" title="刷新" aria-label="刷新">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-               stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/>
-          </svg>
-        </button>
-      </div>
-      <div class="statgrid" id="srvStats"><div class="muted" style="padding:8px 0">加载中…</div></div>
     </div>
   </section>
 </main>
@@ -832,17 +776,14 @@ function showApp(me) {
   $("topbar").hidden = false; $("tabsNav").hidden = false;
   const name = me.central_username || me.display_name || me.user_id;
   $("whoChip").textContent = name + (me.auth_method === "central_session" ? "" : "（设备）");
-  $("tabAdmin").hidden = !me.is_admin;  // 管理页签：仅管理员可见
+  $("menuAdmin").hidden = !me.is_admin;  // 管理界面入口：仅管理员可见
 }
 function switchTab(which) {
   $("inboxTab").hidden = which !== "inbox";
   $("settingsTab").hidden = which !== "settings";
-  $("adminTab").hidden = which !== "admin";
   $("tabInbox").classList.toggle("active", which === "inbox");
   $("tabSettings").classList.toggle("active", which === "settings");
-  $("tabAdmin").classList.toggle("active", which === "admin");
   if (which === "settings") loadSettings();
-  else if (which === "admin") loadAdmin();
   else checkModelKey();
 }
 
@@ -2172,131 +2113,6 @@ async function saveSettings() {
   } catch (e) { handleErr(e, "保存失败："); }
 }
 
-// ---------- 管理页签（仅管理员：邀请码 / ASR 状态 / 服务器状态） ----------
-const INV_STATUS_BADGES = {
-  unused: ["未使用", "b-ready"], used: ["已使用", "b-queued"],
-  revoked: ["已撤销", "b-failed"], expired: ["已过期", "b-needs_input"],
-};
-function invStatusBadge(s) {
-  const pair = INV_STATUS_BADGES[s] || [s, "b-raw"];
-  return '<span class="badge ' + pair[1] + '">' + esc(pair[0]) + "</span>";
-}
-function loadAdmin() { loadAdminInvitations(); loadAsrOverview(); loadServerStats(); }
-
-async function loadAdminInvitations() {
-  const host = $("invList");
-  try {
-    const r = await api("/v1/admin/invitations");
-    const list = r.invitations || [];
-    if (!list.length) { host.innerHTML = '<div class="muted" style="padding:8px 0">还没有邀请码。</div>'; return; }
-    host.innerHTML = list.map((inv) =>
-      '<div class="invrow">' + invStatusBadge(inv.status) +
-      '<span class="invcode">尾号 ' + esc(inv.suffix) + "</span>" +
-      '<span class="dim num">创建 ' + esc(fmtShort(inv.createdAt)) + "</span>" +
-      '<span class="dim num">有效期至 ' + esc(fmtShort(inv.expiresAt)) + "</span>" +
-      "<span>" + (inv.usedByUsername
-        ? '<span class="small">注册用户：<b>' + esc(inv.usedByUsername) + "</b></span>"
-        : '<span class="dim">—</span>') + "</span>" +
-      '<span style="flex:1"></span>' +
-      (inv.status === "unused"
-        ? '<button class="small danger" data-inv-revoke="' + esc(inv.id) + '">撤销</button>' : "") +
-      "</div>").join("");
-  } catch (e) {
-    host.innerHTML = '<div class="muted" style="padding:8px 0">加载失败</div>';
-    handleErr(e, "邀请码加载失败：");
-  }
-}
-
-async function createInvitation() {
-  const ok = await confirmModal({
-    title: "新建邀请码",
-    body: "生成一条单次使用、默认 7 天有效的邀请码。完整码只显示一次，请立即复制保存。",
-    confirmLabel: "生成",
-  });
-  if (!ok) return;
-  try {
-    const r = await api("/v1/admin/invitations", { method: "POST", body: {} });
-    openModalHTML(
-      '<div class="modal-title">邀请码已生成</div>' +
-      '<div class="modal-body"><p style="margin:0 0 10px">完整码只显示这一次：</p>' +
-      '<div class="pwrow"><input id="invCode" readonly value="' + esc(r.code) + '">' +
-      '<button type="button" class="ghost eye" id="invCopy">复制</button></div>' +
-      '<p class="small muted" style="margin:10px 0 0">有效期至 ' + esc(fmtTime(r.expiresAt)) + "</p></div>" +
-      '<div class="modal-foot"><button id="mCancel">关闭</button></div>');
-    $("mCancel").onclick = () => closeModal(null);
-    $("invCopy").onclick = async () => {
-      const input = $("invCode");
-      try { await navigator.clipboard.writeText(input.value); }
-      catch (e) { input.select(); document.execCommand("copy"); }
-      $("invCopy").textContent = "已复制";
-    };
-    loadAdminInvitations();
-  } catch (e) { handleErr(e, "生成邀请码失败："); }
-}
-
-const ASR_ADMIN_STATE_LABELS = {
-  queued: "排队中", preparing: "读取音频", transcribing: "转写中", paused: "已暂停",
-};
-async function loadAsrOverview() {
-  const totalsHost = $("asrTotals"), usersHost = $("asrUsers");
-  try {
-    const r = await api("/v1/admin/asr-overview");
-    const t = r.totals || {};
-    totalsHost.innerHTML = [
-      [t.submitted_users, "提交过用户"], [t.queued_users, "排队用户"], [t.queued_runs, "排队任务"],
-      [t.transcribing_runs, "转写中"], [t.paused_runs, "已暂停"],
-    ].map(([v, label]) =>
-      '<div class="statcard"><div class="statnum num">' + esc(v == null ? "—" : v) +
-      '</div><div class="statlabel">' + esc(label) + "</div></div>").join("");
-    const users = r.users || [];
-    if (!users.length) {
-      usersHost.innerHTML = '<div class="muted" style="padding:8px 0">还没有用户提交过音频转写。</div>';
-      return;
-    }
-    usersHost.innerHTML = users.map((u) => {
-      const active = (u.active || []).map((a) => {
-        const prog = a.chunk_count ? " " + a.done_chunks + "/" + a.chunk_count + " 段" : "";
-        return (ASR_ADMIN_STATE_LABELS[a.state] || a.state) + prog;
-      }).join("；");
-      return '<div class="asruser">' +
-        '<span style="font-weight:600">' + esc(u.username) + "</span>" +
-        '<span class="small num">累计处理 ' + esc(u.processed_minutes) + " 分钟</span>" +
-        '<span class="small num">任务 ' + esc(u.total_runs) + " 个</span>" +
-        (active ? '<span class="small">进行中：' + esc(active) + "</span>" : "") +
-        "</div>";
-    }).join("");
-  } catch (e) { handleErr(e, "ASR 状态加载失败："); }
-}
-
-function fmtBytes(n) {
-  if (n == null) return "—";
-  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
-  let v = n, i = 0;
-  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
-  return (i === 0 || v >= 100 ? Math.round(v) : v.toFixed(1)) + " " + units[i];
-}
-function statBar(label, percent, detail) {
-  const p = Math.max(0, Math.min(100, percent == null ? 0 : percent));
-  return '<div class="statcard"><div class="statnum num">' + (percent == null ? "—" : percent + "%") + "</div>" +
-    '<div class="statlabel">' + esc(label) + (detail ? " · " + esc(detail) : "") + "</div>" +
-    '<div class="bar"><i style="width:' + p + '%"></i></div></div>';
-}
-async function loadServerStats() {
-  const host = $("srvStats");
-  try {
-    const r = await api("/v1/admin/server-stats");
-    host.innerHTML =
-      statBar("CPU 占用", r.cpu_percent, "") +
-      statBar("内存", r.memory && r.memory.percent,
-        r.memory ? fmtBytes(r.memory.used_bytes) + " / " + fmtBytes(r.memory.total_bytes) : "指标不可用") +
-      statBar("磁盘", r.disk && r.disk.percent,
-        r.disk ? fmtBytes(r.disk.used_bytes) + " / " + fmtBytes(r.disk.total_bytes) : "指标不可用");
-  } catch (e) {
-    host.innerHTML = '<div class="muted" style="padding:8px 0">加载失败</div>';
-    handleErr(e, "服务器状态加载失败：");
-  }
-}
-
 // ---------- 模型 Key 引导条（F5/F3） ----------
 let profilesConfigured = null;
 async function checkModelKey() {
@@ -2335,25 +2151,7 @@ $("userChip").addEventListener("click", (e) => {
 $("menuSettings").addEventListener("click", () => { closeMenus(); switchTab("settings"); });
 $("tabInbox").addEventListener("click", () => switchTab("inbox"));
 $("tabSettings").addEventListener("click", () => switchTab("settings"));
-$("tabAdmin").addEventListener("click", () => switchTab("admin"));
-$("invCreateBtn").addEventListener("click", createInvitation);
-$("asrAdminRefresh").addEventListener("click", loadAsrOverview);
-$("srvStatsRefresh").addEventListener("click", loadServerStats);
-$("invList").addEventListener("click", async (e) => {
-  const b = e.target.closest("[data-inv-revoke]");
-  if (!b) return;
-  const ok = await confirmModal({
-    title: "撤销邀请码", body: "撤销后该邀请码不能再用于注册。",
-    confirmLabel: "撤销", danger: true,
-  });
-  if (!ok) return;
-  try {
-    await api("/v1/admin/invitations/" + encodeURIComponent(b.dataset.invRevoke) + "/revoke",
-      { method: "POST", body: {} });
-    toast("已撤销邀请码", { type: "ok" });
-    loadAdminInvitations();
-  } catch (err) { handleErr(err, "撤销失败："); }
-});
+$("menuAdmin").addEventListener("click", () => { closeMenus(); window.location.href = "/admin"; });
 $("capSubmit").addEventListener("click", submitCapture);
 $("capText").addEventListener("input", () => { autosizeCap(); renderCapChips(); saveDraftSoon(); });
 $("capNote").addEventListener("input", () => saveDraftSoon());
@@ -2439,8 +2237,7 @@ function saveDraftSoon() {
     const me = await api("/v1/auth/me");
     showApp(me);
     const tabParam = new URLSearchParams(location.search).get("tab");
-    const wantTab = (tabParam === "settings" || (tabParam === "admin" && me.is_admin)) ? tabParam : "inbox";
-    switchTab(wantTab);
+    switchTab(tabParam === "settings" ? "settings" : "inbox");
     restoreDraft();
     loadItems(true);
     checkModelKey();

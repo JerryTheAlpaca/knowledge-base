@@ -3,7 +3,8 @@
 - /v1/admin/asr-overview：管理员守卫 + 跨用户聚合（计数/累计分钟，不含文件名）。
 - /v1/admin/server-stats：形状与降级（非 Linux 指标为 None）。
 - /v1/admin/invitations*：中心站点代理（Cookie/Origin 转发、信封展开）。
-- 采集 include_asr：B 站 no_track 时按采集勾选自动入队转写。
+- 采集 include_asr：网页/公众号条目提取完成后自动排队转写；B 站不受该开关
+  影响（沿用「无字幕自动转写」设置），上传录音始终自动转写（transcribe_audio 意图）。
 - 设置 auto_enrich：关闭时提取完成停在 extracted，不自动入 enrich；手动 reprocess 不受影响。
 
 中心认证与上游代理均用假替身，不触网。
@@ -200,29 +201,48 @@ def test_invitation_upstream_rejection_maps_status(wc, central, monkeypatch):
 
 # ---- 采集 include_asr ----
 
-def test_capture_include_asr_queues_run(client, user_a, asr_env, fresh_queue):
-    from tests.integration.test_asr import AlwaysAllowGate
+def test_capture_include_asr_queues_run_for_webpage(client, user_a, fresh_queue, monkeypatch):
+    """勾选「提取音轨」：网页/公众号条目提取完成后自动排队转写。"""
+    from kbserver.extractors import webpages
+    from tests.integration.test_m4_web import FakeWebNet, GENERIC_HTML, GENERIC_URL
 
-    asr_env.install()  # extract 一律 no_track；模型/FFmpeg/流全部为假替身
+    monkeypatch.setenv("ASR_ENABLED", "true")
+    net = FakeWebNet(pages={GENERIC_URL: (200, "text/html", GENERIC_HTML)})
+    monkeypatch.setattr(webpages, "safe_fetch", net)
     r = client.post(
         "/v1/captures",
         json={"client_capture_id": "asrflag-1111-2222-3333-444444444444",
-              "input_kind": "url", "original_url": f"https://www.bilibili.com/video/{BV}/",
+              "input_kind": "url", "original_url": GENERIC_URL,
               "include_asr": True},
         headers={**auth(user_a["phone"]["token"]), "Idempotency-Key": "asrflag1"},
     )
     assert r.status_code == 202
     item_id = r.json()["item_id"]
-    for _ in range(10):
-        if not worker.run_once(_session_factory(), AlwaysAllowGate()):
-            break
+    assert worker.run_once(_session_factory())  # extract：网页适配器发布后直通转写
     with _session_factory()() as db:
         run = db.query(AsrRun).filter(AsrRun.item_id == item_id).one_or_none()
-        assert run is not None
-        # 用户没开「无字幕自动转写」，run 由采集勾选触发 → 记为 manual
-        assert run.requested_by == "manual"
+        assert run is not None and run.requested_by == "manual"
+        assert db.query(worker.Job).filter(
+            worker.Job.item_id == item_id, worker.Job.stage == "asr_prepare").count() == 1
+
+
+def test_bilibili_ignores_include_asr(client, user_a, asr_env, fresh_queue):
+    """B 站不受「提取音轨」开关影响：无字幕且用户开关未开 → 照旧停在待补充。"""
+    asr_env.install()  # extract 一律 no_track
+    r = client.post(
+        "/v1/captures",
+        json={"client_capture_id": "asrnoB-1111-2222-3333-444444444444",
+              "input_kind": "url", "original_url": f"https://www.bilibili.com/video/{BV}/",
+              "include_asr": True},
+        headers={**auth(user_a["phone"]["token"]), "Idempotency-Key": "asrnoB1"},
+    )
+    assert r.status_code == 202
+    item_id = r.json()["item_id"]
+    assert worker.run_once(_session_factory())
+    with _session_factory()() as db:
+        assert db.query(AsrRun).filter(AsrRun.item_id == item_id).count() == 0
         it = db.get(worker.Item, item_id)
-        assert it.pipeline_state != "needs_input"
+        assert it.pipeline_state == "needs_input"
 
 
 # ---- 设置 auto_enrich ----

@@ -22,6 +22,13 @@ def inbox_page() -> FileResponse:
                         headers={"Cache-Control": "no-cache"})
 
 
+@router.get("/admin", include_in_schema=False)
+def admin_page() -> FileResponse:
+    """管理员页面：页面脚本探测 /v1/auth/me，非管理员就地展示「无权访问」。"""
+    return FileResponse(WEB_STATIC_DIR / "admin.html", media_type="text/html",
+                        headers={"Cache-Control": "no-cache"})
+
+
 @router.get("/authorize", include_in_schema=False)
 def authorize_page() -> FileResponse:
     """插件设备授权页：浏览器（中心会话）批准插件领取设备 Token。"""

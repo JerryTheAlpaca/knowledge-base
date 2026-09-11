@@ -26,7 +26,6 @@ from ..config import get_settings
 from ..db import make_engine, make_session_factory
 from ..domain import pipeline
 from ..domain.platforms import guess_platform
-from ..extractors import audio_sources
 from ..extractors import bilibili as bili
 from ..extractors import paragraphs as parafmt
 from ..extractors import subtitles as subfmt
@@ -145,8 +144,6 @@ def run_extract(db: Session, store: ObjectStore, job: Job, item: Item) -> None:
     source = _latest_source(db, item)
     meta = source.metadata_json
     _run_extract_dispatch(db, store, job, item, source, payload, meta)
-    # 采集勾选「提取音轨」：提取阶段结束后对有音频来源的条目排队转写（幂等）
-    _maybe_start_requested_asr(db, item, payload)
 
 
 def _run_extract_dispatch(db: Session, store: ObjectStore, job: Job, item: Item,
@@ -193,6 +190,8 @@ def _run_extract_dispatch(db: Session, store: ObjectStore, job: Job, item: Item,
     # 6) 普通网页/公众号链接：正文适配器（docs/02 §5.1）
     if web_target:
         _extract_webpage(db, store, job, item, source, payload)
+        # 采集勾选「提取音轨」：网页/公众号条目提取后自动排队转写
+        _maybe_start_requested_asr(db, item, payload)
         return
     # 7) 其余只有分享文字/图片/音频：M4 其他适配器提供前不做伪造提取
     if share_text:
@@ -208,22 +207,17 @@ def _run_extract_dispatch(db: Session, store: ObjectStore, job: Job, item: Item,
 
 
 def _maybe_start_requested_asr(db: Session, item: Item, payload: dict) -> None:
-    """采集勾选「提取音轨」（include_asr）：提取结束后对有音频来源的条目排队转写。
+    """采集勾选「提取音轨」（include_asr）：网页/公众号条目提取完成后自动排队转写。
 
-    - 幂等：B 站无字幕/无标点自动转写已建的 run 直接复用；同版本已有排队/
-      进行中/成功的 run 不重复建（重新提取内容无变化时不重跑转写）。
-    - 不可转写或部署开关关闭时不建任务，保持「只提取」语义，不打扰用户。
+    只在网页适配分支调用——上传录音始终自动转写（transcribe_audio 意图，
+    不经这里），B 站沿用「无字幕自动转写」用户设置，都不受该开关影响。
+    幂等：同版本已有排队/进行中/成功的 run 不重复建（重新提取内容无变化时
+    不重跑转写）；部署开关关闭时不建任务。实际能否取得音频由 prepare 判定。
     """
     if not payload.get("include_asr"):
         return
     settings = get_settings()
     if not asr_stage.asr_enabled(settings):
-        return
-    try:
-        capable, _kind = audio_sources.audio_capability(db, item)
-    except Exception:
-        return
-    if not capable:
         return
     source = _latest_source(db, item)
     existing = (
@@ -435,13 +429,11 @@ def _extract_bilibili(db: Session, store: ObjectStore, job: Job, item: Item,
     except bili.BilibiliError as exc:
         if exc.status in ("network_error", "blocked"):
             raise  # 有限退避重试，由 run_once 顶层落到任务表
-        if exc.status == "no_track" and (_auto_asr_ready(db, item.user_id) or payload.get("include_asr")):
-            # 登录错误/其余原因不自动触发；明确的「平台无字幕轨」+（用户开关或
-            # 本次采集勾选「提取音轨」）才转 ASR。部署开关关闭时 run 会被
-            # prepare 停在「等待部署启用」，不会凭空消失。
+        if exc.status == "no_track" and _auto_asr_ready(db, item.user_id):
+            # 登录错误/其余原因不自动触发；只有明确的「平台无字幕轨」才转 ASR
             settings = get_settings()
             asr_stage.start_asr(db, item=item, source=source,
-                                model_alias=settings.asr_model, requested_by="auto" if _auto_asr_ready(db, item.user_id) else "manual")
+                                model_alias=settings.asr_model, requested_by="auto")
             job.state = "succeeded"
             return
         _needs_input(db, job, item, exc.message, exc.status)
@@ -460,12 +452,12 @@ def _extract_bilibili(db: Session, store: ObjectStore, job: Job, item: Item,
         role="source_material", mime="application/json",
     )
 
-    if subfmt.looks_unpunctuated(ext.segments) and (_auto_asr_ready(db, item.user_id) or payload.get("include_asr")):
+    if subfmt.looks_unpunctuated(ext.segments) and _auto_asr_ready(db, item.user_id):
         # 无标点字幕轨（B 站 AI 字幕常见）读不下去，自动转本地 ASR 换带标点的
         # 转写稿；无标点字幕的原始 JSON 仍留存作证据（docs/04 §4.6 不改写原文）。
         settings = get_settings()
         asr_stage.start_asr(db, item=item, source=source,
-                            model_alias=settings.asr_model, requested_by="auto" if _auto_asr_ready(db, item.user_id) else "manual")
+                            model_alias=settings.asr_model, requested_by="auto")
         job.state = "succeeded"
         return
 

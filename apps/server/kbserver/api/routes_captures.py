@@ -33,7 +33,8 @@ class CaptureInput(BaseModel):
     capture_channel: str | None = None
     # 网页/公众号正文图片：默认不下载，勾选后本次提取才保存配图（docs/02 §5.1）
     include_images: bool = False
-    # 提取音轨：提取完成后对有音频来源的条目自动排队转写（首页开关直通）
+    # 提取音轨：网页/公众号条目提取完成后自动排队转写；上传录音始终自动转写，
+    # B 站沿用「无字幕自动转写」设置，均不受此开关影响
     include_asr: bool = False
     original_url: str | None = None
     share_text: str | None = None

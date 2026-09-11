@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>管理 · 知识收件箱</title>
+<link rel="stylesheet" href="/tokens.css">
+<style>
+  /* 与收件箱同一骨架（docs/10）：760px 居中、卡片、按钮、badge 全部复用设计令牌 */
+  .topbar-inner, main { max-width: 760px; margin: 0 auto; padding: 0 20px; }
+  header { background: var(--surface); border-bottom: 1px solid var(--border); }
+  .topbar-inner { display: flex; align-items: center; gap: 12px; height: 56px; }
+  .brand { font-family: var(--font-display); font-size: var(--fs-display); font-weight: 600; letter-spacing: .5px; }
+  .brand .tag { font-size: var(--fs-caption); color: var(--text-2); font-weight: 500; margin-left: 8px; }
+  .spacer { flex: 1; }
+  .backlink { color: var(--accent); text-decoration: none; font-size: 14px; min-height: 44px;
+              display: inline-flex; align-items: center; }
+  .backlink:hover { text-decoration: underline; }
+  main { padding: 24px 20px calc(48px + env(safe-area-inset-bottom)); }
+
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-card);
+          padding: 24px; margin: 0 0 20px; box-shadow: var(--shadow-card); }
+  h2 { font-size: var(--fs-h2); font-weight: 600; margin: 0 0 12px; line-height: 1.5; }
+  .muted { color: var(--text-2); }
+  .small { font-size: var(--fs-small); line-height: 1.5; color: var(--text-2); }
+  .help { font-size: var(--fs-caption); line-height: 1.5; color: var(--text-2); margin: 8px 2px 0; }
+  .num { font-variant-numeric: tabular-nums; }
+  .dim { color: var(--text-2); font-size: var(--fs-caption); }
+  .list-head { display: flex; align-items: center; gap: 12px; }
+  .list-head h2 { flex: 1; margin: 0; }
+
+  button, .btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+                 min-height: 44px; padding: 8px 16px; border-radius: var(--radius-ctl);
+                 border: 1px solid var(--border-strong); background: var(--surface); color: var(--text);
+                 font-size: 14px; cursor: pointer; text-decoration: none;
+                 transition: background var(--t-fast), border-color var(--t-fast), color var(--t-fast); }
+  button:hover, .btn:hover { border-color: var(--text-2); text-decoration: none; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+  button.danger { color: var(--bad); border-color: var(--bad-soft); }
+  button.danger:hover { background: var(--bad-soft); border-color: var(--bad); }
+  button.icon { padding: 8px; min-width: 44px; }
+  button.small { min-height: 32px; padding: 4px 10px; font-size: var(--fs-small); }
+  button:disabled { opacity: .5; cursor: default; pointer-events: none; }
+  .spin svg { animation: rot 1s linear infinite; }
+  @keyframes rot { to { transform: rotate(360deg); } }
+
+  .badge { display: inline-flex; align-items: center; font-size: var(--fs-caption); line-height: 1.4;
+           border-radius: var(--radius-pill); padding: 2px 10px; font-weight: 500; white-space: nowrap; }
+  .b-ready { color: var(--ok); background: var(--ok-soft); }
+  .b-needs_input { color: var(--warn); background: var(--warn-soft); }
+  .b-failed { color: var(--bad); background: var(--bad-soft); }
+  .b-queued, .b-raw { color: var(--text-2); background: var(--surface-2); border: 1px solid var(--border); }
+  .b-waiting_key { color: var(--info); background: var(--info-soft); }
+  .b-extracting { color: var(--accent); background: var(--accent-soft); }
+
+  .statgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; }
+  .statcard { border: 1px solid var(--border); border-radius: var(--radius-inner);
+              padding: 12px 14px; background: var(--surface-2); min-width: 0; }
+  .statnum { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .statlabel { font-size: var(--fs-caption); color: var(--text-2); margin-top: 2px; }
+  .invrow { display: flex; align-items: center; gap: 10px; padding: 10px 2px;
+            border-bottom: 1px dashed var(--border); flex-wrap: wrap; min-width: 0; }
+  .invrow:last-child { border-bottom: none; }
+  .invcode { font-weight: 600; font-variant-numeric: tabular-nums; }
+  .asruser { display: flex; align-items: baseline; gap: 10px; padding: 10px 2px;
+             border-bottom: 1px dashed var(--border); flex-wrap: wrap; min-width: 0; }
+  .asruser:last-child { border-bottom: none; }
+  .bar { height: 6px; border-radius: 999px; background: var(--border); overflow: hidden; margin-top: 6px; }
+  .bar i { display: block; height: 100%; background: var(--accent); border-radius: 999px;
+           transition: width var(--t-slow) var(--ease); }
+
+  #toasts { position: fixed; top: 16px; right: 16px; z-index: 100; display: flex;
+            flex-direction: column; gap: 8px; max-width: min(380px, calc(100vw - 32px)); }
+  .toast { display: flex; align-items: flex-start; gap: 10px; background: var(--surface);
+           border: 1px solid var(--border); border-left: 3px solid var(--info); border-radius: var(--radius-ctl);
+           box-shadow: var(--shadow-pop); padding: 10px 12px; font-size: 14px; line-height: 1.5;
+           opacity: 0; transform: translateX(12px);
+           transition: opacity var(--t-slow) var(--ease), transform var(--t-slow) var(--ease); }
+  .toast.show { opacity: 1; transform: none; }
+  .toast.t-ok { border-left-color: var(--ok); }
+  .toast.t-error { border-left-color: var(--bad); }
+  .toast .ttext { flex: 1; min-width: 0; word-break: break-word; }
+  .toast button { min-height: 28px; padding: 2px 8px; font-size: var(--fs-small); border: none;
+                  background: transparent; color: var(--accent); flex: none; }
+  .toast button.tx { color: var(--text-2); }
+  .toast button:hover { background: var(--surface-2); }
+
+  .overlay { position: fixed; inset: 0; background: rgba(31, 30, 27, .45); display: flex;
+             align-items: center; justify-content: center; z-index: 90; padding: 20px;
+             padding-bottom: calc(20px + env(safe-area-inset-bottom));
+             opacity: 0; transition: opacity var(--t-slow); }
+  .overlay.show { opacity: 1; }
+  .modal { background: var(--surface); border-radius: var(--radius-card); box-shadow: var(--shadow-pop);
+           width: min(440px, 100%); padding: 22px; transform: translateY(10px) scale(.98);
+           transition: transform var(--t-slow) var(--ease); max-height: 86vh; overflow: auto; }
+  .overlay.show .modal { transform: none; }
+  .modal-title { font-weight: 600; font-size: var(--fs-h2); margin-bottom: 10px; }
+  .modal-body { font-size: 14px; line-height: 1.65; }
+  .modal-foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+  .pwrow { display: flex; gap: 8px; }
+  .pwrow input { flex: 1; font: inherit; color: inherit; background: var(--surface);
+                 border: 1px solid var(--border-strong); border-radius: var(--radius-ctl);
+                 padding: 10px 12px; min-height: 44px; }
+  .pwrow .eye { min-width: 60px; }
+
+  .denied { text-align: center; padding: 60px 16px; }
+  @media (max-width: 720px) {
+    .topbar-inner, main { padding-left: 14px; padding-right: 14px; }
+    .card { padding: 18px; margin-bottom: 16px; }
+  }
+  @media (max-width: 520px) {
+    #toasts { top: auto; left: 16px; right: 16px; bottom: calc(16px + env(safe-area-inset-bottom)); }
+    .toast { transform: translateY(12px); }
+  }
+</style>
+</head>
+<body>
+
+<header id="topbar">
+  <div class="topbar-inner">
+    <div class="brand">知识收件箱<span class="tag">管理</span></div>
+    <div class="spacer"></div>
+    <a class="backlink" href="/inbox">← 返回收件箱</a>
+  </div>
+</header>
+
+<main id="appView" hidden>
+  <div class="card">
+    <div class="list-head">
+      <h2>邀请码管理</h2>
+      <button class="primary" id="invCreateBtn">新建邀请码</button>
+    </div>
+    <p class="help" style="margin:0 0 4px">新用户凭邀请码注册；每条邀请码单次使用、默认 7 天有效，完整码只在创建时显示一次。</p>
+    <div id="invList"><div class="muted" style="padding:8px 0">加载中…</div></div>
+  </div>
+
+  <div class="card">
+    <div class="list-head">
+      <h2>ASR 处理状态</h2>
+      <button class="icon" id="asrAdminRefresh" title="刷新" aria-label="刷新">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/>
+        </svg>
+      </button>
+    </div>
+    <div class="statgrid" id="asrTotals"></div>
+    <div id="asrUsers" style="margin-top:12px"><div class="muted" style="padding:8px 0">加载中…</div></div>
+  </div>
+
+  <div class="card">
+    <div class="list-head">
+      <h2>服务器状态</h2>
+      <button class="icon" id="srvStatsRefresh" title="刷新" aria-label="刷新">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/>
+        </svg>
+      </button>
+    </div>
+    <div class="statgrid" id="srvStats"><div class="muted" style="padding:8px 0">加载中…</div></div>
+  </div>
+</main>
+
+<main id="deniedView" hidden>
+  <div class="denied">
+    <div class="brand" style="margin-bottom:8px">无权访问</div>
+    <p class="muted" style="margin:0 0 16px">这一页面只有管理员可以打开。</p>
+    <a class="btn" href="/inbox">返回收件箱</a>
+  </div>
+</main>
+
+<div id="toasts" aria-live="polite"></div>
+<div class="overlay" id="overlay" hidden>
+  <div class="modal" role="dialog" aria-modal="true" id="modalBox"></div>
+</div>
+<script>
+"use strict";
+
+// ---------- 基础（与收件箱同款） ----------
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s == null ? "" : s)
+  .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+  .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+
+function csrfToken() {
+  const m = document.cookie.match(/(?:^|;\s*)kb_csrf=([^;]*)/);
+  return m ? decodeURIComponent(m[1]) : "";
+}
+
+async function api(path, opts = {}) {
+  const method = opts.method || "GET";
+  const headers = {};
+  if (method !== "GET") headers["X-CSRF-Token"] = csrfToken();
+  if (opts.body !== undefined) { headers["Content-Type"] = "application/json"; opts.body = JSON.stringify(opts.body); }
+  let res;
+  try { res = await fetch(path, { method, headers, body: opts.body, credentials: "same-origin" }); }
+  catch (e) { throw new Error("网络请求失败"); }
+  if (res.status === 401) { window.location.href = "/login?next=%2Fadmin"; throw new Error("登录已过期"); }
+  let data = null;
+  try { data = await res.json(); } catch (e) { /* 空响应 */ }
+  if (!res.ok) {
+    const m = data && data.error ? data.error.message : (res.status + " " + res.statusText);
+    throw new Error(m);
+  }
+  return data;
+}
+
+function toast(text, o = {}) {
+  const host = $("toasts");
+  const el = document.createElement("div");
+  el.className = "toast t-" + (o.type || "info");
+  const t = document.createElement("div"); t.className = "ttext"; t.textContent = text; el.appendChild(t);
+  const x = document.createElement("button");
+  x.className = "tx"; x.setAttribute("aria-label", "关闭"); x.textContent = "✕";
+  x.onclick = () => dismissToast(el);
+  el.appendChild(x);
+  host.appendChild(el);
+  requestAnimationFrame(() => el.classList.add("show"));
+  if (o.type !== "error" && !o.sticky) setTimeout(() => dismissToast(el), o.type === "ok" ? 3000 : 4200);
+  return el;
+}
+function dismissToast(el) {
+  if (!el.isConnected) return;
+  el.classList.remove("show");
+  setTimeout(() => el.remove(), 220);
+}
+function handleErr(e, prefix) {
+  toast((prefix || "") + ((e && e.message) || String(e)), { type: "error" });
+}
+
+let modalResolve = null;
+function openModalHTML(html) {
+  $("modalBox").innerHTML = html;
+  const ov = $("overlay");
+  ov.hidden = false;
+  requestAnimationFrame(() => ov.classList.add("show"));
+}
+function closeModal(val) {
+  const ov = $("overlay");
+  ov.classList.remove("show");
+  setTimeout(() => { ov.hidden = true; $("modalBox").innerHTML = ""; }, 200);
+  if (modalResolve) { const r = modalResolve; modalResolve = null; r(val); }
+}
+function confirmModal(o = {}) {
+  return new Promise((res) => {
+    modalResolve = res;
+    openModalHTML(
+      '<div class="modal-title">' + esc(o.title || "确认操作") + '</div>' +
+      '<div class="modal-body">' + (o.body || "") + '</div>' +
+      '<div class="modal-foot"><button id="mCancel">取消</button>' +
+      '<button id="mOk" class="' + (o.danger ? "danger" : "primary") + '">' + esc(o.confirmLabel || "确认") + "</button></div>");
+    $("mOk").onclick = () => closeModal(true);
+    $("mCancel").onclick = () => closeModal(false);
+  });
+}
+
+const fmtTime = (iso) => { if (!iso) return "—"; const d = new Date(iso); return isNaN(d.getTime()) ? "—" : d.toLocaleString("zh-CN", { hour12: false }); };
+function fmtShort(iso) {
+  try {
+    const d = new Date(iso); const p = (n) => String(n).padStart(2, "0");
+    return p(d.getMonth() + 1) + "-" + p(d.getDate()) + " " + p(d.getHours()) + ":" + p(d.getMinutes());
+  } catch (e) { return ""; }
+}
+
+// ---------- 邀请码管理 ----------
+const INV_STATUS_BADGES = {
+  unused: ["未使用", "b-ready"], used: ["已使用", "b-queued"],
+  revoked: ["已撤销", "b-failed"], expired: ["已过期", "b-needs_input"],
+};
+function invStatusBadge(s) {
+  const pair = INV_STATUS_BADGES[s] || [s, "b-raw"];
+  return '<span class="badge ' + pair[1] + '">' + esc(pair[0]) + "</span>";
+}
+async function loadAdminInvitations() {
+  const host = $("invList");
+  try {
+    const r = await api("/v1/admin/invitations");
+    const list = r.invitations || [];
+    if (!list.length) { host.innerHTML = '<div class="muted" style="padding:8px 0">还没有邀请码。</div>'; return; }
+    host.innerHTML = list.map((inv) =>
+      '<div class="invrow">' + invStatusBadge(inv.status) +
+      '<span class="invcode">尾号 ' + esc(inv.suffix) + "</span>" +
+      '<span class="dim num">创建 ' + esc(fmtShort(inv.createdAt)) + "</span>" +
+      '<span class="dim num">有效期至 ' + esc(fmtShort(inv.expiresAt)) + "</span>" +
+      "<span>" + (inv.usedByUsername
+        ? '<span class="small">注册用户：<b>' + esc(inv.usedByUsername) + "</b></span>"
+        : '<span class="dim">—</span>') + "</span>" +
+      '<span style="flex:1"></span>' +
+      (inv.status === "unused"
+        ? '<button class="small danger" data-inv-revoke="' + esc(inv.id) + '">撤销</button>' : "") +
+      "</div>").join("");
+  } catch (e) {
+    host.innerHTML = '<div class="muted" style="padding:8px 0">加载失败</div>';
+    handleErr(e, "邀请码加载失败：");
+  }
+}
+
+async function createInvitation() {
+  const ok = await confirmModal({
+    title: "新建邀请码",
+    body: "生成一条单次使用、默认 7 天有效的邀请码。完整码只显示一次，请立即复制保存。",
+    confirmLabel: "生成",
+  });
+  if (!ok) return;
+  try {
+    const r = await api("/v1/admin/invitations", { method: "POST", body: {} });
+    openModalHTML(
+      '<div class="modal-title">邀请码已生成</div>' +
+      '<div class="modal-body"><p style="margin:0 0 10px">完整码只显示这一次：</p>' +
+      '<div class="pwrow"><input id="invCode" readonly value="' + esc(r.code) + '">' +
+      '<button type="button" class="eye" id="invCopy">复制</button></div>' +
+      '<p class="small muted" style="margin:10px 0 0">有效期至 ' + esc(fmtTime(r.expiresAt)) + "</p></div>" +
+      '<div class="modal-foot"><button id="mCancel">关闭</button></div>');
+    $("mCancel").onclick = () => closeModal(null);
+    $("invCopy").onclick = async () => {
+      const input = $("invCode");
+      try { await navigator.clipboard.writeText(input.value); }
+      catch (e) { input.select(); document.execCommand("copy"); }
+      $("invCopy").textContent = "已复制";
+    };
+    loadAdminInvitations();
+  } catch (e) { handleErr(e, "生成邀请码失败："); }
+}
+
+// ---------- ASR 处理状态 ----------
+const ASR_ADMIN_STATE_LABELS = {
+  queued: "排队中", preparing: "读取音频", transcribing: "转写中", paused: "已暂停",
+};
+async function loadAsrOverview() {
+  const totalsHost = $("asrTotals"), usersHost = $("asrUsers");
+  try {
+    const r = await api("/v1/admin/asr-overview");
+    const t = r.totals || {};
+    totalsHost.innerHTML = [
+      [t.submitted_users, "提交过用户"], [t.queued_users, "排队用户"], [t.queued_runs, "排队任务"],
+      [t.transcribing_runs, "转写中"], [t.paused_runs, "已暂停"],
+    ].map(([v, label]) =>
+      '<div class="statcard"><div class="statnum num">' + esc(v == null ? "—" : v) +
+      '</div><div class="statlabel">' + esc(label) + "</div></div>").join("");
+    const users = r.users || [];
+    if (!users.length) {
+      usersHost.innerHTML = '<div class="muted" style="padding:8px 0">还没有用户提交过音频转写。</div>';
+      return;
+    }
+    usersHost.innerHTML = users.map((u) => {
+      const active = (u.active || []).map((a) => {
+        const prog = a.chunk_count ? " " + a.done_chunks + "/" + a.chunk_count + " 段" : "";
+        return (ASR_ADMIN_STATE_LABELS[a.state] || a.state) + prog;
+      }).join("；");
+      return '<div class="asruser">' +
+        '<span style="font-weight:600">' + esc(u.username) + "</span>" +
+        '<span class="small num">累计处理 ' + esc(u.processed_minutes) + " 分钟</span>" +
+        '<span class="small num">任务 ' + esc(u.total_runs) + " 个</span>" +
+        (active ? '<span class="small">进行中：' + esc(active) + "</span>" : "") +
+        "</div>";
+    }).join("");
+  } catch (e) { handleErr(e, "ASR 状态加载失败："); }
+}
+
+// ---------- 服务器状态 ----------
+function fmtBytes(n) {
+  if (n == null) return "—";
+  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+  let v = n, i = 0;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+  return (i === 0 || v >= 100 ? Math.round(v) : v.toFixed(1)) + " " + units[i];
+}
+function statBar(label, percent, detail) {
+  const p = Math.max(0, Math.min(100, percent == null ? 0 : percent));
+  return '<div class="statcard"><div class="statnum num">' + (percent == null ? "—" : percent + "%") + "</div>" +
+    '<div class="statlabel">' + esc(label) + (detail ? " · " + esc(detail) : "") + "</div>" +
+    '<div class="bar"><i style="width:' + p + '%"></i></div></div>';
+}
+async function loadServerStats() {
+  const host = $("srvStats");
+  try {
+    const r = await api("/v1/admin/server-stats");
+    host.innerHTML =
+      statBar("CPU 占用", r.cpu_percent, "") +
+      statBar("内存", r.memory && r.memory.percent,
+        r.memory ? fmtBytes(r.memory.used_bytes) + " / " + fmtBytes(r.memory.total_bytes) : "指标不可用") +
+      statBar("磁盘", r.disk && r.disk.percent,
+        r.disk ? fmtBytes(r.disk.used_bytes) + " / " + fmtBytes(r.disk.total_bytes) : "指标不可用");
+  } catch (e) {
+    host.innerHTML = '<div class="muted" style="padding:8px 0">加载失败</div>';
+    handleErr(e, "服务器状态加载失败：");
+  }
+}
+
+function loadAdmin() { loadAdminInvitations(); loadAsrOverview(); loadServerStats(); }
+
+// ---------- 启动与事件 ----------
+$("invCreateBtn").addEventListener("click", createInvitation);
+$("asrAdminRefresh").addEventListener("click", loadAsrOverview);
+$("srvStatsRefresh").addEventListener("click", loadServerStats);
+$("invList").addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-inv-revoke]");
+  if (!b) return;
+  const ok = await confirmModal({
+    title: "撤销邀请码", body: "撤销后该邀请码不能再用于注册。",
+    confirmLabel: "撤销", danger: true,
+  });
+  if (!ok) return;
+  try {
+    await api("/v1/admin/invitations/" + encodeURIComponent(b.dataset.invRevoke) + "/revoke",
+      { method: "POST", body: {} });
+    toast("已撤销邀请码", { type: "ok" });
+    loadAdminInvitations();
+  } catch (err) { handleErr(err, "撤销失败："); }
+});
+$("overlay").addEventListener("click", (e) => { if (e.target === $("overlay")) closeModal(null); });
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !$("overlay").hidden) closeModal(null);
+});
+
+(async function boot() {
+  try {
+    const me = await api("/v1/auth/me");
+    if (!me.is_admin) { $("deniedView").hidden = false; return; }
+    $("appView").hidden = false;
+    loadAdmin();
+  } catch (e) { /* 401 已跳登录；其余由 api 抛错 */ }
+})();
+</script>
+</body>
+</html>
