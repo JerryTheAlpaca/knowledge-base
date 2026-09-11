@@ -1,30 +1,27 @@
 <!DOCTYPE html>
-<html lang="zh-CN" data-page-node-id="OxOY6zS8hNHWoCw7ycplPm">
-<head data-page-node-id="xVuJC7k9Se0Q3awzlSDwUn">
-<meta charset="utf-8" data-page-node-id="EtXrKsGDTjEG3iOFK8L1mC">
-<meta name="viewport" content="width=device-width, initial-scale=1" data-page-node-id="sOcAeC3Ex6K9o5b0TtB9YK">
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>授权插件设备</title>
-<link rel="stylesheet" href="/tokens.css" data-page-node-id="apO8B8f02bcQ6luc24xNjp">
+<link rel="stylesheet" href="/tokens.css">
 <style>
-  main { max-width: 440px; margin: 10vh auto 0; padding: 0 16px calc(60px + env(safe-area-inset-bottom)); }
+  /* U-10：10vh 固定上边距改为 clamp，矮视口/横屏下卡片不被顶出视口 */
+  main { max-width: 440px; margin: 0 auto;
+         padding: clamp(24px, 8vh, 72px) 16px calc(60px + env(safe-area-inset-bottom)); }
   .auth-brand { font-family: var(--font-display); font-size: var(--fs-display); font-weight: 600;
                 letter-spacing: .5px; margin-bottom: 18px; display: flex; align-items: center; gap: 10px; }
   .auth-brand::before { content: ""; width: 10px; height: 10px; border-radius: 50%;
                         background: var(--accent); flex: none; }
   h1 { font-size: var(--fs-h1); font-weight: 600; margin: 0 0 6px; }
-  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-card);
-          padding: 28px 26px; box-shadow: var(--shadow-card); }
+  /* .card 基础样式来自 tokens.css 共用组件层（docs/15 U-05）；本页只覆写内边距 */
+  .card { padding: 28px 26px; }
   .muted { color: var(--text-2); font-size: var(--fs-small); line-height: 1.6; }
-  button { min-height: 44px; padding: 10px 16px; border-radius: var(--radius-ctl);
-           border: 1px solid var(--border-strong); background: var(--surface); color: var(--text);
-           font-size: 14px; cursor: pointer; width: 100%;
-           transition: background var(--t-fast), border-color var(--t-fast); }
-  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-  button.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
-  button:disabled { opacity: .5; cursor: default; pointer-events: none; }
-  button:active { transform: translateY(1px); }
-  .ok { color: var(--ok); background: var(--ok-soft); border-radius: 8px; padding: 8px 12px; }
-  .err { color: var(--bad); background: var(--bad-soft); border-radius: 8px; padding: 8px 12px; }
+  /* 按钮基础样式（44px 触控、hover 边框、U-06 主按钮文字色）来自 tokens.css；本页仅加满宽 */
+  button { width: 100%; }
+  .ok { color: var(--ok); background: var(--ok-soft); border-radius: var(--radius-note); padding: 8px 12px; }
+  .err { color: var(--bad); background: var(--bad-soft); border-radius: var(--radius-note); padding: 8px 12px; }
+  .hint-ok { margin-top: 10px; }  /* U-11：原内联 style 抽成类 */
   .row { margin-top: 14px; }
   .devinfo { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-inner);
              padding: 14px 16px; margin-top: 14px; font-size: 14px; line-height: 1.8; }
@@ -37,17 +34,22 @@
                    100% { transform: scale(1); opacity: 1; } }
   .ok-title { font-family: var(--font-display); font-size: var(--fs-h1); font-weight: 600;
               text-align: center; margin-bottom: 6px; }
+  /* 响应式（docs/15 走查小结：授权页会在手机上打开，至少补 520 档） */
+  @media (max-width: 520px) {
+    main { padding-left: 14px; padding-right: 14px; }
+    .card { padding: 18px; }
+  }
 </style>
 </head>
-<body data-page-node-id="4GNgKly6XKH3Bjx1sIQhdT">
-<main data-page-node-id="ZNEAzFtgnYpozhoFKPECrq">
-  <div class="auth-brand" data-page-node-id="YmH8GDiAYAuaAIuopwCZwW">知识收件箱</div>
-  <div class="card" data-page-node-id="6oJKU5RcFJIh8qFmHhG1uE">
-    <h1 data-page-node-id="HqVWukq9HOOMI3UNYV36W5">授权插件设备</h1>
-    <div id="state" class="muted" data-page-node-id="PDD2qsoBtCsjXR8ivTOsgR">加载中…</div>
-    <div class="row" data-page-node-id="Pt5zpGfyM1UEFLFHFlZuEf"><button class="primary" id="approveBtn" hidden data-page-node-id="9JLoeMIzHzYooJCGsm3YK8">登录此插件</button></div>
-    <div class="row" data-page-node-id="zkxwKSef1nzaZ7w39ducKK"><button id="cancelBtn" hidden data-page-node-id="UuTP3T07sXLE6PXVBk8dhq">取消</button></div>
-    <p class="legal" data-page-node-id="a6qXFFSqcK884GnY4mMkHZ">确认这是你本人操作：批准后，该插件将获得与你当前统一账号绑定的同步凭据。
+<body>
+<main>
+  <div class="auth-brand">知识收件箱</div>
+  <div class="card">
+    <h1>授权插件设备</h1>
+    <div id="state" class="muted">加载中…</div>
+    <div class="row"><button class="primary" id="approveBtn" hidden>登录此插件</button></div>
+    <div class="row"><button id="cancelBtn" hidden>取消</button></div>
+    <p class="legal">确认这是你本人操作：批准后，该插件将获得与你当前统一账号绑定的同步凭据。
       只有此页面能完成授权；插件本身接触不到浏览器登录态。</p>
   </div>
 </main>
@@ -68,6 +70,12 @@ async function goLogin() {
   window.location.href = "/login?next=" + encodeURIComponent("/authorize?request_id=" + encodeURIComponent(requestId));
 }
 
+// U-12：状态机标识映射为用户可读文案，未知状态给通用提示，不暴露内部值
+const DEVICE_STATE_TEXT = {
+  pending: "等待批准", approved: "已批准", consumed: "已完成授权",
+  cancelled: "已取消", expired: "已过期", denied: "已拒绝",
+};
+
 async function refresh() {
   if (!requestId || requestId.length !== 32) {
     setState('<span class="err">授权链接无效：请在插件中重新点击「登录账号」。</span>');
@@ -86,7 +94,8 @@ async function refresh() {
     return;
   }
   if (info.state !== "pending") {
-    setState('<span class="err">该请求当前状态为 ' + info.state + '：请在插件中重新发起。</span>');
+    const stateText = DEVICE_STATE_TEXT[info.state] || "状态已变化";
+    setState('<span class="err">该请求' + stateText + '：请在插件中重新发起。</span>');
     return;
   }
   // 探测登录：有效会话可直接批准；401 则先登录
@@ -102,7 +111,7 @@ async function refresh() {
       (body.central_username || body.display_name || "") + '</b><br>' +
       '<span class="muted">批准后插件将以该账号同步。</span>' +
       (info.requests_local_key_binding
-        ? '<div class="ok" style="margin-top:10px">该设备还申请了「将此 Key 配置到本设备」权限：' +
+        ? '<div class="ok hint-ok">该设备还申请了「将此 Key 配置到本设备」权限：' +
           '批准后，你在插件中选择复用的线上模型 Key 会下发到这台设备，用于本地直接调用模型服务。</div>'
         : "") + "</div>");
     $("approveBtn").hidden = false;

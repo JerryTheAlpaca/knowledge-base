@@ -10,49 +10,20 @@
   .topbar-inner, main { max-width: 760px; margin: 0 auto; padding: 0 20px; }
   header { background: var(--surface); border-bottom: 1px solid var(--border); }
   .topbar-inner { display: flex; align-items: center; gap: 12px; height: 56px; }
-  .brand { font-family: var(--font-display); font-size: var(--fs-display); font-weight: 600; letter-spacing: .5px; }
+  /* .brand / .spacer 已收敛进 tokens.css 共用组件层（docs/15 U-05） */
   .brand .tag { font-size: var(--fs-caption); color: var(--text-2); font-weight: 500; margin-left: 8px; }
-  .spacer { flex: 1; }
   .backlink { color: var(--accent); text-decoration: none; font-size: 14px; min-height: 44px;
               display: inline-flex; align-items: center; }
   .backlink:hover { text-decoration: underline; }
   main { padding: 24px 20px calc(48px + env(safe-area-inset-bottom)); }
 
-  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-card);
-          padding: 24px; margin: 0 0 20px; box-shadow: var(--shadow-card); }
+  /* .card / 按钮 / badge / toast / modal 已收敛进 tokens.css 共用组件层（docs/15 U-05） */
   h2 { font-size: var(--fs-h2); font-weight: 600; margin: 0 0 12px; line-height: 1.5; }
   .muted { color: var(--text-2); }
   .small { font-size: var(--fs-small); line-height: 1.5; color: var(--text-2); }
   .help { font-size: var(--fs-caption); line-height: 1.5; color: var(--text-2); margin: 8px 2px 0; }
   .num { font-variant-numeric: tabular-nums; }
   .dim { color: var(--text-2); font-size: var(--fs-caption); }
-  .list-head { display: flex; align-items: center; gap: 12px; }
-  .list-head h2 { flex: 1; margin: 0; }
-
-  button, .btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px;
-                 min-height: 44px; padding: 8px 16px; border-radius: var(--radius-ctl);
-                 border: 1px solid var(--border-strong); background: var(--surface); color: var(--text);
-                 font-size: 14px; cursor: pointer; text-decoration: none;
-                 transition: background var(--t-fast), border-color var(--t-fast), color var(--t-fast); }
-  button:hover, .btn:hover { border-color: var(--text-2); text-decoration: none; }
-  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-  button.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
-  button.danger { color: var(--bad); border-color: var(--bad-soft); }
-  button.danger:hover { background: var(--bad-soft); border-color: var(--bad); }
-  button.icon { padding: 8px; min-width: 44px; }
-  button.small { min-height: 32px; padding: 4px 10px; font-size: var(--fs-small); }
-  button:disabled { opacity: .5; cursor: default; pointer-events: none; }
-  .spin svg { animation: rot 1s linear infinite; }
-  @keyframes rot { to { transform: rotate(360deg); } }
-
-  .badge { display: inline-flex; align-items: center; font-size: var(--fs-caption); line-height: 1.4;
-           border-radius: var(--radius-pill); padding: 2px 10px; font-weight: 500; white-space: nowrap; }
-  .b-ready { color: var(--ok); background: var(--ok-soft); }
-  .b-needs_input { color: var(--warn); background: var(--warn-soft); }
-  .b-failed { color: var(--bad); background: var(--bad-soft); }
-  .b-queued, .b-raw { color: var(--text-2); background: var(--surface-2); border: 1px solid var(--border); }
-  .b-waiting_key { color: var(--info); background: var(--info-soft); }
-  .b-extracting { color: var(--accent); background: var(--accent-soft); }
 
   .statgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; }
   .statcard { border: 1px solid var(--border); border-radius: var(--radius-inner);
@@ -70,38 +41,9 @@
   .bar i { display: block; height: 100%; background: var(--accent); border-radius: 999px;
            transition: width var(--t-slow) var(--ease); }
 
-  #toasts { position: fixed; top: 16px; right: 16px; z-index: 100; display: flex;
-            flex-direction: column; gap: 8px; max-width: min(380px, calc(100vw - 32px)); }
-  .toast { display: flex; align-items: flex-start; gap: 10px; background: var(--surface);
-           border: 1px solid var(--border); border-left: 3px solid var(--info); border-radius: var(--radius-ctl);
-           box-shadow: var(--shadow-pop); padding: 10px 12px; font-size: 14px; line-height: 1.5;
-           opacity: 0; transform: translateX(12px);
-           transition: opacity var(--t-slow) var(--ease), transform var(--t-slow) var(--ease); }
-  .toast.show { opacity: 1; transform: none; }
-  .toast.t-ok { border-left-color: var(--ok); }
-  .toast.t-error { border-left-color: var(--bad); }
-  .toast .ttext { flex: 1; min-width: 0; word-break: break-word; }
-  .toast button { min-height: 28px; padding: 2px 8px; font-size: var(--fs-small); border: none;
-                  background: transparent; color: var(--accent); flex: none; }
-  .toast button.tx { color: var(--text-2); }
-  .toast button:hover { background: var(--surface-2); }
-
-  .overlay { position: fixed; inset: 0; background: rgba(31, 30, 27, .45); display: flex;
-             align-items: center; justify-content: center; z-index: 90; padding: 20px;
-             padding-bottom: calc(20px + env(safe-area-inset-bottom));
-             opacity: 0; transition: opacity var(--t-slow); }
-  .overlay.show { opacity: 1; }
-  .modal { background: var(--surface); border-radius: var(--radius-card); box-shadow: var(--shadow-pop);
-           width: min(440px, 100%); padding: 22px; transform: translateY(10px) scale(.98);
-           transition: transform var(--t-slow) var(--ease); max-height: 86vh; overflow: auto; }
-  .overlay.show .modal { transform: none; }
-  .modal-title { font-weight: 600; font-size: var(--fs-h2); margin-bottom: 10px; }
-  .modal-body { font-size: 14px; line-height: 1.65; }
-  .modal-foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+  /* toast / modal 三件套已收敛进 tokens.css 共用组件层（docs/15 U-05；遮罩/正文走 --overlay/--fs-body） */
   .pwrow { display: flex; gap: 8px; }
-  .pwrow input { flex: 1; font: inherit; color: inherit; background: var(--surface);
-                 border: 1px solid var(--border-strong); border-radius: var(--radius-ctl);
-                 padding: 10px 12px; min-height: 44px; }
+  .pwrow input { flex: 1; }  /* 控件基础样式来自 tokens.css */
   .pwrow .eye { min-width: 60px; }
 
   .denied { text-align: center; padding: 60px 16px; }
@@ -109,10 +51,7 @@
     .topbar-inner, main { padding-left: 14px; padding-right: 14px; }
     .card { padding: 18px; margin-bottom: 16px; }
   }
-  @media (max-width: 520px) {
-    #toasts { top: auto; left: 16px; right: 16px; bottom: calc(16px + env(safe-area-inset-bottom)); }
-    .toast { transform: translateY(12px); }
-  }
+  /* M8（Toast 底部居中）已收敛进 tokens.css 响应式公共段 */
 </style>
 </head>
 <body>
@@ -231,18 +170,40 @@ function handleErr(e, prefix) {
 }
 
 let modalResolve = null;
+let modalLastFocus = null;
+const MODAL_FOCUSABLE = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
 function openModalHTML(html) {
+  modalLastFocus = document.activeElement;  // U-02：记录触发元素，关闭时归还焦点
   $("modalBox").innerHTML = html;
   const ov = $("overlay");
   ov.hidden = false;
-  requestAnimationFrame(() => ov.classList.add("show"));
+  requestAnimationFrame(() => {
+    ov.classList.add("show");
+    const f = $("modalBox").querySelector(MODAL_FOCUSABLE);
+    if (f) f.focus();  // 打开后把焦点移入弹窗
+  });
 }
 function closeModal(val) {
   const ov = $("overlay");
   ov.classList.remove("show");
   setTimeout(() => { ov.hidden = true; $("modalBox").innerHTML = ""; }, 200);
+  if (modalLastFocus && document.contains(modalLastFocus)) {
+    try { modalLastFocus.focus(); } catch (e) { /* 元素已不可聚焦则忽略 */ }
+  }
+  modalLastFocus = null;
   if (modalResolve) { const r = modalResolve; modalResolve = null; r(val); }
 }
+// U-02：焦点陷阱，Tab 循环限制在弹窗内
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Tab" || $("overlay").hidden) return;
+  const items = Array.from($("modalBox").querySelectorAll(MODAL_FOCUSABLE))
+    .filter((el) => !el.disabled && el.offsetParent !== null);
+  if (!items.length) return;
+  const first = items[0], last = items[items.length - 1];
+  if (!$("modalBox").contains(document.activeElement)) { e.preventDefault(); first.focus(); }
+  else if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+  else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+});
 function confirmModal(o = {}) {
   return new Promise((res) => {
     modalResolve = res;

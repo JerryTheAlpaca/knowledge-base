@@ -1,9 +1,17 @@
 /* ============================================================
-   tokens.css v2 — 全站设计令牌（docs/09 §3 → docs/10 §5 精修）
+   tokens.css v2.1 — 全站设计令牌 + 共用组件层
    暖纸底 + 陶土橙 + serif 展示字，对齐 claude.ai 的 calm/editorial 气质。
-   inbox.html 与 authorize.html 共同引入，单一令牌源。
+   inbox.html / admin.html / authorize.html 共同引入，单一令牌与组件源。
    v2（docs/10 §5）：显式字阶 / 圆角层级 16-12-10 / --surface-2 嵌套底 /
    双层阴影 / pill 体系 / 深色对比度走查。
+   v2.1（docs/15 第二部分）：
+   - U-05 三页共用组件规则（card/button/badge/toast/modal/表单）收敛于此，
+     页面内 <style> 只保留该页独有的布局规则；
+   - U-06 新增 --on-accent / --on-ok / --on-warn（实底色块上的文字色，
+     两套主题均 ≥4.5:1），微调浅色 --warn 使白字达标；
+   - U-08 新增 --overlay 弹窗遮罩令牌（深色模式加深）；
+   - U-20 新增 --radius-note（语义提示块圆角 8px，第七种圆角显式化）；
+   - U-07 边框语义约定：容器/分隔 = --border，可交互控件 = --border-strong。
    ============================================================ */
 
 :root {
@@ -21,18 +29,28 @@
   --accent-hover: #C96342;    /* hover 加深（替代 opacity） */
   --accent-soft: #F9EAE2;     /* 激活底色 */
   --ok: #3F7E5B;    --ok-soft: #E7F2EB;
-  --warn: #B26A1B;  --warn-soft: #FAF0E1;
+  /* --warn 较旧值 #B26A1B 加深半档：保证实底 warn 上的白字 ≥4.5:1（U-06） */
+  --warn: #A86118;  --warn-soft: #FAF0E1;
   --bad: #B3402F;   --bad-soft: #FBE9E6;
   --info: #5570A8;  --info-soft: #EBF0F8;
+
+  /* —— 实底色块上的前景色（U-06：两套主题对各自底色均 ≥4.5:1）—— */
+  --on-accent: #2B1810;       /* 陶土橙上：深暖棕（5.4:1），替代不达标的 #fff */
+  --on-ok: #FFFFFF;           /* 绿色实底上：白（4.8:1） */
+  --on-warn: #FFFFFF;         /* 琥珀实底上：白（4.8:1） */
+
+  /* —— 弹窗遮罩（U-08：随主题变化，深色模式加深分层）—— */
+  --overlay: rgba(31, 30, 27, .45);
 
   /* —— 阴影（v2：双层，§5.4）—— */
   --shadow-card: 0 1px 2px rgba(31, 30, 27, .05);
   --shadow-pop: 0 2px 4px rgba(31, 30, 27, .07), 0 6px 20px rgba(31, 30, 27, .10);
 
-  /* —— 圆角层级（v2 §5.3：页面卡 16 / 嵌套 12 / 控件 10 / pill）—— */
+  /* —— 圆角层级（v2 §5.3：页面卡 16 / 嵌套 12 / 控件 10 / 提示块 8 / pill）—— */
   --radius-card: 16px;
   --radius-inner: 12px;
   --radius-ctl: 10px;
+  --radius-note: 8px;         /* U-20：.error/.okmsg/.warnmsg/.errnote/.versionnote 等语义提示块 */
   --radius-pill: 999px;
 
   /* —— 字阶（v2 §5.2：显式六级）—— */
@@ -77,9 +95,122 @@
     --warn: #D29A4E; --warn-soft: #352C1F;
     --bad: #D97B6C;  --bad-soft: #3A2A26;
     --info: #92A8CE; --info-soft: #29303C;
+    /* U-06：深色下实底变浅，文字换深色保证 ≥4.5:1（白字只有 2.3～2.6:1） */
+    --on-accent: #241108;
+    --on-ok: #1C251F;
+    --on-warn: #2A1F0E;
+    /* U-08：深色页面底已是暗色，遮罩加深到 .65 恢复弹窗分层感 */
+    --overlay: rgba(15, 14, 12, .65);
     --shadow-card: 0 1px 2px rgba(0, 0, 0, .3);
     --shadow-pop: 0 2px 6px rgba(0, 0, 0, .45), 0 10px 28px rgba(0, 0, 0, .5);
   }
+}
+
+/* ============================================================
+   组件层（U-05）：三页共用组件规则收敛于此，页面 <style> 只留本页布局。
+   ============================================================ */
+
+/* —— 卡片 —— */
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-card);
+        padding: 24px; margin: 0 0 20px; box-shadow: var(--shadow-card); }
+
+/* —— 品牌 / 布局小件 —— */
+.brand { font-family: var(--font-display); font-size: var(--fs-display); font-weight: 600; letter-spacing: .5px; }
+.spacer { flex: 1; }
+.list-head { display: flex; align-items: center; gap: 12px; }
+.list-head h2 { flex: 1; margin: 0; }
+
+/* —— 按钮（44px 触控基准；hover 边框统一加深到 --text-2，U-07） —— */
+button, .btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+               min-height: 44px; padding: 8px 16px; border-radius: var(--radius-ctl);
+               border: 1px solid var(--border-strong); background: var(--surface); color: var(--text);
+               font-size: 14px; cursor: pointer; text-decoration: none;
+               transition: background var(--t-fast), border-color var(--t-fast), color var(--t-fast); }
+button:hover, .btn:hover { border-color: var(--text-2); text-decoration: none; }
+button.primary, .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }  /* U-06 */
+button.primary:hover, .btn.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+button.danger { color: var(--bad); border-color: var(--bad-soft); }
+button.danger:hover { background: var(--bad-soft); border-color: var(--bad); }
+button.ghost { border-color: transparent; background: transparent; }
+button.ghost:hover { background: var(--surface-2); border-color: transparent; }
+/* U-01：小按钮视觉紧凑（32px），用伪元素把命中区扩到 ≥44px，不改变视觉尺寸 */
+button.small, .btn.small { min-height: 32px; padding: 4px 10px; font-size: var(--fs-small); position: relative; }
+button.small::after, .btn.small::after { content: ""; position: absolute; inset: -6px -4px; }
+button.icon { padding: 8px; min-width: 44px; }
+button:disabled { opacity: .5; cursor: default; pointer-events: none; }
+button:active { transform: translateY(1px); }
+.spin svg { animation: rot 1s linear infinite; }
+@keyframes rot { to { transform: rotate(360deg); } }
+
+/* —— 表单（U-07：输入边框统一 --border-strong） —— */
+input, textarea, select { font: inherit; color: inherit; background: var(--surface);
+                          border: 1px solid var(--border-strong); border-radius: var(--radius-ctl);
+                          padding: 10px 12px; width: 100%; min-height: 44px;
+                          transition: border-color var(--t-fast), box-shadow var(--t-fast); }
+input:focus, textarea:focus, select:focus { border-color: var(--accent);
+                                            box-shadow: 0 0 0 3px var(--accent-soft); outline: none; }
+textarea { resize: vertical; }
+/* U-13：触屏设备把表单字号提到 16px，规避 iOS Safari 聚焦 <16px 输入时的自动缩放
+   （原 inbox 独有规则，提为三页共用） */
+@media (pointer: coarse) {
+  input, textarea, select { font-size: 16px; }
+}
+
+/* —— badge / 状态色（V4 pill 体系） —— */
+.badge { display: inline-flex; align-items: center; font-size: var(--fs-caption); line-height: 1.4;
+         border-radius: var(--radius-pill); padding: 2px 10px; font-weight: 500; white-space: nowrap; }
+.badge .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor;
+              margin-right: 5px; flex: none; }
+.b-ready, .v-valid { color: var(--ok); background: var(--ok-soft); }
+.b-needs_input, .v-unconfirmed { color: var(--warn); background: var(--warn-soft); }
+.b-failed, .b-unknown_outcome, .v-invalid { color: var(--bad); background: var(--bad-soft); }
+.b-waiting_key, .v-unverified { color: var(--info); background: var(--info-soft); }
+.b-queued, .b-extracted, .b-raw { color: var(--text-2); background: var(--surface-2); border: 1px solid var(--border); }
+.b-extracting, .b-enriching { color: var(--accent); background: var(--accent-soft); }
+.v-network_error, .v-blocked { color: var(--warn); background: var(--warn-soft); }
+.badge.pulse .dot { animation: breathe 1.6s var(--ease) infinite; }
+@keyframes breathe { 0%, 100% { opacity: .3; transform: scale(.75); }
+                     50% { opacity: 1; transform: scale(1.2); } }
+
+/* —— Toast（M8：≤520 底部居中 + safe-area） —— */
+#toasts { position: fixed; top: 16px; right: 16px; z-index: 100; display: flex;
+          flex-direction: column; gap: 8px; max-width: min(380px, calc(100vw - 32px)); }
+.toast { display: flex; align-items: flex-start; gap: 10px; background: var(--surface);
+         border: 1px solid var(--border); border-left: 3px solid var(--info); border-radius: var(--radius-ctl);
+         box-shadow: var(--shadow-pop); padding: 10px 12px; font-size: 14px; line-height: 1.5;
+         opacity: 0; transform: translateX(12px);
+         transition: opacity var(--t-slow) var(--ease), transform var(--t-slow) var(--ease); }
+.toast.show { opacity: 1; transform: none; }
+.toast.t-ok { border-left-color: var(--ok); }
+.toast.t-error { border-left-color: var(--bad); }
+.toast.t-warn { border-left-color: var(--warn); }
+.toast .ttext { flex: 1; min-width: 0; word-break: break-word; }
+/* U-01：toast 内小按钮（28px 高）同样把命中区扩到 44px */
+.toast button { min-height: 28px; padding: 2px 8px; font-size: var(--fs-small); border: none;
+                background: transparent; color: var(--accent); flex: none; position: relative; }
+.toast button::after { content: ""; position: absolute; inset: -8px -6px; }
+.toast button.tx { color: var(--text-2); }
+.toast button:hover { background: var(--surface-2); }
+
+/* —— Modal 三件套（U-08：遮罩走 --overlay 令牌；U-17：正文对齐 --fs-body 字阶） —— */
+.overlay { position: fixed; inset: 0; background: var(--overlay); display: flex;
+           align-items: center; justify-content: center; z-index: 90; padding: 20px;
+           padding-bottom: calc(20px + env(safe-area-inset-bottom));  /* M7 */
+           opacity: 0; transition: opacity var(--t-slow); }
+.overlay.show { opacity: 1; }
+.modal { background: var(--surface); border-radius: var(--radius-card); box-shadow: var(--shadow-pop);
+         width: min(440px, 100%); padding: 22px; transform: translateY(10px) scale(.98);
+         transition: transform var(--t-slow) var(--ease); max-height: 86vh; overflow: auto; }
+.overlay.show .modal { transform: none; }
+.modal-title { font-weight: 600; font-size: var(--fs-h2); margin-bottom: 10px; }
+.modal-body { font-size: var(--fs-body); line-height: 1.65; }
+.modal-foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+
+/* —— 响应式公共段 —— */
+@media (max-width: 520px) {
+  /* M8：Toast 底部居中，避免遮挡右上操作区 */
+  #toasts { top: auto; left: 16px; right: 16px; bottom: calc(16px + env(safe-area-inset-bottom)); }
+  .toast { transform: translateY(12px); }
 }
 
 /* —— 基线 —— */

@@ -10,8 +10,7 @@
   .topbar-inner, .tabs-inner, main { max-width: 760px; margin: 0 auto; padding: 0 20px; }
   header { background: var(--surface); border-bottom: 1px solid var(--border); }
   .topbar-inner { display: flex; align-items: center; gap: 12px; height: 56px; }
-  .brand { font-family: var(--font-display); font-size: var(--fs-display); font-weight: 600; letter-spacing: .5px; }
-  .spacer { flex: 1; }
+  /* .brand / .spacer 已收敛进 tokens.css 共用组件层（docs/15 U-05） */
   .userchip { display: inline-flex; align-items: center; gap: 8px; max-width: 220px; }
   .userchip .uname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .userchip::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex: none; }
@@ -34,9 +33,7 @@
   .tabs button.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
   main { padding: 24px 20px calc(96px + env(safe-area-inset-bottom)); }  /* M7 safe-area */
 
-  /* ============ 卡片 / 排版（docs/10 §5.2 字阶 / §5.3 间距） ============ */
-  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-card);
-          padding: 24px; margin: 0 0 20px; box-shadow: var(--shadow-card); }
+  /* ============ 排版（docs/10 §5.2 字阶；card/按钮等组件已收敛进 tokens.css，U-05） ============ */
   h2, .card-title { font-size: var(--fs-h2); font-weight: 600; margin: 0 0 12px; line-height: 1.5; }
   .muted { color: var(--text-2); }
   .small { font-size: var(--fs-small); line-height: 1.5; color: var(--text-2); }
@@ -45,71 +42,29 @@
   .num { font-variant-numeric: tabular-nums; }
   .dim { color: var(--text-2); font-size: var(--fs-caption); }
 
-  /* ============ 按钮（44px 触控；hover 语义一致） ============ */
-  button, .btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px;
-                 min-height: 44px; padding: 8px 16px; border-radius: var(--radius-ctl);
-                 border: 1px solid var(--border-strong); background: var(--surface); color: var(--text);
-                 font-size: 14px; cursor: pointer; text-decoration: none;
-                 transition: background var(--t-fast), border-color var(--t-fast), color var(--t-fast); }
-  button:hover, .btn:hover { border-color: var(--text-2); text-decoration: none; }
-  button.primary, .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-  button.primary:hover, .btn.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
-  button.danger { color: var(--bad); border-color: var(--bad-soft); }
-  button.danger:hover { background: var(--bad-soft); border-color: var(--bad); }
-  button.ghost { border-color: transparent; background: transparent; }
-  button.ghost:hover { background: var(--surface-2); border-color: transparent; }
-  button.small, .btn.small { min-height: 32px; padding: 4px 10px; font-size: var(--fs-small); }
-  button.icon { padding: 8px; min-width: 44px; }
-  button:disabled { opacity: .5; cursor: default; pointer-events: none; }
-  button:active { transform: translateY(1px); }
-  .spin svg { animation: rot 1s linear infinite; }
-  @keyframes rot { to { transform: rotate(360deg); } }
+  /* 按钮基础样式（含 U-01 小按钮命中区、U-06 主按钮文字色）已收敛进 tokens.css 共用组件层（docs/15 U-05） */
 
-  /* ============ 表单 ============ */
-  input, textarea, select { font: inherit; color: inherit; background: var(--surface);
-                            border: 1px solid var(--border-strong); border-radius: var(--radius-ctl);
-                            padding: 10px 12px; width: 100%; min-height: 44px;
-                            transition: border-color var(--t-fast), box-shadow var(--t-fast); }
-  input:focus, textarea:focus, select:focus { border-color: var(--accent);
-                                              box-shadow: 0 0 0 3px var(--accent-soft); outline: none; }
-  textarea { resize: vertical; }
-  /* iOS Safari：聚焦 <16px 的输入控件会自动缩放页面；触屏设备把表单字号提到 16px 规避 */
-  @media (pointer: coarse) {
-    input, textarea, select { font-size: 16px; }
-  }
+  /* 表单控件基础样式与 pointer:coarse 字号规则已收敛进 tokens.css（docs/15 U-05/U-13） */
   label { display: block; font-size: var(--fs-small); color: var(--text-2); margin: 14px 0 6px; }
   .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-  .error { color: var(--bad); background: var(--bad-soft); border-radius: 8px;
+  /* U-20：语义提示块圆角统一走 --radius-note 令牌 */
+  .error { color: var(--bad); background: var(--bad-soft); border-radius: var(--radius-note);
            padding: 8px 12px; margin: 8px 0; font-size: 14px; white-space: pre-wrap; }
-  .okmsg { color: var(--ok); background: var(--ok-soft); border-radius: 8px;
+  .okmsg { color: var(--ok); background: var(--ok-soft); border-radius: var(--radius-note);
            padding: 8px 12px; margin: 8px 0; font-size: 14px; }
-  .warnmsg { color: var(--warn); background: var(--warn-soft); border-radius: 8px;
+  .warnmsg { color: var(--warn); background: var(--warn-soft); border-radius: var(--radius-note);
              padding: 8px 12px; margin: 8px 0; font-size: 14px; }
-  .errnote { color: var(--bad); background: var(--bad-soft); border-radius: 8px;
+  .errnote { color: var(--bad); background: var(--bad-soft); border-radius: var(--radius-note);
              padding: 8px 12px; margin: 10px 0 0; font-size: var(--fs-small); overflow-wrap: anywhere; }
   .versionnote { font-size: var(--fs-small); color: var(--warn); background: var(--warn-soft);
-                 border-radius: 8px; padding: 8px 12px; margin: 8px 0; }
+                 border-radius: var(--radius-note); padding: 8px 12px; margin: 8px 0; }
   .kv { font-size: 14px; margin: 4px 0; min-width: 0; overflow-wrap: anywhere; }  /* M5 */
   .kv b { color: var(--text-2); font-weight: 500; margin-right: 8px; font-size: var(--fs-small); }
   .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 24px; }
   .flash { animation: flashbg 1s var(--ease) 2; }
   @keyframes flashbg { 50% { background: var(--accent-soft); } }
 
-  /* ============ pill 体系（V4：badge 12px / chip 12px / pchip 30px 可点） ============ */
-  .badge { display: inline-flex; align-items: center; font-size: var(--fs-caption); line-height: 1.4;
-           border-radius: var(--radius-pill); padding: 2px 10px; font-weight: 500; white-space: nowrap; }
-  .badge .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor;
-                margin-right: 5px; flex: none; }
-  .b-ready, .v-valid { color: var(--ok); background: var(--ok-soft); }
-  .b-needs_input, .v-unconfirmed { color: var(--warn); background: var(--warn-soft); }
-  .b-failed, .b-unknown_outcome, .v-invalid { color: var(--bad); background: var(--bad-soft); }
-  .b-waiting_key, .v-unverified { color: var(--info); background: var(--info-soft); }
-  .b-queued, .b-extracted, .b-raw { color: var(--text-2); background: var(--surface-2); border: 1px solid var(--border); }
-  .b-extracting, .b-enriching { color: var(--accent); background: var(--accent-soft); }
-  .v-network_error, .v-blocked { color: var(--warn); background: var(--warn-soft); }
-  .badge.pulse .dot { animation: breathe 1.6s var(--ease) infinite; }
-  @keyframes breathe { 0%, 100% { opacity: .3; transform: scale(.75); }
-                       50% { opacity: 1; transform: scale(1.2); } }
+  /* pill 体系（badge/状态色/breathe）已收敛进 tokens.css 共用组件层（docs/15 U-05） */
 
   /* ============ 登录门面 ============ */
   .login-hero { min-height: 72vh; display: flex; flex-direction: column; justify-content: center;
@@ -122,8 +77,8 @@
   .guide { display: flex; align-items: center; gap: 10px; background: var(--warn-soft);
            border: 1px solid var(--warn-soft); border-radius: var(--radius-ctl);
            padding: 10px 14px; margin-bottom: 16px; font-size: var(--fs-small); color: var(--warn); flex-wrap: wrap; }
-  .guide .ico { width: 18px; height: 18px; border-radius: 50%; background: var(--warn); color: #fff;
-                display: inline-flex; align-items: center; justify-content: center;
+  .guide .ico { width: 18px; height: 18px; border-radius: 50%; background: var(--warn); color: var(--on-warn);
+                display: inline-flex; align-items: center; justify-content: center;  /* U-06 */
                 font-size: var(--fs-caption); font-weight: 700; flex: none; }
   .guide button { min-height: 32px; padding: 4px 12px; font-size: var(--fs-small); }
   .smartbox { border: 1px solid var(--border-strong); border-radius: var(--radius-inner);
@@ -171,8 +126,6 @@
                           text-overflow: ellipsis; }
 
   /* ============ 列表 ============ */
-  .list-head { display: flex; align-items: center; gap: 12px; }
-  .list-head h2 { flex: 1; margin: 0; }
   .toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 14px 0 10px; }
   .toolbar .search { flex: 1; min-width: 150px; width: auto; }
   .toolbar select { width: auto; min-width: 118px; }
@@ -235,7 +188,7 @@
   .slabel { font-size: var(--fs-caption); color: var(--text-2); margin-left: 7px; white-space: nowrap; }
   .sline { flex: 1; height: 2px; background: var(--border); margin: 0 10px; min-width: 14px;
            transition: background var(--t-slow); }
-  .step.done .sball { background: var(--ok); border-color: var(--ok); color: #fff; }
+  .step.done .sball { background: var(--ok); border-color: var(--ok); color: var(--on-ok); }  /* U-06 */
   .step.done .slabel { color: var(--ok); }
   .step.done .sline { background: var(--ok); }
   .step.active .sball { border-color: var(--accent); }
@@ -256,7 +209,8 @@
   @keyframes flowline { from { background-position: 100% 0; } to { background-position: -100% 0; } }
   /* 转写进度挂在「提取」下方的小字副行（2026-09-10 走查：不单独占进度条圆点） */
   .ssub { position: absolute; left: 29px; top: calc(100% + 5px); display: inline-flex; align-items: center; gap: 5px;
-          font-size: 11px; line-height: 1; white-space: nowrap; color: var(--text-2); }
+          font-size: 11px; line-height: 1; white-space: nowrap; color: var(--text-2);
+          font-variant-numeric: tabular-nums; }  /* U-18：段数数字等宽，避免进度跳动推挤布局 */
   .ssubdot { width: 6px; height: 6px; border-radius: 50%; flex: none; }
   .ssub.tone-active { color: var(--accent); }
   .ssub.tone-active .ssubdot { background: var(--accent); animation: breathe 1.6s var(--ease) infinite; }
@@ -305,7 +259,8 @@
   .switch { width: 40px; height: 22px; border-radius: 999px; background: var(--border); flex: none;
             position: relative; margin-left: auto; transition: background var(--t-fast); }
   .switch i { position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%;
-              background: #fff; box-shadow: 0 1px 3px rgb(0 0 0 / 0.25);
+              background: var(--surface);  /* U-06：不用硬编码 #fff，深色模式随主题变深 */
+              box-shadow: 0 1px 3px rgb(0 0 0 / 0.25);
               transition: transform var(--t-fast) var(--ease); }
   .asrtoggle input:checked ~ .switch { background: var(--ok); }
   .asrtoggle input:checked ~ .switch i { transform: translateX(18px); }
@@ -359,37 +314,7 @@
   .bili-desc { font-size: var(--fs-small); color: var(--text-2); margin-top: 2px; line-height: 1.5;
                overflow-wrap: anywhere; }
 
-  /* ============ Toast（M8：≤520 底部居中 + safe-area） ============ */
-  #toasts { position: fixed; top: 16px; right: 16px; z-index: 100; display: flex;
-            flex-direction: column; gap: 8px; max-width: min(380px, calc(100vw - 32px)); }
-  .toast { display: flex; align-items: flex-start; gap: 10px; background: var(--surface);
-           border: 1px solid var(--border); border-left: 3px solid var(--info); border-radius: var(--radius-ctl);
-           box-shadow: var(--shadow-pop); padding: 10px 12px; font-size: 14px; line-height: 1.5;
-           opacity: 0; transform: translateX(12px);
-           transition: opacity var(--t-slow) var(--ease), transform var(--t-slow) var(--ease); }
-  .toast.show { opacity: 1; transform: none; }
-  .toast.t-ok { border-left-color: var(--ok); }
-  .toast.t-error { border-left-color: var(--bad); }
-  .toast.t-warn { border-left-color: var(--warn); }
-  .toast .ttext { flex: 1; min-width: 0; word-break: break-word; }
-  .toast button { min-height: 28px; padding: 2px 8px; font-size: var(--fs-small); border: none;
-                  background: transparent; color: var(--accent); flex: none; }
-  .toast button.tx { color: var(--text-2); }
-  .toast button:hover { background: var(--surface-2); }
-
-  /* ============ Modal 三件套 ============ */
-  .overlay { position: fixed; inset: 0; background: rgba(31, 30, 27, .45); display: flex;
-             align-items: center; justify-content: center; z-index: 90; padding: 20px;
-             padding-bottom: calc(20px + env(safe-area-inset-bottom));  /* M7 */
-             opacity: 0; transition: opacity var(--t-slow); }
-  .overlay.show { opacity: 1; }
-  .modal { background: var(--surface); border-radius: var(--radius-card); box-shadow: var(--shadow-pop);
-           width: min(440px, 100%); padding: 22px; transform: translateY(10px) scale(.98);
-           transition: transform var(--t-slow) var(--ease); max-height: 86vh; overflow: auto; }
-  .overlay.show .modal { transform: none; }
-  .modal-title { font-weight: 600; font-size: var(--fs-h2); margin-bottom: 10px; }
-  .modal-body { font-size: 14px; line-height: 1.65; }
-  .modal-foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+  /* Toast 与 Modal 三件套已收敛进 tokens.css 共用组件层（docs/15 U-05；遮罩/正文走 --overlay/--fs-body） */
 
   /* ============ 响应式（docs/10 §6.1：720 布局简化档 / 520 紧凑档） ============ */
   @media (max-width: 720px) {
@@ -414,9 +339,7 @@
     .actions > button.primary, .actions > .btn.primary { flex: 1 1 100%; }
     .primaryrow > button:not(.primary), .primaryrow > a.btn:not(.primary),
     .actions > button:not(.primary), .actions > a.btn:not(.primary) { flex: 1 1 calc(50% - 5px); }
-    /* M8：Toast 底部居中，避免遮挡右上操作区 */
-    #toasts { top: auto; left: 16px; right: 16px; bottom: calc(16px + env(safe-area-inset-bottom)); }
-    .toast { transform: translateY(12px); }
+    /* M8（Toast 底部居中）已收敛进 tokens.css 响应式公共段 */
   }
   @media (max-width: 360px) {
     /* M3 兜底：仍溢出则只显示当前段文字 */
@@ -690,20 +613,42 @@ function dismissToast(el) {
   setTimeout(() => el.remove(), 220);
 }
 
-// ---------- Modal 三件套（取代 confirm/prompt/alert：G5） ----------
+// ---------- Modal 三件套（取代 confirm/prompt/alert：G5；焦点管理：docs/15 U-02） ----------
 let modalResolve = null;
+let modalLastFocus = null;
+const MODAL_FOCUSABLE = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
 function openModalHTML(html) {
+  modalLastFocus = document.activeElement;  // 记录触发元素，关闭时归还焦点
   $("modalBox").innerHTML = html;
   const ov = $("overlay");
   ov.hidden = false;
-  requestAnimationFrame(() => ov.classList.add("show"));
+  requestAnimationFrame(() => {
+    ov.classList.add("show");
+    const f = $("modalBox").querySelector(MODAL_FOCUSABLE);
+    if (f) f.focus();  // 打开后把焦点移入弹窗
+  });
 }
 function closeModal(val) {
   const ov = $("overlay");
   ov.classList.remove("show");
   setTimeout(() => { ov.hidden = true; $("modalBox").innerHTML = ""; }, 200);
+  if (modalLastFocus && document.contains(modalLastFocus)) {
+    try { modalLastFocus.focus(); } catch (e) { /* 元素已不可聚焦则忽略 */ }
+  }
+  modalLastFocus = null;
   if (modalResolve) { const r = modalResolve; modalResolve = null; r(val); }
 }
+// 焦点陷阱：Tab 循环限制在弹窗内，不穿透到背景页面
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Tab" || $("overlay").hidden) return;
+  const items = Array.from($("modalBox").querySelectorAll(MODAL_FOCUSABLE))
+    .filter((el) => !el.disabled && el.offsetParent !== null);
+  if (!items.length) return;
+  const first = items[0], last = items[items.length - 1];
+  if (!$("modalBox").contains(document.activeElement)) { e.preventDefault(); first.focus(); }
+  else if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+  else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+});
 function confirmModal(o = {}) {
   return new Promise((res) => {
     modalResolve = res;
@@ -1073,8 +1018,7 @@ function itemInner(it) {
   const auxextra =
     (showDetail ? '<span class="sdetail' + (failed ? " bad" : "") + '" title="' + esc(it.state_detail) + '">' +
       esc(it.state_detail) + "</span>" : "") +
-    (failed ? '<button class="small danger" onclick="event.stopPropagation();reprocessItem(\'' +
-      esc(it.item_id) + '\')">重试</button>' : "");
+    (failed ? '<button class="small danger" data-item-retry="' + esc(it.item_id) + '">重试</button>' : "");
   return '<div class="item-main">' + main +
     '<span class="item-time num" title="创建于 ' + esc(fmtTime(it.created_at)) + '">' + esc(fmtShort(it.created_at)) + "</span></div>" +
     '<div class="item-aux">' + stateBadge(it.pipeline_state) +
@@ -1083,7 +1027,8 @@ function itemInner(it) {
     "</div>";
 }
 function itemRow(it, staggerIdx) {
-  return '<li class="item' + (staggerIdx !== undefined ? " enter" : "") + '"' +
+  // U-19：卡片整体可点，键盘可达（Enter/Space 打开详情，见 itemList 的 keydown 委托）
+  return '<li class="item' + (staggerIdx !== undefined ? " enter" : "") + '" role="button" tabindex="0"' +
     (staggerIdx !== undefined ? ' style="animation-delay:' + Math.min(staggerIdx * 20, 240) + 'ms"' : "") +
     ' data-id="' + esc(it.item_id) + '" data-json=\'' + esc(rowJson(it)) + '\'>' + itemInner(it) + "</li>";
 }
@@ -1474,6 +1419,8 @@ function switchDetailTab(which) {
   renderDetail();
 }
 function showMoreSegments() { segShown += SEG_PAGE; renderDetail(); }
+// U-14：长原文展开后回到详情顶部
+function scrollSourceTop() { window.scrollTo({ top: 0, behavior: "smooth" }); }
 
 function renderDetail() {
   const d = detailData;
@@ -1487,9 +1434,9 @@ function renderDetail() {
   // 页签定序：提炼 / 原文 / 管理（I4）
   $("detailBody").innerHTML =
     '<nav class="readtabs">' +
-      '<button class="' + (detailTab === "digest" ? "active" : "") + '" onclick="switchDetailTab(\'digest\')">提炼</button>' +
-      '<button class="' + (detailTab === "source" ? "active" : "") + '" onclick="switchDetailTab(\'source\')">原文</button>' +
-      '<button class="' + (detailTab === "manage" ? "active" : "") + '" onclick="switchDetailTab(\'manage\')">管理</button>' +
+      '<button class="' + (detailTab === "digest" ? "active" : "") + '" data-tab="digest">提炼</button>' +
+      '<button class="' + (detailTab === "source" ? "active" : "") + '" data-tab="source">原文</button>' +
+      '<button class="' + (detailTab === "manage" ? "active" : "") + '" data-tab="manage">管理</button>' +
     "</nav>" +
     '<div class="readpane">' + renderDetailPane(d) + "</div>";
 }
@@ -1541,8 +1488,11 @@ function renderSourcePane(d) {
     rows.push('<div class="readbody" id="sourceBody">' +
       shown.map(paras ? renderParagraphLine : renderSourceLine).join("") + "</div>");
     if (shown.length < lines.length) {
-      rows.push('<button class="morebtn" onclick="showMoreSegments()">继续展开（还有 ' +
-        (lines.length - shown.length) + (paras ? ' 段）' : ' 片段）') + '</button>');
+      // U-14：分页按钮旁补「回到顶部」，读到底后不用手动长滚
+      rows.push('<div class="row center" style="margin-top:12px">' +
+        '<button class="morebtn" onclick="showMoreSegments()">继续展开（还有 ' +
+        (lines.length - shown.length) + (paras ? ' 段）' : ' 片段）') + '</button>' +
+        '<button onclick="scrollSourceTop()">回到顶部</button></div>');
     }
   } else if (sm.truncated) {
     rows.push('<div class="muted">正文超过内联阅读上限，请到「管理」页签下载原件。</div>');
@@ -1696,7 +1646,7 @@ function renderManagePane(d) {
       cands.map((c) => '<div class="row" style="justify-content:space-between">' +
         "<span>" + esc(c.title || c.host || "音频") + (c.duration_hint
           ? "（约 " + Math.round(c.duration_hint) + " 秒）" : "") + "</span>" +
-        '<button class="small" onclick="doAsrTrigger(\'' + esc(c.candidate_id) + '\')">转写这条</button>' +
+        '<button class="small" data-asr-candidate="' + esc(c.candidate_id) + '">转写这条</button>' +
         "</div>").join("") + "</div>");
   }
   const helps = [];
@@ -2219,11 +2169,29 @@ $("emptyCta").addEventListener("click", () => {
   $("capText").focus();
 });
 $("itemList").addEventListener("click", (e) => {
+  const retry = e.target.closest("[data-item-retry]");  // U-03：行内重试改事件委托，替代内联 onclick 拼接
+  if (retry) { e.stopPropagation(); reprocessItem(retry.dataset.itemRetry); return; }
   if (e.target.closest("a") || e.target.closest("button")) return;
   const li = e.target.closest("li.item");
   if (li) openDetail(li.dataset.id);
 });
+// U-19：列表卡片键盘操作（Enter/Space 打开详情；内部链接与按钮自行处理）
+$("itemList").addEventListener("keydown", (e) => {
+  if (e.key !== "Enter" && e.key !== " ") return;
+  if (e.target.closest("a") || e.target.closest("button")) return;
+  const li = e.target.closest("li.item");
+  if (!li || e.target !== li) return;
+  e.preventDefault();
+  openDetail(li.dataset.id);
+});
 $("backBtn").addEventListener("click", exitDetail);
+// U-15：详情区事件委托（页签切换、多音频候选转写），替代内联 onclick
+$("detailBody").addEventListener("click", (e) => {
+  const tab = e.target.closest("[data-tab]");
+  if (tab) { switchDetailTab(tab.dataset.tab); return; }
+  const cand = e.target.closest("[data-asr-candidate]");
+  if (cand) doAsrTrigger(cand.dataset.asrCandidate);
+});
 $("keyGuideBtn").addEventListener("click", goConfig);
 $("saveSettings").addEventListener("click", saveSettings);
 $("newProfileBtn").addEventListener("click", openProfileForm);
