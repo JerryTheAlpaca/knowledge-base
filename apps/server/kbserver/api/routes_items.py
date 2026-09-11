@@ -361,7 +361,9 @@ def _cloud_digest(db: Session, item: Item) -> CloudDigestOut:
     """云端提炼阅读：优先从结构化 analysis.json 渲染；旧 preview.md 仅作兼容输入。"""
     bundle = _analysis_bundle(db, item)
     if bundle is None:
-        if item.pipeline_state in {"waiting_key", "needs_input"}:
+        if item.pipeline_state == "extracted":
+            state, detail = "pending", "AI 自动加工已关闭；可在设置中开启，或手动重新加工。"
+        elif item.pipeline_state in {"waiting_key", "needs_input"}:
             state, detail = "pending", "尚无云端提炼；原始资料仍可阅读。"
         elif item.pipeline_state == "failed":
             state, detail = "failed", item.state_detail or "云端提炼失败；可重新加工。"

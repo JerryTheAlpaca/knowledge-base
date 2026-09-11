@@ -479,7 +479,6 @@ def finish(session_factory, plan: EnrichPlan, result: dict) -> None:
             files=_base_bundle_files(db, item) + [analysis_file, preview_file],
             processing_state="ready", pipeline_state="ready",
             result_file_id=analysis_file.file_id,
-            warnings=["AI 加工完成。"],
         )
         item.state_detail = ""
         job.state = "succeeded"

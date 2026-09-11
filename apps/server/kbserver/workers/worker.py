@@ -26,6 +26,7 @@ from ..config import get_settings
 from ..db import make_engine, make_session_factory
 from ..domain import pipeline
 from ..domain.platforms import guess_platform
+from ..extractors import audio_sources
 from ..extractors import bilibili as bili
 from ..extractors import paragraphs as parafmt
 from ..extractors import subtitles as subfmt
@@ -55,6 +56,7 @@ from ..storage.objects import ObjectStore
 from . import asr as asr_stage
 from . import enrich as enrich_stage
 from . import idle as idle_mod
+from .publish import auto_enrich_enabled
 from .publish import bundle_files as _bundle_files
 from .publish import publish_segments_revision as _publish_segments_revision
 
@@ -142,7 +144,13 @@ def run_extract(db: Session, store: ObjectStore, job: Job, item: Item) -> None:
     payload = capture.input_json or {}
     source = _latest_source(db, item)
     meta = source.metadata_json
+    _run_extract_dispatch(db, store, job, item, source, payload, meta)
+    # 采集勾选「提取音轨」：提取阶段结束后对有音频来源的条目排队转写（幂等）
+    _maybe_start_requested_asr(db, item, payload)
 
+
+def _run_extract_dispatch(db: Session, store: ObjectStore, job: Job, item: Item,
+                          source: SourceRevision, payload: dict, meta: dict) -> None:
     user_text = (payload.get("text") or "").strip()
     share_text = (payload.get("share_text") or "").strip()
     supplement = (meta.get("supplement_text") or "").strip()
@@ -199,6 +207,38 @@ def run_extract(db: Session, store: ObjectStore, job: Job, item: Item) -> None:
                         event_type="item_needs_input", payload={"reason": item.state_detail})
 
 
+def _maybe_start_requested_asr(db: Session, item: Item, payload: dict) -> None:
+    """采集勾选「提取音轨」（include_asr）：提取结束后对有音频来源的条目排队转写。
+
+    - 幂等：B 站无字幕/无标点自动转写已建的 run 直接复用；同版本已有排队/
+      进行中/成功的 run 不重复建（重新提取内容无变化时不重跑转写）。
+    - 不可转写或部署开关关闭时不建任务，保持「只提取」语义，不打扰用户。
+    """
+    if not payload.get("include_asr"):
+        return
+    settings = get_settings()
+    if not asr_stage.asr_enabled(settings):
+        return
+    try:
+        capable, _kind = audio_sources.audio_capability(db, item)
+    except Exception:
+        return
+    if not capable:
+        return
+    source = _latest_source(db, item)
+    existing = (
+        db.query(AsrRun)
+        .filter(AsrRun.user_id == item.user_id, AsrRun.item_id == item.id,
+                AsrRun.source_revision == source.revision)
+        .order_by(AsrRun.updated_at.desc(), AsrRun.created_at.desc())
+        .first()
+    )
+    if existing is not None and existing.state not in ("failed", "cancelled"):
+        return
+    asr_stage.start_asr(db, item=item, source=source,
+                        model_alias=settings.asr_model, requested_by="manual")
+
+
 def _extract_plain_text(db: Session, store: ObjectStore, job: Job, item: Item,
                         source: SourceRevision, *, body: str, origin: str) -> None:
     # normalized.md：带块 ID 的规范文字稿（docs/02 §6.4、§12.1）
@@ -242,16 +282,20 @@ def _extract_plain_text(db: Session, store: ObjectStore, job: Job, item: Item,
     ))
     db.flush()
 
+    auto_enrich = auto_enrich_enabled(db, item.user_id)
     pipeline.publish_bundle(
         db, store, item=item, source=source, files=files,
-        processing_state="original_only", pipeline_state="enriching",
-        warnings=["已生成规范文字稿；AI 加工待执行。"],
+        processing_state="original_only",
+        pipeline_state="enriching" if auto_enrich else "extracted",
+        warnings=["已生成规范文字稿；AI 加工待执行。" if auto_enrich
+                  else "已生成规范文字稿；AI 自动加工已关闭，可手动重新加工。"],
     )
     job.state = "succeeded"
 
-    pipeline.enqueue_stage(
-        db, user_id=item.user_id, item_id=item.id, source_revision=source.revision, stage="enrich"
-    )
+    if auto_enrich:
+        pipeline.enqueue_stage(
+            db, user_id=item.user_id, item_id=item.id, source_revision=source.revision, stage="enrich"
+        )
 
 
 def _is_bilibili_capture(payload: dict, meta: dict) -> bool:
@@ -391,11 +435,13 @@ def _extract_bilibili(db: Session, store: ObjectStore, job: Job, item: Item,
     except bili.BilibiliError as exc:
         if exc.status in ("network_error", "blocked"):
             raise  # 有限退避重试，由 run_once 顶层落到任务表
-        if exc.status == "no_track" and _auto_asr_ready(db, item.user_id):
-            # 登录错误/其余原因不自动触发；只有明确的「平台无字幕轨」才转 ASR
+        if exc.status == "no_track" and (_auto_asr_ready(db, item.user_id) or payload.get("include_asr")):
+            # 登录错误/其余原因不自动触发；明确的「平台无字幕轨」+（用户开关或
+            # 本次采集勾选「提取音轨」）才转 ASR。部署开关关闭时 run 会被
+            # prepare 停在「等待部署启用」，不会凭空消失。
             settings = get_settings()
             asr_stage.start_asr(db, item=item, source=source,
-                                model_alias=settings.asr_model, requested_by="auto")
+                                model_alias=settings.asr_model, requested_by="auto" if _auto_asr_ready(db, item.user_id) else "manual")
             job.state = "succeeded"
             return
         _needs_input(db, job, item, exc.message, exc.status)
@@ -414,12 +460,12 @@ def _extract_bilibili(db: Session, store: ObjectStore, job: Job, item: Item,
         role="source_material", mime="application/json",
     )
 
-    if subfmt.looks_unpunctuated(ext.segments) and _auto_asr_ready(db, item.user_id):
+    if subfmt.looks_unpunctuated(ext.segments) and (_auto_asr_ready(db, item.user_id) or payload.get("include_asr")):
         # 无标点字幕轨（B 站 AI 字幕常见）读不下去，自动转本地 ASR 换带标点的
         # 转写稿；无标点字幕的原始 JSON 仍留存作证据（docs/04 §4.6 不改写原文）。
         settings = get_settings()
         asr_stage.start_asr(db, item=item, source=source,
-                            model_alias=settings.asr_model, requested_by="auto")
+                            model_alias=settings.asr_model, requested_by="auto" if _auto_asr_ready(db, item.user_id) else "manual")
         job.state = "succeeded"
         return
 

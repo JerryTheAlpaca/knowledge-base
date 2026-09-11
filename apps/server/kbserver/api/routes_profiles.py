@@ -584,18 +584,22 @@ def test_profile(profile_id: str, principal=Depends(require_scope("profiles:mana
 class SettingsOut(BaseModel):
     model_config = ConfigDict(extra="forbid")
     default_profile_id: str | None
+    auto_enrich: bool = True
     note: str = ""
 
 
 class SettingsUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     default_profile_id: str | None = None
+    auto_enrich: bool | None = None
 
 
 def _settings_out(user: User) -> SettingsOut:
     s = user.settings_json or {}
+    ai = s.get("ai") if isinstance(s.get("ai"), dict) else {}
     return SettingsOut(
         default_profile_id=s.get("default_profile_id"),
+        auto_enrich=bool(ai.get("auto_enrich", True)),
         note="模型账单请在供应商平台查看；本系统不统计用量与费用。",
     )
 
@@ -614,6 +618,10 @@ def update_settings(body: SettingsUpdate, principal=Depends(require_scope("profi
         if body.default_profile_id:
             _require_profile(db, user.id, body.default_profile_id)
         s["default_profile_id"] = body.default_profile_id or None
+    if body.auto_enrich is not None:
+        ai = dict(s.get("ai") or {}) if isinstance(s.get("ai"), dict) else {}
+        ai["auto_enrich"] = body.auto_enrich
+        s["ai"] = ai
     user.settings_json = s
     db.commit()
     return _settings_out(user)

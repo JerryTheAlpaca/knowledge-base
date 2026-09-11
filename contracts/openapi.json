@@ -2132,6 +2132,125 @@
           }
         }
       }
+    },
+    "/v1/admin/invitations": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "List Invitations",
+        "description": "邀请码列表（尾号/状态/使用者用户名；不含完整码）。",
+        "operationId": "list_invitations_v1_admin_invitations_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Create Invitation",
+        "description": "新建邀请码：完整码只在本次响应中出现。",
+        "operationId": "create_invitation_v1_admin_invitations_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/invitations/{invitation_id}/revoke": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Revoke Invitation",
+        "description": "撤销一条未使用的邀请码。",
+        "operationId": "revoke_invitation_v1_admin_invitations__invitation_id__revoke_post",
+        "parameters": [
+          {
+            "name": "invitation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Invitation Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/asr-overview": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Asr Overview",
+        "description": "全部用户的 ASR 提交/排队概况与每人累计处理分钟（不含文件名）。",
+        "operationId": "asr_overview_v1_admin_asr_overview_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/server-stats": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Server Stats",
+        "description": "宿主机 CPU / 内存 / 数据盘占用（指标读不到时对应字段为 null）。",
+        "operationId": "server_stats_v1_admin_server_stats_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -2405,6 +2524,11 @@
           "include_images": {
             "type": "boolean",
             "title": "Include Images",
+            "default": false
+          },
+          "include_asr": {
+            "type": "boolean",
+            "title": "Include Asr",
             "default": false
           },
           "original_url": {
@@ -3631,6 +3755,11 @@
             ],
             "title": "Default Profile Id"
           },
+          "auto_enrich": {
+            "type": "boolean",
+            "title": "Auto Enrich",
+            "default": true
+          },
           "note": {
             "type": "string",
             "title": "Note",
@@ -3656,6 +3785,17 @@
               }
             ],
             "title": "Default Profile Id"
+          },
+          "auto_enrich": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Auto Enrich"
           }
         },
         "additionalProperties": false,

@@ -20,6 +20,18 @@ def bundle_files(db: Session, item: Item) -> list[StoredFile]:
     return pipeline.latest_files_per_path(rows)
 
 
+def auto_enrich_enabled(db: Session, user_id: str) -> bool:
+    """用户级「AI 自动加工」开关（默认开）：关闭时提取完成后不做 AI 加工，
+    条目停在 extracted 状态等待手动「重新加工」。手动重试不受它影响。"""
+    from ..models import User
+
+    user = db.get(User, user_id)
+    ai = (user.settings_json or {}).get("ai") if user else None
+    if not isinstance(ai, dict):
+        return True
+    return bool(ai.get("auto_enrich", True))
+
+
 def publish_segments_revision(db: Session, store: ObjectStore, job: Job, item: Item,
                               source: SourceRevision, *, segments: list[dict],
                               warnings: list[str], extra_files: list,
@@ -43,9 +55,10 @@ def publish_segments_revision(db: Session, store: ObjectStore, job: Job, item: I
                 BundleRevision.item_id == item.id,
                 BundleRevision.revision == item.bundle_revision,
             ).one_or_none()
-        if item.pipeline_state == "failed" or (bundle is not None and bundle.processing_state != "ready"):
-            # 提取结果没变：在同一版本上重新加工（failed 重试；等待 Key/预算的会在
-            # enrich 预备阶段回到原等待状态，不产生模型调用）
+        auto_enrich = auto_enrich_enabled(db, item.user_id)
+        if item.pipeline_state == "failed" or (auto_enrich and bundle is not None and bundle.processing_state != "ready"):
+            # 提取结果没变：在同一版本上重新加工（failed 重试不受「AI 自动加工」
+            # 开关影响；等待 Key/预算的会在 enrich 预备阶段回到原等待状态）
             pipeline.enqueue_stage(
                 db, user_id=item.user_id, item_id=item.id, source_revision=source.revision,
                 stage="enrich", reset_attempt=True,
@@ -53,8 +66,10 @@ def publish_segments_revision(db: Session, store: ObjectStore, job: Job, item: I
             item.pipeline_state = "queued"
             item.state_detail = "重新提取：内容无变化，重新加工"
         else:
-            item.pipeline_state = "ready"
-            item.state_detail = "重新提取：来源内容无变化"
+            ready = bundle is not None and bundle.processing_state == "ready"
+            item.pipeline_state = "ready" if ready else "extracted"
+            item.state_detail = ("重新提取：来源内容无变化" if ready
+                                 else "重新提取：来源内容无变化；AI 自动加工已关闭")
         pipeline.emit_event(db, item.user_id, item_id=item.id, bundle_revision=item.bundle_revision,
                             event_type="refetch_unchanged", payload={"revision": source.revision})
         return
@@ -105,12 +120,15 @@ def publish_segments_revision(db: Session, store: ObjectStore, job: Job, item: I
     ))
     db.flush()
 
+    auto_enrich = auto_enrich_enabled(db, item.user_id)
     pipeline.publish_bundle(
         db, store, item=item, source=source2, files=files,
-        processing_state="original_only", pipeline_state="enriching",
+        processing_state="original_only",
+        pipeline_state="enriching" if auto_enrich else "extracted",
         warnings=warnings,
     )
     job.state = "succeeded"
-    pipeline.enqueue_stage(
-        db, user_id=item.user_id, item_id=item.id, source_revision=new_revision, stage="enrich"
-    )
+    if auto_enrich:
+        pipeline.enqueue_stage(
+            db, user_id=item.user_id, item_id=item.id, source_revision=new_revision, stage="enrich"
+        )
