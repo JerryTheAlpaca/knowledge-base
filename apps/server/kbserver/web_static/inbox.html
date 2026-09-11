@@ -256,10 +256,10 @@
   .asrtoggle:hover { border-color: var(--border-strong); }
   .asrtoggle[hidden] { display: none; }
   .asrtoggle input { position: absolute; opacity: 0; width: 0; height: 0; }  /* 视觉隐藏，键盘可达 */
-  .switch { width: 40px; height: 22px; border-radius: 999px; background: var(--border); flex: none;
+  .switch { width: 40px; height: 22px; border-radius: 999px; background: var(--switch-off-track); flex: none;
             position: relative; margin-left: auto; transition: background var(--t-fast); }
   .switch i { position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%;
-              background: var(--surface);  /* U-06：不用硬编码 #fff，深色模式随主题变深 */
+              background: var(--switch-off-knob);  /* 关闭态高对比滑块，深浅两套令牌分别校准 */
               box-shadow: 0 1px 3px rgb(0 0 0 / 0.25);
               transition: transform var(--t-fast) var(--ease); }
   .asrtoggle input:checked ~ .switch { background: var(--ok); }

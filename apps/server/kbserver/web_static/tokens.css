@@ -42,6 +42,10 @@
   /* —— 弹窗遮罩（U-08：随主题变化，深色模式加深分层）—— */
   --overlay: rgba(31, 30, 27, .45);
 
+  /* —— 开关关闭态（走查反馈：关闭态要一眼可辨；开启态恒用 --ok）—— */
+  --switch-off-track: #C4C0B2;   /* 中暖灰轨道：与白滑块形成明确两段式 */
+  --switch-off-knob: #FFFFFF;    /* 白滑块 + 既有阴影 */
+
   /* —— 阴影（v2：双层，§5.4）—— */
   --shadow-card: 0 1px 2px rgba(31, 30, 27, .05);
   --shadow-pop: 0 2px 4px rgba(31, 30, 27, .07), 0 6px 20px rgba(31, 30, 27, .10);
@@ -101,6 +105,9 @@
     --on-warn: #2A1F0E;
     /* U-08：深色页面底已是暗色，遮罩加深到 .65 恢复弹窗分层感 */
     --overlay: rgba(15, 14, 12, .65);
+    /* 开关关闭态：暗底上轨道用亮半透浮出，滑块用近白，两段强对比 */
+    --switch-off-track: rgba(255, 255, 255, .32);
+    --switch-off-knob: #EDEBE6;
     --shadow-card: 0 1px 2px rgba(0, 0, 0, .3);
     --shadow-pop: 0 2px 6px rgba(0, 0, 0, .45), 0 10px 28px rgba(0, 0, 0, .5);
   }
