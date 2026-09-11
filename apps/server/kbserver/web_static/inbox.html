@@ -151,8 +151,7 @@
   .uploadbtn { border: none; background: transparent; color: var(--accent);
                padding: 8px 10px; min-height: 44px; font-weight: 500; }
   .uploadbtn:hover { background: var(--accent-soft); }
-  /* 提取开关行：粘贴框下方的左右滑动开关（触控目标 ≥44px，docs/10 §7.1） */
-  .optrow { display: flex; align-items: center; gap: 2px; flex-wrap: wrap; padding: 4px 2px 0; }
+  /* 提取开关：与提交按钮同排（smartbar 内），左右滑动开关、触控目标 ≥44px */
   .opttoggle { position: relative; display: inline-flex; align-items: center; gap: 8px;
                min-height: 44px; padding: 4px 10px; cursor: pointer; font-size: var(--fs-body); }
   .opttoggle input { position: absolute; opacity: 0; width: 0; height: 0; }  /* 视觉隐藏，键盘可达 */
@@ -488,7 +487,7 @@
         <div class="chiprow" id="urlChips" hidden></div>
         <div class="chiprow" id="fileChips" hidden></div>
         <div class="chiprow" id="audioChips" hidden></div>
-        <div class="optrow">
+        <div class="smartbar">
           <label class="opttoggle" for="capImages" title="开启后，本次提交的公众号/网页链接会连同正文配图一起保存">
             <input type="checkbox" id="capImages"> 提取图片
             <span class="switch" aria-hidden="true"><i></i></span>
@@ -497,8 +496,6 @@
             <input type="checkbox" id="capAsr"> 提取音轨
             <span class="switch" aria-hidden="true"><i></i></span>
           </label>
-        </div>
-        <div class="smartbar">
           <span class="spacer"></span>
           <span class="small" id="capProgress"></span>
           <button class="primary" id="capSubmit">提交采集</button>
