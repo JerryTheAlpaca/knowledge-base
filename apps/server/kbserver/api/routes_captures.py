@@ -58,12 +58,6 @@ class CaptureAccepted(BaseModel):
     received_at: datetime
 
 
-def _parse_captured_at(value: str | None) -> str | None:
-    if not value:
-        return None
-    return value
-
-
 @router.post("", response_model=CaptureAccepted, status_code=202)
 def create_capture(
     body: CaptureInput,
@@ -105,7 +99,10 @@ def create_capture(
         .one_or_none()
     )
     if existing_capture is not None:
-        item = db.query(Item).filter(Item.capture_id == existing_capture.id).one()
+        # capture 正常只对应一条 Item；意外多条/缺失时不抛 500，给明确错误（审查 C-24）
+        item = db.query(Item).filter(Item.capture_id == existing_capture.id).one_or_none()
+        if item is None:
+            raise ApiError("NOT_FOUND", "该 capture 对应的条目不存在", status_code=404)
         repo.idempotency_save(
             db, user.id, "POST /v1/captures", idempotency_key, request_hash,
             {
@@ -127,10 +124,6 @@ def create_capture(
         )
 
     pipeline.validate_capture_payload(payload, uploads_index)
-
-    captured_at = _parse_captured_at(payload.get("captured_at"))
-    if captured_at:
-        payload["captured_at"] = captured_at
 
     store = ObjectStore()
     capture, item = pipeline.create_capture(db, store, user_id=user.id, payload=payload, uploads=uploads_index)

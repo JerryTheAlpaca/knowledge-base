@@ -1,6 +1,8 @@
 """健康检查（docs/02 §10.1）：只返回布尔状态，不暴露内部路径或配置。"""
 from __future__ import annotations
 
+import os
+
 from fastapi import APIRouter, Depends, Response
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -29,9 +31,14 @@ def ready(response: Response, db: Session = Depends(get_db)) -> dict:
         ok_db = False
     try:
         store = ObjectStore()
-        probe_key = ".healthcheck"
-        store.put_bytes(b"ok")
-        ok_store = store.object_exists(store.storage_key(__import__("hashlib").sha256(b"ok").hexdigest()))
+        # 写入 → 校验 → 删除（审查 C-17）。负载用随机唯一值：内容寻址存储按
+        # sha256 幂等去重，固定内容（如 b"ok"）的探针会与真实对象同 key，
+        # 删除时可能误删用户上传的相同内容文件；随机负载保证 key 独占且用后即删，
+        # 不再积累探针孤儿对象。
+        probe = os.urandom(16)
+        _, key, _ = store.put_bytes(probe)
+        ok_store = store.object_exists(key)
+        store.delete_object(key)
     except Exception:
         ok_store = False
     try:

@@ -12,8 +12,28 @@ from __future__ import annotations
 import json
 import math
 
+from .analysis import LIMITS, MAX_EVIDENCE_IDS
+
 SCHEMA_VERSION = "2.0"
 LEGACY_SCHEMA_VERSION = "1.0"
+
+# 提示词条数引导值（审查 C-09）：有意**低于** analysis.LIMITS 校验上限——
+# 提示词引导模型保守输出，校验层留余量，避免贴着上限产出低质量条目；
+# 校验只拒绝超过 LIMITS 的结果，模型偶发超引导值仍可入库。调整 LIMITS
+# 不要求同步改这里；两处数值语义不同，不要「对齐」。
+PROMPT_LIMITS = {
+    "key_points": 7,   # 校验上限 LIMITS["key_points"] = 12
+    "excerpts": 7,     # 校验上限 12
+    "methods": 5,      # 校验上限 10
+    "insights": 3,     # 校验上限 5
+}
+
+
+def _limits_rule() -> str:
+    return (f"key_points 最多 {PROMPT_LIMITS['key_points']} 条，"
+            f"excerpts 最多 {PROMPT_LIMITS['excerpts']} 条，"
+            f"methods 最多 {PROMPT_LIMITS['methods']} 条，"
+            f"insights 最多 {PROMPT_LIMITS['insights']} 条。")
 
 SYSTEM_PROMPT = """\
 你要整理用户主动保存的一份来源材料，产出这一篇的单篇提炼。
@@ -152,7 +172,7 @@ def build_user_prompt(
             "只输出一个 JSON 对象，不要输出其他文字。",
             "source_revision 固定填写本提示给出的值。",
             "key_points 每条必须带 claim_id（c + 4 位数字，如 c0001，按顺序且不重复）和 evidence_ids；"
-            "evidence_ids 必须来自输入片段；每条最多 30 个，优先选最有代表性的片段；材料不足时宁可少写。",
+            f"evidence_ids 必须来自输入片段；每条最多 {MAX_EVIDENCE_IDS} 个，优先选最有代表性的片段；材料不足时宁可少写。",
             "excerpts 每条必须带 claim_id（c + 4 位数字），且必须引用某条 key_points 已出现的 claim_id"
             "（同一 claim_id 可在 excerpts 中重复出现，表示为该观点补充摘录）；不引用观点就别写这条摘录。",
             *EXCERPT_RULES,
@@ -160,7 +180,7 @@ def build_user_prompt(
             "insights 是你的延伸建议，kind 固定为 ai_suggestion；不要与原文主张混淆。",
             "不要输出主题、标签、知识关联、晋升判断或 Obsidian 链接。",
             "原文没有的方法/决策/作者/日期一律留空或空数组。",
-            "key_points 最多 7 条，excerpts 最多 7 条，methods 最多 5 条，insights 最多 3 条。",
+            _limits_rule(),
         ],
     }
     if chunk_notice:
@@ -194,7 +214,7 @@ def build_chunk_user_prompt(
         },
         "output_rules": [
             "只输出一个 JSON 对象。",
-            "evidence_ids 必须来自本段输入片段；每条最多 30 个。",
+            f"evidence_ids 必须来自本段输入片段；每条最多 {MAX_EVIDENCE_IDS} 个。",
             *EXCERPT_RULES,
             "insights 的 kind 固定为 ai_suggestion。",
             "每类最多 5 条；本段没有就给空数组。",
@@ -222,14 +242,14 @@ def build_merge_user_prompt(
             "只输出一个 JSON 对象。",
             "source_revision 固定填写本提示给出的值。",
             "key_points 每条必须带 claim_id（c + 4 位数字，按顺序不重复）和 evidence_ids；"
-            "evidence_ids 只能使用候选要点中出现过的片段 ID；每条最多 30 个。",
+            f"evidence_ids 只能使用候选要点中出现过的片段 ID；每条最多 {MAX_EVIDENCE_IDS} 个。",
             "excerpts 只放候选要点中出现的逐字原文片段；没有就留空数组。",
             "excerpts 的 text 与 evidence_ids 必须原样沿用候选，不要截断、改写或重新摘取；"
             "候选摘录若不成句，宁可整条丢弃也不要自己拼一句。",
             "excerpts 每条必须带 claim_id（c + 4 位数字），且必须引用某条 key_points 已出现的 claim_id"
             "（同一 claim_id 可在 excerpts 中重复出现）。",
             "不要输出主题、标签、知识关联、晋升判断或 Obsidian 链接。",
-            "key_points 最多 7 条，excerpts 最多 7 条，methods 最多 5 条，insights 最多 3 条。",
+            _limits_rule(),
             "材料没有依据的作者/日期/最终决策一律留空。",
         ],
     }

@@ -95,8 +95,6 @@ export interface DigestInput {
   segments: Record<string, string>;
   /** 云端区哈希（本地整理区的输入基线）。 */
   cloudHash: string;
-  /** 本地整理区当前哈希；用于判断是否已整理过。 */
-  localHash: string | null;
   knowledgePromotion: string | null;
 }
 
@@ -243,8 +241,8 @@ export async function readDigestInput(
 ): Promise<DigestInput | null> {
   if (!(await fs.exists(digestPath))) return null;
   const text = await fs.read(digestPath);
+  // 分区访问统一走 template.ts 的导出（审查 C-19），不在此拼分区标记
   const cloud = extractPartition(text, CLOUD_DIGEST_START, CLOUD_DIGEST_END);
-  const local = extractPartition(text, KNOWLEDGE_START, KNOWLEDGE_END);
   const sourceRevision = Number(/^kb_source_revision:\s*(\d+)$/m.exec(text)?.[1] ?? "1") || 1;
   const bundleRevision = Number(/^kb_digest_revision:\s*(\d+)$/m.exec(text)?.[1] ?? "1") || 1;
   const promotion = /^kb_promotion:\s*(\S+)$/m.exec(text)?.[1] ?? null;
@@ -309,7 +307,6 @@ export async function readDigestInput(
     claims,
     segments,
     cloudHash: cloud === null ? "" : await sha256Hex(cloud),
-    localHash: local === null ? null : await sha256Hex(local),
     knowledgePromotion: promotion,
   };
 }
@@ -434,8 +431,11 @@ export class OrganizeService {
     }
     this.running = true;
     try {
-      await this.index.rebuild(this.deps.settings().knowledgeFolder);
       const tasks = await this.listPending();
+      // 有待处理任务才整表重建索引（审查 C-34：无任务时白扫一遍 03 Knowledge）
+      if (tasks.length) {
+        await this.index.rebuild(this.deps.settings().knowledgeFolder);
+      }
       // 阶段 1：晋升判断，按主题收集待融合观点
       const groups = new Map<string, FusionGroup>();
       for (const task of tasks.slice(0, limit)) {
@@ -1094,39 +1094,6 @@ export class OrganizeService {
     if (this.deps.onProposalsChanged) await this.deps.onProposalsChanged();
     return { rolledBack: true, note: `已回滚到 rev ${p.applied_knowledge_revision - 1}。` };
   }
-
-  private async sourceCapturedAt(itemId: string): Promise<string | null> {
-    const s = this.deps.settings();
-    for (const rev of [1, 2, 3, 4, 5]) {
-      const p = `${sourceAssetsDir(s.sourcesFolder, itemId, rev)}/capture.json`;
-      if (await this.deps.fs.exists(p)) {
-        try {
-          const doc = JSON.parse(await this.deps.fs.read(p)) as {
-            captured_at?: string; capture?: { captured_at?: string };
-          };
-          return doc.capture?.captured_at ?? doc.captured_at ?? null;
-        } catch { return null; }
-      }
-    }
-    return null;
-  }
-
-  private async digestTitle(itemId: string): Promise<string | null> {
-    const s = this.deps.settings();
-    for (const rev of [1, 2, 3, 4, 5]) {
-      const assets = sourceAssetsDir(s.sourcesFolder, itemId, rev);
-      const p = `${assets}/capture.json`;
-      if (await this.deps.fs.exists(p)) {
-        try {
-          const doc = JSON.parse(await this.deps.fs.read(p)) as {
-            title?: string; capture?: { title?: string };
-          };
-          return doc.capture?.title ?? doc.title ?? null;
-        } catch { return null; }
-      }
-    }
-    return null;
-  }
 }
 
 /** 「与已有知识的关系」说明（docs/08 §3.2）。 */
@@ -1151,16 +1118,24 @@ export function buildRelationNote(
   return lines.join("\n") || "尚未本地整理。";
 }
 
-/** 简单行级差异预览（回滚前的差异展示）。 */
+/** 简单行级差异预览（回滚前的差异展示）。
+ *
+ * 先裁掉首尾公共行，让差异聚焦在真实改动段；不做完整 LCS，
+ * 中间段仍按行号对齐（审查 C-32：避免插入一行导致整篇误报不同）。
+ */
 export function renderDiff(before: string, after: string): string {
   const a = before.split("\n");
   const b = after.split("\n");
+  let start = 0;
+  while (start < a.length && start < b.length && a[start] === b[start]) start++;
+  let endA = a.length;
+  let endB = b.length;
+  while (endA > start && endB > start && a[endA - 1] === b[endB - 1]) { endA--; endB--; }
   const lines: string[] = [];
-  const max = Math.max(a.length, b.length);
-  for (let i = 0; i < max; i++) {
+  for (let i = start; i < Math.max(endA, endB); i++) {
     if (a[i] === b[i]) continue;
-    if (a[i] !== undefined) lines.push(`- ${a[i]}`);
-    if (b[i] !== undefined) lines.push(`+ ${b[i]}`);
+    if (i < endA) lines.push(`- ${a[i]}`);
+    if (i < endB) lines.push(`+ ${b[i]}`);
   }
   return lines.slice(0, 80).join("\n");
 }

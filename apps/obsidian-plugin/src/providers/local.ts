@@ -83,6 +83,8 @@ export interface LocalTransport {
     connectFailed?: boolean;
     /** 已发出但未收到响应（结果未知，不盲目重发）。 */
     timedOut?: boolean;
+    /** 原始错误文案（审查 C-04：任务记录里可用于排查）。 */
+    error?: string;
   }>;
 }
 
@@ -303,10 +305,12 @@ export async function generateLocal(
       `连接模型服务失败：${err instanceof Error ? err.name : String(err)}`, "retryable");
   }
   if (res.connectFailed) {
-    throw new LocalModelError("连接模型服务失败（请求未发出，可重试）。", "retryable");
+    throw new LocalModelError(
+      `连接模型服务失败（请求未发出，可重试）：${res.error ?? "未知错误"}`, "retryable");
   }
   if (res.timedOut) {
-    throw new LocalModelError("模型服务响应超时（结果未知，不自动重发）。", "unknown_outcome");
+    throw new LocalModelError(
+      `模型服务响应超时（结果未知，不自动重发）：${res.error ?? "未知错误"}`, "unknown_outcome");
   }
   if (res.status === 401 || res.status === 403) {
     throw new LocalModelError(`模型凭据被拒绝（HTTP ${res.status}）。`, "auth");

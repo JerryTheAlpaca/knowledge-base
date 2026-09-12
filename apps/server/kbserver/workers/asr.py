@@ -1102,7 +1102,12 @@ def ctx_source(db: Session, item: Item, run: AsrRun) -> SourceRevision:
         .filter(SourceRevision.item_id == item.id, SourceRevision.revision == run.source_revision)
         .one_or_none()
     )
-    assert source is not None  # _load_context 语义：发布前已确认存在
+    if source is None:
+        # _load_context 语义：发布前已确认存在；到不了就是数据不一致，
+        # 抛带上下文的显式错误（assert 在 -O 下会被剥离，审查 C-15）
+        raise RuntimeError(
+            f"SourceRevision 缺失：item={item.id} revision={run.source_revision}"
+        )
     return source
 
 

@@ -150,6 +150,8 @@ export interface EngineStatus {
   epochConflict: boolean;
   /** 已放弃条目数（本地删除停复建或服务器已删除，A21）。 */
   suppressedCount: number;
+  /** 事件积压超过单轮页数上限，还有更多待拉取（下次同步继续，审查 C-33）。 */
+  moreEvents?: boolean;
 }
 
 // ---- 本地整理模型配置（docs/08 §8.2） ----

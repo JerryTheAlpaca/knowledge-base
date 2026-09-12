@@ -617,6 +617,9 @@ function dismissToast(el) {
 let modalResolve = null;
 let modalLastFocus = null;
 const MODAL_FOCUSABLE = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
+// 只接受已净化 HTML（审查 C-28）：动态数据必须在调用前经 esc()；
+// confirmModal/promptModal 的 o.title/o.confirmLabel 内部已 esc，o.body 视为可信字面量
+// （允许 <b> 等强调标签），若将来传入动态内容须先 esc。
 function openModalHTML(html) {
   modalLastFocus = document.activeElement;  // 记录触发元素，关闭时归还焦点
   $("modalBox").innerHTML = html;

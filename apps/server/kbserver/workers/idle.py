@@ -20,6 +20,12 @@ from collections import deque
 from dataclasses import dataclass
 
 
+# 审查 C-14：读不到宿主机指标时默认保守不启动（生产安全默认）。
+# 本地开发（Windows 无 /proc）可显式设 ASR_IGNORE_IDLE_GATE=1 跳过门禁，
+# 让转写链路可以端到端调试；生产环境不要设置。
+IGNORE_GATE_ENV = "ASR_IGNORE_IDLE_GATE"
+
+
 @dataclass
 class HostSample:
     t: float
@@ -105,6 +111,8 @@ class AsrGate:
             return False, "normal_jobs_active"
         sample = self._take_sample()
         if sample is None:
+            if os.environ.get(IGNORE_GATE_ENV) == "1":
+                return True, "gate_ignored"  # 显式跳过空闲门禁（仅限本地开发）
             return False, "metrics_unavailable"
         ratio = self._busy_ratio(settings.asr_idle_hold_seconds)
         if ratio is None:

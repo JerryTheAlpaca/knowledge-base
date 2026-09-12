@@ -225,6 +225,8 @@ export class KbSettingTab extends PluginSettingTab {
 
   display(): void {
     const { containerEl } = this;
+    // 每次打开设置重新拉一次线上配置（本页所有消费方共享同一次请求，审查 C-30）
+    this.cloudProfilesLoad = null;
     containerEl.empty();
     containerEl.createEl("h2", { text: "Knowledge Inbox 设置" });
 
@@ -297,22 +299,8 @@ export class KbSettingTab extends PluginSettingTab {
       });
 
     if (this.settings.localModel.mode === "cloud_profile") {
-      new Setting(localHost)
-        .setName("使用的线上配置")
-        .setDesc("固定一个本人线上配置；该配置的 Key 需要绑定到本设备才能本地调用。")
-        .addDropdown((d) => {
-          d.addOption("", "（请选择）");
-          for (const p of this._cloudProfiles.filter((x) => x.kind === "llm")) {
-            d.addOption(p.id, `${p.model}（v${p.version}${p.configured ? "" : "，无 Key"}）`);
-          }
-          d.setValue(this.settings.localModel.cloudProfileId);
-          d.onChange(async (v) => {
-            this.settings.localModel.cloudProfileId = v;
-            this.settings.localModel.awaitingSync = false;
-            await this.hooks.onSave();
-            this.display();
-          });
-        });
+      // 列表就绪后再构建下拉，不再同步读取可能为空的 _cloudProfiles（审查 C-30）
+      void this.renderCloudProfilePicker(localHost);
     }
 
     if (this.settings.localModel.mode === "local_profile") {
@@ -434,6 +422,50 @@ export class KbSettingTab extends PluginSettingTab {
   }
 
   private _cloudProfiles: CloudProfileOption[] = [];
+  /** 本页共享的配置列表加载（审查 C-30：一次 display 只发一次请求）。 */
+  private cloudProfilesLoad: Promise<CloudProfileOption[]> | null = null;
+
+  private loadCloudProfilesOnce(): Promise<CloudProfileOption[]> {
+    if (!this.cloudProfilesLoad) {
+      this.cloudProfilesLoad = this.hooks.loadCloudProfiles().then((profiles) => {
+        this._cloudProfiles = profiles;
+        return profiles;
+      }).catch((err) => {
+        this.cloudProfilesLoad = null; // 失败后允许下次重试
+        throw err;
+      });
+    }
+    return this.cloudProfilesLoad;
+  }
+
+  /** cloud_profile 模式下的配置下拉：等列表加载完成后再渲染。 */
+  private async renderCloudProfilePicker(host: HTMLElement): Promise<void> {
+    let profiles: CloudProfileOption[];
+    try {
+      profiles = await this.loadCloudProfilesOnce();
+    } catch (err) {
+      host.createEl("p", {
+        text: `无法读取线上配置：${err instanceof Error ? err.message : String(err)}`,
+      }).addClass("kb-muted");
+      return;
+    }
+    new Setting(host)
+      .setName("使用的线上配置")
+      .setDesc("固定一个本人线上配置；该配置的 Key 需要绑定到本设备才能本地调用。")
+      .addDropdown((d) => {
+        d.addOption("", "（请选择）");
+        for (const p of profiles.filter((x) => x.kind === "llm")) {
+          d.addOption(p.id, `${p.model}（v${p.version}${p.configured ? "" : "，无 Key"}）`);
+        }
+        d.setValue(this.settings.localModel.cloudProfileId);
+        d.onChange(async (v) => {
+          this.settings.localModel.cloudProfileId = v;
+          this.settings.localModel.awaitingSync = false;
+          await this.hooks.onSave();
+          this.display();
+        });
+      });
+  }
 
   /** 由 main 注入的秘密桥（避免设置面板直接依赖插件实例）。 */
   private secretsGetter: (() => SecretBridge) | null = null;
@@ -450,14 +482,13 @@ export class KbSettingTab extends PluginSettingTab {
     host.empty();
     let profiles: CloudProfileOption[] = [];
     try {
-      profiles = await this.hooks.loadCloudProfiles();
+      profiles = await this.loadCloudProfilesOnce();
     } catch (err) {
       host.createEl("p", {
         text: `无法读取线上配置：${err instanceof Error ? err.message : String(err)}`,
       }).addClass("kb-muted");
       return;
     }
-    this._cloudProfiles = profiles;
     const llm = profiles.filter((p) => p.kind === "llm");
     new Setting(host)
       .setName("云端提炼配置")
@@ -490,12 +521,11 @@ export class KbSettingTab extends PluginSettingTab {
     }
     let profiles: CloudProfileOption[];
     try {
-      profiles = await this.hooks.loadCloudProfiles();
+      profiles = await this.loadCloudProfilesOnce();
     } catch (err) {
       host.createEl("p", { text: `读取失败：${err instanceof Error ? err.message : String(err)}` }).addClass("kb-muted");
       return;
     }
-    this._cloudProfiles = profiles;
     for (const p of profiles.filter((x) => x.kind === "llm")) {
       new Setting(host)
         .setName(p.model)

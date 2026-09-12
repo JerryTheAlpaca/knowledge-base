@@ -204,6 +204,9 @@ def bili_net(monkeypatch):
         monkeypatch.setattr(bili, "safe_fetch", net)
         # WBI 签名要读 time.time()，只桩掉 sleep
         monkeypatch.setattr(bili, "time", SimpleNamespace(sleep=lambda s: None, time=_time.time))
+        # 重置 Worker 的 B 站任务间节流状态（审查 C-13 引入），避免跨测试泄漏
+        from kbserver.workers import worker as _worker_mod
+        _worker_mod._last_bili_task_at = None
         return net
     return install
 

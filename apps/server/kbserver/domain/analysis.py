@@ -13,6 +13,9 @@ from __future__ import annotations
 import re
 
 MAX_TEXT = 2000
+# 审查 C-22：以上是服务端校验常量，只约束**单条**提炼字段（每条观点/摘录的文本）。
+# 插件侧 prompts.ts 的 MAX_BODY = 40_000 是「本地整理单次提交正文」的上限，
+# 两者体系独立、数值不同是有意为之；修改任一侧时确认另一端语义仍然成立。
 # 摘录可以跨相邻片段，字数足够时要能覆盖一整句（字幕一句常被切成好几条 cue）。
 MAX_EVIDENCE_IDS = 30
 LIMITS = {
@@ -22,6 +25,8 @@ LIMITS = {
     "insights": 5,
     "limitations": 10,
 }
+# 审查 C-09：LIMITS 是校验上限；templates.py 的 PROMPT_LIMITS 是提示词引导值，
+# 有意低于校验上限（引导模型保守输出、校验留余量）。调整 LIMITS 不要求同步改引导值。
 
 CLAIM_ID_RE = re.compile(r"^c\d{4}$")
 

@@ -27,6 +27,7 @@ from ..api.deps import (
     ensure_local_user,
     require_device,
 )
+from ..api.rate_limit import SlidingWindowLimiter
 from ..domain.errors import ApiError
 from ..models import Device, DeviceAuthRequest, Token, utcnow
 from ..security import central_auth
@@ -41,20 +42,13 @@ from ..security.tokens import (
 
 router = APIRouter(tags=["auth"])
 
-# start/poll 限流：每 IP 每 10 分钟最多 30 次
-_attempts: dict[str, list] = {}
-_RATE_LIMIT = 30
-_RATE_WINDOW = timedelta(minutes=10)
+# start/poll 限流：每 IP 每 10 分钟最多 30 次（惰性清理见 rate_limit.py）
+_rate_limiter = SlidingWindowLimiter(30, timedelta(minutes=10))
 
 
 def _check_rate(request: Request) -> None:
     ip = request.client.host if request.client else "unknown"
-    now = utcnow()
-    window = [t for t in _attempts.get(ip, []) if now - t < _RATE_WINDOW]
-    if len(window) >= _RATE_LIMIT:
-        raise ApiError("RATE_LIMITED", "尝试过于频繁，请稍后再试", status_code=429)
-    window.append(now)
-    _attempts[ip] = window
+    _rate_limiter.hit(ip, utcnow(), "尝试过于频繁，请稍后再试")
 
 
 def _admin_url(settings) -> str | None:

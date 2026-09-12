@@ -118,13 +118,21 @@ export function renderCitations(
       .join("、");
     const citation = `（依据：[[${snapshot}|${label}]]${sourceLinks ? ` · ${sourceLinks}` : ""}）`;
 
-    // 定位 `[c0001]` 标记：已在 24 字符内写过依据的跳过，避免重复注入
+    // 定位全部 `[c0001]` 标记（审查 C-05：同一观点可能在多个小节重复引用，
+    // 每处都应有依据可跳）；已在 24 字符内写过依据的位置跳过，避免重复注入
     const marker = `[${claimId}]`;
-    const at = out.indexOf(marker);
-    if (at === -1) continue;
-    const tail = out.slice(at, at + marker.length + 24);
-    if (tail.includes("依据：")) continue;
-    out = `${out.slice(0, at + marker.length)}${citation}${out.slice(at + marker.length)}`;
+    let from = 0;
+    while (true) {
+      const at = out.indexOf(marker, from);
+      if (at === -1) break;
+      const tail = out.slice(at, at + marker.length + 24);
+      if (!tail.includes("依据：")) {
+        out = `${out.slice(0, at + marker.length)}${citation}${out.slice(at + marker.length)}`;
+        from = at + marker.length + citation.length;
+      } else {
+        from = at + marker.length;
+      }
+    }
   }
   return out;
 }

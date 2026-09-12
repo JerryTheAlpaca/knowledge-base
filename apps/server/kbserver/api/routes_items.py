@@ -23,6 +23,7 @@ from ..db import get_db
 from ..domain import pipeline
 from ..domain.errors import ApiError
 from ..api.deps import require_scope
+from ..api.rate_limit import SlidingWindowLimiter
 from ..models import AudioAsset, BundleRevision, Capture, Item, SourceRevision, Job, new_id, utcnow
 from ..repositories import core as repo
 from ..storage.objects import ObjectStore
@@ -109,11 +110,13 @@ def _analysis_bundle(db: Session, item: Item) -> BundleRevision | None:
     )
 
 
-def _item_out(item: Item, source: SourceRevision, db: Session | None = None) -> ItemOut:
+def _item_out(item: Item, source: SourceRevision, db: Session | None = None,
+              analysis_bundle: BundleRevision | None = None) -> ItemOut:
     from ..domain.source_labels import resolve_platform, source_fields
 
     meta = source.metadata_json
-    analysis_bundle = _analysis_bundle(db, item) if db is not None else None
+    if analysis_bundle is None and db is not None:
+        analysis_bundle = _analysis_bundle(db, item)
     expires_at = analysis_bundle.expires_at if analysis_bundle else None
     now = utcnow()
     # 旧客户端把采集渠道（web_inbox）写进了 platform：展示时按 URL 回退到真实来源，
@@ -186,13 +189,28 @@ def list_items(
     user = principal.user
     limit = max(1, min(limit, 200))
     items, total = repo.list_items(db, user.id, state=state, limit=limit, offset=max(0, offset))
+    # 批量取来源版本与最新提炼版本，避免每行两条查询（审查 C-07）
+    ids = [it.id for it in items]
+    src_map = {}
+    bundle_map = {}
+    if ids:
+        revs = sorted({it.source_revision for it in items})
+        for r in db.query(SourceRevision).filter(
+            SourceRevision.item_id.in_(ids), SourceRevision.revision.in_(revs)
+        ).all():
+            src_map[(r.item_id, r.revision)] = r
+        # 升序遍历后覆盖：每条目留下最大 revision 的 ready/failed 版本
+        for b in db.query(BundleRevision).filter(
+            BundleRevision.user_id == user.id,
+            BundleRevision.item_id.in_(ids),
+            BundleRevision.processing_state.in_(["ready", "failed"]),
+        ).order_by(BundleRevision.revision.asc()).all():
+            bundle_map[b.item_id] = b
     outs = []
     for it in items:
-        src = db.query(SourceRevision).filter(
-            SourceRevision.item_id == it.id, SourceRevision.revision == it.source_revision
-        ).one_or_none()
+        src = src_map.get((it.id, it.source_revision))
         if src:
-            outs.append(_item_out(it, src, db))
+            outs.append(_item_out(it, src, db, analysis_bundle=bundle_map.get(it.id)))
     return ItemList(items=outs, total=total, limit=limit, offset=offset)
 
 
@@ -552,8 +570,9 @@ def reprocess(
 
 
 # 重新提取限频：每条目 10 分钟一次（docs/02 §10.1 refetch 限频）
-_REFETCH_LAST_AT: dict[tuple[str, str], float] = {}
-_REFETCH_MIN_INTERVAL_SECONDS = 600
+# check 在前、record 在 commit 之后：enqueue 失败不占用限频窗口（审查 C-25）
+_REFETCH_WINDOW_SECONDS = 600
+_refetch_limiter = SlidingWindowLimiter(1, _REFETCH_WINDOW_SECONDS)
 
 
 @router.post("/{item_id}/refetch", response_model=ItemOut, status_code=202)
@@ -571,11 +590,9 @@ def refetch(item_id: str, body: RefetchInput | None = None,
         raise ApiError("SCHEMA_INVALID", "该条目没有可重新提取的来源 URL", status_code=422)
 
     key = (user.id, item.id)
-    now = time.monotonic()
-    last = _REFETCH_LAST_AT.get(key)
-    if last is not None and now - last < _REFETCH_MIN_INTERVAL_SECONDS:
-        raise ApiError("RATE_LIMITED", f"重新提取每 {_REFETCH_MIN_INTERVAL_SECONDS // 60} 分钟限一次", status_code=429)
-    _REFETCH_LAST_AT[key] = now
+    _refetch_limiter.check(
+        key, time.monotonic(), f"重新提取每 {_REFETCH_WINDOW_SECONDS // 60} 分钟限一次"
+    )
 
     if body is not None and body.include_images and item.capture_id:
         capture = db.get(Capture, item.capture_id)
@@ -592,6 +609,8 @@ def refetch(item_id: str, body: RefetchInput | None = None,
     item.state_detail = ("用户请求重新提取来源（含正文图片）"
                          if body is not None and body.include_images else "用户请求重新提取来源")
     db.commit()
+    # 限频额度在任务真正落盘后才记账（审查 C-25）：enqueue 失败时不占用限频窗口
+    _refetch_limiter.record(key, time.monotonic())
     db.refresh(item)
     return _item_out(item, source, db)
 

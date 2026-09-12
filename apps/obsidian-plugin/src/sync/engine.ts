@@ -102,17 +102,20 @@ export class SyncEngine {
   private epochConflict = false;
   private lastError: string | null = null;
   private suppressedCount = 0;
+  /** 最近一次 loadState 的真实状态缓存：公开 status 不再返回占位值（审查 C-02）。 */
+  private lastState: SyncState | null = null;
 
   constructor(private deps: EngineDeps) {
     this.deps.fs = deps.fs;
   }
 
   get status(): EngineStatus {
+    const st = this.lastState;
     return {
       running: this.running,
-      cursor: 0,
-      pendingCount: 0,
-      lastRunAt: null,
+      cursor: st?.cursor ?? 0,
+      pendingCount: st ? Object.keys(st.pending).length : 0,
+      lastRunAt: st?.lastRunAt ?? null,
       lastError: this.lastError,
       epochConflict: this.epochConflict,
       suppressedCount: this.suppressedCount,
@@ -139,11 +142,14 @@ export class SyncEngine {
     try {
       const client = this.deps.getClient();
       if (!client) {
-        this.deps.onStatus({ running: false, cursor: 0, pendingCount: 0, lastRunAt: Date.now(), lastError: "尚未配对", epochConflict: false, suppressedCount: this.suppressedCount });
+        const state = await this.deps.loadState();
+        this.lastState = state;
+        this.deps.onStatus({ running: false, cursor: state.cursor, pendingCount: Object.keys(state.pending).length, lastRunAt: state.lastRunAt, lastError: "尚未配对", epochConflict: false, suppressedCount: this.suppressedCount });
         return;
       }
       const state = await this.deps.loadState();
-      await this.pullEvents(client, state);
+      this.lastState = state;
+      const moreEvents = await this.pullEvents(client, state);
       const { pendingCount, lastError: processError } = await this.processPending(client, state);
       state.lastRunAt = Date.now();
       await this.deps.saveState(state);
@@ -152,12 +158,13 @@ export class SyncEngine {
       this.deps.onStatus({
         running: false, cursor: state.cursor, pendingCount,
         lastRunAt: state.lastRunAt, lastError: processError, epochConflict: this.epochConflict,
-        suppressedCount: this.suppressedCount,
+        suppressedCount: this.suppressedCount, moreEvents,
       });
     } catch (err) {
       this.lastError = err instanceof Error ? err.message : String(err);
       this.deps.log(`同步失败：${this.lastError}`);
       const state = await this.deps.loadState();
+      this.lastState = state;
       this.deps.onStatus({
         running: false, cursor: state.cursor,
         pendingCount: Object.keys(state.pending).length,
@@ -169,8 +176,12 @@ export class SyncEngine {
     }
   }
 
-  /** 事件拉取：先并入本地待办并持久化，才推进游标（docs/02 §13.1）。 */
-  private async pullEvents(client: KbClient, state: SyncState): Promise<void> {
+  /**
+   * 事件拉取：先并入本地待办并持久化，才推进游标（docs/02 §13.1）。
+   *
+   * 返回是否因达到单轮页数上限而还有剩余事件（审查 C-33：不静默截断）。
+   */
+  private async pullEvents(client: KbClient, state: SyncState): Promise<boolean> {
     let cursor = state.cursor;
     for (let page = 0; page < MAX_EVENT_PAGES; page++) {
       let res;
@@ -203,8 +214,10 @@ export class SyncEngine {
       state.cursor = cursor;
       // 待办与游标同一次持久化：已读取 ≠ 已落盘，游标只在待办写入后推进
       await this.deps.saveState(state);
-      if (!res.has_more) break;
+      if (!res.has_more) return false;
     }
+    this.deps.log(`事件较多，本轮达到 ${MAX_EVENT_PAGES} 页上限；下次同步继续拉取`);
+    return true;
   }
 
   private async processPending(client: KbClient, state: SyncState): Promise<{ pendingCount: number; lastError: string | null }> {

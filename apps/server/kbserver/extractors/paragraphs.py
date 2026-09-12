@@ -85,9 +85,10 @@ def _close(cur: list[dict], out: list[list[dict]], kind: str = "paragraph") -> N
 def _group_timed(segments: list[dict]) -> list[tuple[list[dict], str]]:
     groups: list[tuple[list[dict], str]] = []
     cur: list[dict] = []
+    chars = 0  # 当前组累计字符数（增量维护，避免每片重算全组，审查 C-11）
     for i, seg in enumerate(segments):
         cur.append(seg)
-        chars = sum(len(_text(s)) for s in cur)
+        chars += len(_text(seg))
         nxt = segments[i + 1] if i + 1 < len(segments) else None
         gap_ms = 0
         if nxt is not None and nxt.get("start_ms") is not None and seg.get("end_ms") is not None:
@@ -95,10 +96,13 @@ def _group_timed(segments: list[dict]) -> list[tuple[list[dict], str]]:
         text = _text(seg)
         if _ends_sentence(text) and chars >= _TIMED_TARGET_CHARS:
             _close(cur, groups)
+            chars = 0
         elif chars >= _TIMED_HARD_CHARS:
             _close(cur, groups)
+            chars = 0
         elif gap_ms >= _TIMED_GAP_MS and chars >= _TIMED_MIN_GAP_CHARS:
             _close(cur, groups)
+            chars = 0
     _close(cur, groups)
     return groups
 
@@ -110,21 +114,26 @@ def _group_article(segments: list[dict]) -> list[tuple[list[dict], str]]:
 
     groups: list[tuple[list[dict], str]] = []
     cur: list[dict] = []
+    chars = 0  # 增量维护（审查 C-11）
     for seg, text in zip(segments, texts):
         if _is_heading(seg):
             _close(cur, groups)
             _close([seg], groups, kind="heading")
+            chars = 0
             continue
         cur.append(seg)
-        chars = sum(len(_text(s)) for s in cur)
+        chars += len(text)
         if soft_wrap:
             if _ends_sentence(text) and chars >= _ARTICLE_TARGET_CHARS:
                 _close(cur, groups)
+                chars = 0
             elif chars >= _ARTICLE_HARD_CHARS:
                 _close(cur, groups)
+                chars = 0
         elif _ends_sentence(text) or chars >= _ARTICLE_HARD_CHARS:
             # 原文自己的分段：块以句末标点结尾就是一段
             _close(cur, groups)
+            chars = 0
     _close(cur, groups)
     return groups
 

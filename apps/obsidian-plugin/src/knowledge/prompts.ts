@@ -220,6 +220,12 @@ export function buildFusionPrompt(input: FusionPromptInput): string {
 
 // ---- 输出校验（docs/08 §6.1、§7.1） ----
 
+/**
+ * 融合替换稿长度上限。
+ *
+ * 对照（审查 C-22）：服务端 analysis.py 的 MAX_TEXT=2000 限的是单条片段/摘录文本，
+ * 与这里的整篇替换稿上限各自独立演进；改任一侧时检查另一侧语义是否仍然成立。
+ */
 const MAX_BODY = 40_000;
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -304,6 +310,17 @@ export function validatePromotionOutput(
     }
     if (decision === "review" && !target && !isRecord(item.new_topic)) {
       errors.push(`${at} decision=review 时必须给出 target_knowledge_id 或 new_topic`);
+    }
+    // new_topic 校验（审查 C-21）：空 name 会一路落到 knowledgeIdFromTitle
+    // 生成异常 kb_id 与文件名；scope 限长防止异常长输出
+    if (isRecord(item.new_topic)) {
+      const name = item.new_topic.name;
+      if (!nonEmptyString(name)) errors.push(`${at}.new_topic.name 不能为空`);
+      else if ((name as string).length > 80) errors.push(`${at}.new_topic.name 超过 80 字符`);
+      const scope = item.new_topic.scope;
+      if (scope !== undefined && scope !== null && String(scope).length > 500) {
+        errors.push(`${at}.new_topic.scope 超过 500 字符`);
+      }
     }
 
     const newTopic = isRecord(item.new_topic)

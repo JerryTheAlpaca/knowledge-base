@@ -71,7 +71,7 @@ export class OrganizePanelView extends ItemView {
     modelRow.createEl("strong", { text: "本地整理模型：" });
     modelRow.createEl("span", { text: label });
     const editBtn = c.createEl("button", { text: "修改" });
-    editBtn.style.minHeight = "44px";
+    editBtn.addClass("kb-btn");
     editBtn.addEventListener("click", () => this.hooks.onOpenSettings());
 
     c.createEl("p", {
@@ -87,20 +87,16 @@ export class OrganizePanelView extends ItemView {
     });
 
     const actions = c.createEl("div");
-    actions.style.display = "flex";
-    actions.style.gap = "8px";
-    actions.style.marginTop = "8px";
+    actions.addClass("kb-actions");
 
     const startBtn = actions.createEl("button", { text: "开始整理" });
-    startBtn.style.minHeight = "44px";
-    startBtn.style.minWidth = "120px";
+    startBtn.addClass("kb-btn", "kb-btn-wide");
     startBtn.addEventListener("click", () => void this.run(startBtn));
 
     const pauseBtn = actions.createEl("button", {
       text: service.isPaused ? "继续" : "暂停",
     });
-    pauseBtn.style.minHeight = "44px";
-    pauseBtn.style.minWidth = "88px";
+    pauseBtn.addClass("kb-btn", "kb-btn-mid");
     pauseBtn.addEventListener("click", () => {
       if (service.isPaused) service.resume();
       else service.pause();
@@ -108,7 +104,7 @@ export class OrganizePanelView extends ItemView {
     });
 
     const currentBtn = actions.createEl("button", { text: "整理当前 Digest" });
-    currentBtn.style.minHeight = "44px";
+    currentBtn.addClass("kb-btn");
     currentBtn.addEventListener("click", () => void this.runCurrentDigest());
 
     // 任务分组
@@ -131,22 +127,20 @@ export class OrganizePanelView extends ItemView {
 
   private renderTask(host: HTMLElement, task: OrganizeTask): void {
     const row = host.createEl("div");
-    row.style.padding = "6px 0";
-    row.style.borderBottom = "1px solid var(--background-modifier-border)";
+    row.addClass("kb-list-row");
     row.createEl("div", {
       text: `${task.item_id} · ${task.state}${task.last_error ? `：${task.last_error}` : ""}`,
     });
     if (task.state === "unknown_outcome") {
       const btn = row.createEl("button", { text: "显式重试" });
-      btn.style.minHeight = "44px";
+      btn.addClass("kb-btn");
       btn.addEventListener("click", () => void this.retry(task));
     }
   }
 
   private renderProposal(host: HTMLElement, p: FusionProposal): void {
     const box = host.createEl("div");
-    box.style.padding = "10px 0";
-    box.style.borderBottom = "1px solid var(--background-modifier-border)";
+    box.addClass("kb-list-row", "kb-list-row-roomy");
     box.createEl("strong", { text: p.knowledge_title ?? "（新建主题）" });
     if (p.no_op) box.createEl("span", { text: " · 无变化" });
     box.createEl("div", { text: `变化：${p.change_summary || "—"}` });
@@ -168,29 +162,26 @@ export class OrganizePanelView extends ItemView {
     }
 
     const actions = box.createEl("div");
-    actions.style.display = "flex";
-    actions.style.gap = "8px";
-    actions.style.marginTop = "8px";
+    actions.addClass("kb-actions");
 
     const accept = actions.createEl("button", { text: "采纳" });
-    accept.style.minHeight = "44px";
-    accept.addClass("mod-cta");
+    accept.addClass("kb-btn", "mod-cta");
     accept.addEventListener("click", () => void this.accept(p, null));
 
     const edit = actions.createEl("button", { text: "编辑后采纳" });
-    edit.style.minHeight = "44px";
+    edit.addClass("kb-btn");
     edit.addEventListener("click", () => {
       new EditProposalModal(this.app, p, (body) => void this.accept(p, body)).open();
     });
 
     const diff = actions.createEl("button", { text: "查看差异" });
-    diff.style.minHeight = "44px";
+    diff.addClass("kb-btn");
     diff.addEventListener("click", () => {
       new DiffModal(this.app, p).open();
     });
 
     const skip = actions.createEl("button", { text: "跳过" });
-    skip.style.minHeight = "44px";
+    skip.addClass("kb-btn");
     skip.addEventListener("click", () => void this.skip(p));
   }
 
@@ -271,8 +262,7 @@ class EditProposalModal extends Modal {
     contentEl.createEl("h3", { text: `编辑后采纳：${this.proposal.knowledge_title ?? "新建主题"}` });
     const ta = contentEl.createEl("textarea");
     ta.value = this.value;
-    ta.style.width = "100%";
-    ta.style.minHeight = "320px";
+    ta.addClass("kb-edit-body");
     ta.addEventListener("input", () => { this.value = ta.value; });
     new Setting(contentEl)
       .addButton((b) => b.setButtonText("确认采纳").setCta().onClick(() => {
@@ -300,9 +290,7 @@ class DiffModal extends Modal {
     const diff = renderDiff("", this.proposal.proposed_managed_body);
     const pre = contentEl.createEl("pre");
     pre.setText(diff || "（无内容）");
-    pre.style.whiteSpace = "pre-wrap";
-    pre.style.maxHeight = "420px";
-    pre.style.overflow = "auto";
+    pre.addClass("kb-diff-pre");
     if (this.proposal.conflicts.length) {
       contentEl.createEl("h4", { text: "冲突与未解决的问题" });
       contentEl.createEl("pre", { text: JSON.stringify(this.proposal.conflicts, null, 2) });

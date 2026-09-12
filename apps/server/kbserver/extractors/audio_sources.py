@@ -273,7 +273,7 @@ def _bilibili_resolved(db: Session, item: Item, payload: dict, settings) -> Reso
         raise AudioSourceError("audio_source_unsupported", "条目中没有 B 站链接。")
     ref = bili.resolve_share_url(target)
     page = bili.resolve_video_part(ref, settings.subtitle_download_limit)
-    time.sleep(bili._REQUEST_GAP_S)  # 与字幕路径同节奏，避免连续打接口
+    time.sleep(bili.REQUEST_GAP_S)  # 与字幕路径同节奏，避免连续打接口
     stream = baudio.resolve_audio_stream(ref, page, sessdata=sessdata,
                                         max_bytes=settings.subtitle_download_limit)
     inp = baudio.bilibili_audio_input(ref, page, stream)

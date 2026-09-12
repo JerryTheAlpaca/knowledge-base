@@ -60,7 +60,8 @@ def activate_consumer(
     return DeviceOut(
         device_id=target.id, kind=target.kind, name=target.name,
         consumer_epoch=target.consumer_epoch, revoked=False,
-        created_at=target.created_at.isoformat(), last_seen_at=None,
+        created_at=target.created_at.isoformat(),
+        last_seen_at=target.last_seen_at.isoformat() if target.last_seen_at else None,
     )
 
 

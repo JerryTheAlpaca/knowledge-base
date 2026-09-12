@@ -151,7 +151,7 @@ class FetchResult:
 def safe_fetch(url: str, *, max_bytes: int | None = None, timeout: float = 20.0,
                mime_prefixes: tuple[str, ...] | None = None,
                headers: dict[str, str] | None = None) -> FetchResult:
-    """同步受限 GET。内容完整读入前先检查大小；超限抛错，不发布截断结果。
+    """同步受限 GET。逐块有界读取：累计超限立即中断连接，不把超大响应整体读进内存（审查 C-10）。
 
     headers 仅允许覆盖 User-Agent/Referer 等请求头，安全校验（DNS/IP/重定向/大小）不受影响。
     """
@@ -169,39 +169,43 @@ def safe_fetch(url: str, *, max_bytes: int | None = None, timeout: float = 20.0,
         current = url
         current_host = (urlparse(current).hostname or "").lower()
         for _ in range(MAX_REDIRECTS + 1):
+            # headers 按跳传递：跨主机跳转剥离敏感头，防止凭据跟随重定向
+            hop_headers = {
+                k: v for k, v in (headers or {}).items()
+                if not (current_host != (urlparse(url).hostname or "").lower()
+                        and k.lower() in _SENSITIVE_HEADERS)
+            }
             try:
-                # headers 按跳传递：跨主机跳转剥离敏感头，防止凭据跟随重定向
-                hop_headers = {
-                    k: v for k, v in (headers or {}).items()
-                    if not (current_host != (urlparse(url).hostname or "").lower()
-                            and k.lower() in _SENSITIVE_HEADERS)
-                }
-                resp = client.get(current, headers=hop_headers)
+                # 流式打开：重定向跳不读 body；最终响应逐块读取
+                with client.stream("GET", current, headers=hop_headers) as resp:
+                    if resp.is_redirect:
+                        nxt = _verify_redirect(current, resp)
+                        if nxt is None:
+                            raise SafeFetchError("SOURCE_BLOCKED", "重定向缺少 Location")
+                        current = nxt
+                        current_host = (urlparse(current).hostname or "").lower()
+                        continue
+                    mime = resp.headers.get("content-type", "application/octet-stream").split(";")[0].strip()
+                    if mime_prefixes and not mime.startswith(mime_prefixes):
+                        raise SafeFetchError("SOURCE_BLOCKED", f"不接受的 MIME：{mime}")
+                    declared = resp.headers.get("content-length")
+                    if declared and int(declared) > limit:
+                        raise SafeFetchError("PAYLOAD_TOO_LARGE", f"响应超过 {limit} 字节上限")
+                    parts: list[bytes] = []
+                    total = 0
+                    try:
+                        for chunk in resp.iter_bytes(chunk_size=65536):
+                            total += len(chunk)
+                            if total > limit:
+                                raise SafeFetchError("PAYLOAD_TOO_LARGE", f"响应超过 {limit} 字节上限")
+                            parts.append(chunk)
+                    except httpx.HTTPError as exc:
+                        raise SafeFetchError("NETWORK_ERROR", f"下载失败：{exc}") from exc
+                    return FetchResult(url=str(resp.url), status_code=resp.status_code,
+                                       mime=mime, content=b"".join(parts))
             except httpx.HTTPError as exc:
                 raise SafeFetchError("NETWORK_ERROR", f"下载失败：{exc}") from exc
-            if resp.is_redirect:
-                current = _verify_redirect(current, resp)
-                if current is None:
-                    raise SafeFetchError("SOURCE_BLOCKED", "重定向缺少 Location")
-                current_host = (urlparse(current).hostname or "").lower()
-                continue
-            break
-        else:
-            raise SafeFetchError("SOURCE_BLOCKED", f"重定向超过 {MAX_REDIRECTS} 跳")
-
-    mime = resp.headers.get("content-type", "application/octet-stream").split(";")[0].strip()
-    if mime_prefixes and not mime.startswith(mime_prefixes):
-        raise SafeFetchError("SOURCE_BLOCKED", f"不接受的 MIME：{mime}")
-
-    declared = resp.headers.get("content-length")
-    if declared and int(declared) > limit:
-        raise SafeFetchError("PAYLOAD_TOO_LARGE", f"响应超过 {limit} 字节上限")
-
-    content = resp.content
-    if len(content) > limit:
-        raise SafeFetchError("PAYLOAD_TOO_LARGE", f"响应超过 {limit} 字节上限")
-
-    return FetchResult(url=str(resp.url), status_code=resp.status_code, mime=mime, content=content)
+        raise SafeFetchError("SOURCE_BLOCKED", f"重定向超过 {MAX_REDIRECTS} 跳")
 
 
 @dataclass

@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import secrets
 import time
@@ -162,6 +163,8 @@ def _run_extract_dispatch(db: Session, store: ObjectStore, job: Job, item: Item,
     # 3) 用户正文优先（docs/02 §5.1）；B 站/网页分享文字只是标题+链接+摘要，
     #    不能当正文（docs/04 §5），交给对应适配器处理
     is_bili = _is_bilibili_capture(payload, meta)
+    if is_bili:
+        _bili_throttle_ok()
     web_target = _webpage_target(payload)
     body = user_text or ("" if (is_bili or web_target) else share_text)
     # 用户把视频标题粘进了正文框：标题不是正文，交给字幕适配器取真正的正文
@@ -306,6 +309,25 @@ def _is_bilibili_capture(payload: dict, meta: dict) -> bool:
         if host == "bilibili.com" or host.endswith(".bilibili.com") or host.endswith("b23.tv"):
             return True
     return False
+
+
+# B 站任务间节流（审查 C-13）：节流从提取器内 3 处 time.sleep（合计最多 ~1.8s
+# 纯阻塞）上移为任务边界的一次性检查，等待时长降至 ≤0.6s。不再做「退回队列
+# 让出」：0.6s 级间隔做任务级让出的开销（额外事务与租约轮转）大于收益，且会
+# 让「跑完即停」的任务驱动方式滞留任务；空闲让出由 ASR 门禁（docs/11 §6.2）
+# 在更长的冷却尺度上负责。单 Worker 进程内计数（与 AsrGate 同取舍）。
+_last_bili_task_at: float | None = None
+
+
+def _bili_throttle_ok() -> bool:
+    global _last_bili_task_at
+    now = time.monotonic()
+    if _last_bili_task_at is not None:
+        remaining = bili.REQUEST_GAP_S - (now - _last_bili_task_at)
+        if remaining > 0:
+            time.sleep(remaining)
+    _last_bili_task_at = time.monotonic()  # 领取即占坑：title_note 探测与字幕提取都计入间隔
+    return True
 
 
 def _needs_input(db: Session, job: Job, item: Item, detail: str, reason: str,
@@ -665,6 +687,7 @@ def retention_sweep(session_factory, store: ObjectStore) -> dict[str, int]:
 
         # 孤儿文件：读取所有存续清单，收集仍被引用的对象。
         # 音频原件由 AudioAsset 持有独立引用，不随 Bundle 到期解除（docs/13 §6.3）。
+        # 只查 storage_key 列，不加载整行（审查 C-08）。
         referenced: set[str] = set()
         for bundle in db.query(BundleRevision).all():
             try:
@@ -672,35 +695,41 @@ def retention_sweep(session_factory, store: ObjectStore) -> dict[str, int]:
             except Exception:
                 continue  # 清单缺失按过期处理，不阻塞其他清理
             for entry in manifest.get("files", []):
-                sf = db.query(StoredFile).filter(
+                row = db.query(StoredFile.storage_key).filter(
                     StoredFile.user_id == bundle.user_id,
                     StoredFile.file_id == entry.get("file_id"),
-                ).one_or_none()
-                if sf is not None:
-                    referenced.add(sf.storage_key)
+                ).first()
+                if row is not None:
+                    referenced.add(row[0])
         # 音频原件引用（含未完成但已登记的会话原件）
         for asset in db.query(AudioAsset).filter(AudioAsset.retention_state == "retained").all():
             up = db.get(Upload, asset.upload_id)
             if up is not None:
                 referenced.add(up.storage_key)
             if asset.stored_file_id:
-                sf = db.query(StoredFile).filter(
+                row = db.query(StoredFile.storage_key).filter(
                     StoredFile.user_id == asset.user_id,
                     StoredFile.file_id == asset.stored_file_id,
-                ).one_or_none()
-                if sf is not None:
-                    referenced.add(sf.storage_key)
+                ).first()
+                if row is not None:
+                    referenced.add(row[0])
         # 未完成/已完成待引用的上传会话对象
         for up in db.query(Upload).filter(Upload.state == "completed",
                                           Upload.expires_at.isnot(None)).all():
             if up.expires_at > now:
                 referenced.add(up.storage_key)
-        for f in db.query(StoredFile).all():
-            if f.storage_key not in referenced:
-                store.delete_object(f.storage_key)
-                db.delete(f)
-                stats["orphan_files"] += 1
-        db.commit()
+        # 分批删除孤儿对象与登记，避免单次长事务（审查 C-08）
+        orphans = [(f.id, f.storage_key) for f in db.query(StoredFile).all()
+                   if f.storage_key not in referenced]
+        for start in range(0, len(orphans), 100):
+            batch = orphans[start:start + 100]
+            for _, key in batch:
+                store.delete_object(key)
+            db.query(StoredFile).filter(
+                StoredFile.id.in_([fid for fid, _ in batch])
+            ).delete(synchronize_session=False)
+            stats["orphan_files"] += len(batch)
+            db.commit()
 
         ev_cutoff = now - timedelta(days=settings.event_retention_days)
         stats["events"] = db.query(Event).filter(
@@ -732,10 +761,14 @@ def run_once(session_factory, gate: idle_mod.AsrGate | None = None) -> bool:
     # 按可执行 stage 过滤领取，避免抢到 ASR 任务后反复退回导致普通任务饥饿。
     job = claim_job(session_factory, NORMAL_STAGES)
     if job is None and gate is not None:
-        allowed, _reason = gate.can_start(
+        global _last_gate_reason
+        allowed, reason = gate.can_start(
             get_settings(), normal_busy=_normal_jobs_active(session_factory))
         if allowed:
             job = claim_job(session_factory, ASR_STAGES)
+        elif reason != _last_gate_reason:
+            _last_gate_reason = reason
+            _note_asr_gate_reason(session_factory, reason)  # 审查 C-26：原因变化时暴露到状态
     if job is None:
         return False
     job_id = job.id
@@ -804,6 +837,38 @@ def _normal_jobs_active(session_factory) -> bool:
         return row is not None
 
 
+# 空闲门禁原因 → 人话（写进 item.state_detail；机器码存 run.pause_reason，审查 C-26）
+_GATE_REASON_DETAIL = {
+    "idle_window_filling": "等待空闲采样窗口（启动观察期约 1 分钟）",
+    "metrics_unavailable": "读不到宿主机负载指标，保持排队",
+    "cpu_busy": "服务器忙碌，等待空闲",
+    "memory_low": "服务器可用内存不足，等待恢复",
+    "normal_jobs_active": "普通任务执行中，转写让行",
+}
+_last_gate_reason: str | None = None
+
+
+def _note_asr_gate_reason(session_factory, reason: str) -> None:
+    """空闲门禁拒绝时把具体原因写到排队中的 ASR run（审查 C-26）。
+
+    只在原因变化时调用（run_once 内控制），避免每轮轮询刷库；
+    resource_busy 已由 asr._pause_run 落库，不在这里重复写。
+    """
+    detail = _GATE_REASON_DETAIL.get(reason)
+    if detail is None:
+        return
+    with session_factory() as db:
+        runs = db.query(AsrRun).filter(AsrRun.state == "queued").all()
+        for run in runs:
+            run.pause_reason = reason
+            run.updated_at = utcnow()
+            item = db.get(Item, run.item_id)
+            if item is not None:
+                item.state_detail = f"等待音频转写：{detail}"
+        if runs:
+            db.commit()
+
+
 def main() -> None:
     settings = get_settings()
     settings.ensure_dirs()
@@ -818,6 +883,14 @@ def main() -> None:
         print(f"[worker] 恢复过期租约 {recovered} 个任务")
     if asr_stage.asr_enabled(settings):
         print("[worker] ASR 已启用（仅服务器空闲时执行；空闲准入按宿主机整机指标）")
+        if not idle_mod.metrics_available():
+            # 审查 C-14：明确打出跳过原因，避免误判为 ASR 故障
+            if os.environ.get(idle_mod.IGNORE_GATE_ENV) == "1":
+                print("[worker] ASR_IGNORE_IDLE_GATE=1：已跳过空闲门禁"
+                      "（本机无 /proc 指标，仅供本地开发，生产勿用）")
+            else:
+                print("[worker] 本机读不到宿主机指标，空闲门禁将使 ASR 保持排队；"
+                      "本地调试可设 ASR_IGNORE_IDLE_GATE=1 跳过")
     print("[worker] 已启动，轮询任务队列…")
     store = ObjectStore()
     gate = idle_mod.AsrGate()

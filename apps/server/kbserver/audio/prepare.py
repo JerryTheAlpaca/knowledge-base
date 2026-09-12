@@ -345,8 +345,3 @@ def _drain_and_wait(proc: subprocess.Popen, stderr_thread: threading.Thread) -> 
     except subprocess.TimeoutExpired:
         _terminate(proc)
     stderr_thread.join(timeout=2)
-
-
-def poll_progress_sleep() -> None:
-    """对象输入轮询间隔：抽成函数便于测试替换。"""
-    time.sleep(OBJECT_POLL_INTERVAL_S)

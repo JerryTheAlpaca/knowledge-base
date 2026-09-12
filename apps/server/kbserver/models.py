@@ -461,7 +461,8 @@ class AsrRun(Base, TimestampMixin):
     state: Mapped[str] = mapped_column(String(20), default="queued")
     # queued|preparing|transcribing|paused|succeeded|failed|cancelled
     pause_reason: Mapped[str] = mapped_column(String(40), default="")
-    # idle_wait|resource_busy|disabled|metrics_unavailable|""
+    # idle_wait|resource_busy|disabled|metrics_unavailable|idle_window_filling|
+    # cpu_busy|memory_low|normal_jobs_active|selection_required|""（审查 C-26：排队期间暴露门禁原因）
     next_chunk_index: Mapped[int] = mapped_column(Integer, default=0)
     chunk_count: Mapped[int] = mapped_column(Integer, default=0)
     failed_count: Mapped[int] = mapped_column(Integer, default=0)

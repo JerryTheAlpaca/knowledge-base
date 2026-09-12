@@ -34,6 +34,15 @@ FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 BV = "BV1xxASRTest"
 
 
+@pytest.fixture(autouse=True)
+def _reset_bili_throttle():
+    """重置 Worker 的 B 站任务间节流状态（审查 C-13 引入）：本文件不测节流，
+    避免前序测试留下的时间戳让 extract 在 _drain 里让出后滞留队列。"""
+    worker._last_bili_task_at = None
+    yield
+    worker._last_bili_task_at = None
+
+
 # ---- 门与包装器 ----
 
 class AlwaysAllowGate:

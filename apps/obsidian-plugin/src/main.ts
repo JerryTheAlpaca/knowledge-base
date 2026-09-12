@@ -59,14 +59,22 @@ class StatusView extends ItemView {
     c.empty();
     c.createEl("h3", { text: "Knowledge Inbox" });
     const st = this.plugin.lastStatus;
+    // lastStatus（onStatus 推送）优先，尚未跑过同步时回退到 data.json 里的
+    // 持久化 syncState，避免重启后面板一直显示占位值（审查 C-02/U-04）
+    const sync = this.plugin.syncState;
     const lines: Array<[string, string]> = [
       ["状态", st?.running ? "同步中…" : (st?.lastError ? `出错：${st.lastError}` : "就绪")],
-      ["待入库", String(st?.pendingCount ?? 0)],
-      ["上次同步", st?.lastRunAt ? new Date(st.lastRunAt).toLocaleString() : "—"],
-      ["游标", String(this.plugin.syncState?.cursor ?? 0)],
+      ["待入库", String(st?.pendingCount ?? Object.keys(sync.pending).length)],
+      ["上次同步", st?.lastRunAt
+        ? new Date(st.lastRunAt).toLocaleString()
+        : sync.lastRunAt ? new Date(sync.lastRunAt).toLocaleString() : "—"],
+      ["游标", String(st?.cursor ?? sync.cursor)],
     ];
     if (st?.epochConflict) {
       lines.push(["设备", "已不是主要写入设备；请在服务器切换后重新同步"]);
+    }
+    if (st?.moreEvents) {
+      lines.push(["事件", "还有更多事件，将在下次同步继续"]);
     }
     if ((st?.suppressedCount ?? 0) > 0) {
       lines.push(["已放弃条目", `${st?.suppressedCount} 条（本地删除停复建或服务器已删除）`]);
@@ -77,8 +85,7 @@ class StatusView extends ItemView {
       row.createEl("span", { text: v });
     }
     const btn = c.createEl("button", { text: "立即同步" });
-    btn.style.minWidth = "120px";
-    btn.style.minHeight = "44px";
+    btn.addClass("kb-btn-wide");
     btn.addEventListener("click", () => void this.plugin.manualSync());
   }
 

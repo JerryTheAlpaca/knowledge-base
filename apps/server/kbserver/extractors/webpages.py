@@ -112,13 +112,16 @@ _HEADING_MAX_CHARS = 30
 
 
 class _Node:
-    __slots__ = ("tag", "attrs", "children", "parent")
+    __slots__ = ("tag", "attrs", "children", "parent", "_text_cache")
 
     def __init__(self, tag: str, attrs: dict | None = None, parent: "_Node | None" = None):
         self.tag = tag
         self.attrs = attrs or {}
         self.children: list = []  # str | _Node
         self.parent = parent
+        # 解析完成后树只读，子树文本可安全缓存（审查 C-12）：
+        # _leaf_blocks/_content_root 会反复对同一节点取文本，不缓存是 O(n·depth) 重复遍历
+        self._text_cache: str | None = None
 
 
 class _HtmlTree(HTMLParser):
@@ -222,6 +225,8 @@ def _clean_text(s: str) -> str:
 
 
 def _text_of(node: _Node) -> str:
+    if node._text_cache is not None:
+        return node._text_cache
     parts: list[str] = []
 
     def walk(n: _Node) -> None:
@@ -234,7 +239,9 @@ def _text_of(node: _Node) -> str:
                 walk(c)
 
     walk(node)
-    return _clean_text("".join(parts))
+    text = _clean_text("".join(parts))
+    node._text_cache = text
+    return text
 
 
 def _all_bold(node: _Node) -> bool:

@@ -71,8 +71,10 @@ _wbi_state: tuple[float, str] | None = None  # (过期时间戳, mix_key)
 _device_lock = threading.Lock()
 _device_id: str | None = None
 
-# 请求间的小间隔，避免对站点接口形成突发压力
-_REQUEST_GAP_S = 0.6
+# 请求间的小间隔，避免对站点接口形成突发压力。
+# 审查 C-13：节流从提取器内的 time.sleep（阻塞 Worker 空转）上移为 Worker 的
+# 任务间让出限速——间隔不足时任务退回队列，Worker 先领其他任务。
+REQUEST_GAP_S = 0.6
 
 _BILI_HOSTS = ("bilibili.com", "b23.tv")
 # 允许携带登录凭据的主机：只有 B 站认证接口；字幕 CDN（*.hdslb.com）不携带
@@ -620,7 +622,6 @@ def extract(url: str, *, share_text: str | None = None,
 
     ref = resolve_share_url(target)
     page = resolve_video_part(ref, limit)
-    time.sleep(_REQUEST_GAP_S)
     discovery = discover_tracks(ref, page, limit, sessdata=sessdata)
     pairs = discovery.pairs
 
@@ -699,7 +700,6 @@ def extract(url: str, *, share_text: str | None = None,
     # 全部候选都失败时，重新探测一次（地址会变）再试一轮；仍失败不发布错误正文。
     for attempt in (0, 1):
         for track, track_url in candidates:
-            time.sleep(_REQUEST_GAP_S)
             try:
                 raw, records = _download_and_parse(track_url, limit)
             except _SubtitleBodyInvalid:
@@ -736,7 +736,6 @@ def extract(url: str, *, share_text: str | None = None,
             mismatch.append(reason)
         if attempt == 0:
             # 重新探测一次同一视频/分 P（docs/04 §4.5），不循环重试
-            time.sleep(_REQUEST_GAP_S)
             discovery2 = discover_tracks(ref, page, limit, sessdata=sessdata)
             if not discovery2.pairs:
                 break
