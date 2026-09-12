@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from ..config import get_settings
 from ..db import get_db
 from ..api.deps import require_device, require_scope
+from ..api.rate_limit import SlidingWindowLimiter
 from ..domain import pipeline, provider_ops
 from ..domain.errors import ApiError
 from ..models import (
@@ -53,8 +54,9 @@ ALLOWED_CAPABILITY_KEYS = {
     "vision": bool,
 }
 
-_TEST_LAST_AT: dict[tuple[str, str], float] = {}
+# 连接测试限流：每用户每模型档 60 秒一次（惰性清理见 rate_limit.py）
 TEST_MIN_INTERVAL_SECONDS = 60
+_test_limiter = SlidingWindowLimiter(1, TEST_MIN_INTERVAL_SECONDS)
 
 
 def _validate_endpoint(endpoint: str) -> str:
@@ -237,6 +239,11 @@ def update_profile(profile_id: str, body: ProfileUpdate, principal=Depends(requi
 
     requeued = 0
     if body.secret is not None:
+        # 用户自行更换 Key：材料归属本人，解除管理员代配的本地下发限制
+        meta = dict(profile.meta_json or {})
+        if meta.get("local_export") == "denied":
+            meta["local_export"] = "allowed"
+            profile.meta_json = meta
         current = (
             db.query(Credential)
             .filter(Credential.profile_id == profile.id, Credential.revoked_at.is_(None))
@@ -254,14 +261,13 @@ def update_profile(profile_id: str, body: ProfileUpdate, principal=Depends(requi
                           master_key_version=get_settings().master_key_version, **encrypted))
         # 新凭据生效：等待 Key 的条目自动继续（docs/02 §8.1 waiting_key -> queued）
         requeued = _requeue_waiting(db, user.id, "waiting_key", "enrich")
-    db.commit()
-    db.refresh(profile)
-    out = _profile_out(db, profile)
+    # 事件与凭据写入同一事务原子落盘（审查 C-16：不做两次紧邻 commit）
     if requeued:
         pipeline.emit_event(db, user.id, item_id=None, bundle_revision=None,
                             event_type="credentials_updated", payload={"profile_id": profile.id, "requeued": requeued})
-        db.commit()
-    return out
+    db.commit()
+    db.refresh(profile)
+    return _profile_out(db, profile)
 
 
 @router.delete("/v1/provider-profiles/{profile_id}/credential")
@@ -398,6 +404,13 @@ def bind_local(
     profile = _require_profile(db, user.id, profile_id)
     if profile.kind != "llm":
         raise ApiError("SCHEMA_INVALID", "本地整理只支持 llm 类型的配置", status_code=422)
+    if (profile.meta_json or {}).get("local_export") == "denied":
+        # 管理员代配的 Key 暂不下发本机（docs/16）；用户自行更换 Key 后可绑定
+        raise ApiError(
+            "FORBIDDEN",
+            "该配置由管理员代配，暂不支持下发到本机；可自行填写自己的模型 Key 后再绑定",
+            status_code=403,
+        )
 
     cred = (
         db.query(Credential)
@@ -523,11 +536,9 @@ def test_profile(profile_id: str, principal=Depends(require_scope("profiles:mana
     user = principal.user
     profile = _require_profile(db, user.id, profile_id)
     key = (user.id, profile.id)
-    now = time.monotonic()
-    last = _TEST_LAST_AT.get(key)
-    if last is not None and now - last < TEST_MIN_INTERVAL_SECONDS:
-        raise ApiError("RATE_LIMITED", f"连接测试每 {TEST_MIN_INTERVAL_SECONDS} 秒限一次", status_code=429)
-    _TEST_LAST_AT[key] = now
+    _test_limiter.hit(
+        key, time.monotonic(), f"连接测试每 {TEST_MIN_INTERVAL_SECONDS} 秒限一次"
+    )
 
     cred = (
         db.query(Credential)
@@ -553,6 +564,8 @@ def test_profile(profile_id: str, principal=Depends(require_scope("profiles:mana
         request_fingerprint=pipeline.sha256_hex(f"test|{profile.id}".encode())[:32],
     )
     provider_ops.mark_sent(op)
+    # 有意的状态机落盘点（审查 C-16）：外部调用前先落「已发送」，
+    # 进程中断后 op 记录仍是 outcome-unknown 语义，不会当成未发出而盲目重试
     db.commit()
 
     provider = OpenAICompatibleProvider(

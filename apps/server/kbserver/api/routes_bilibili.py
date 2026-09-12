@@ -197,15 +197,14 @@ def get_session(principal=Depends(require_scope("profiles:manage")), db: Session
     return _out(db, _session_profile(db, user.id))
 
 
-@router.put("/v1/bilibili-session")
-def put_session(body: SessionSecret, principal=Depends(require_scope("profiles:manage")), db: Session = Depends(get_db)):
-    user = principal.user
-    sessdata = _extract_sessdata(body.secret)
+def upsert_session_for_user(db: Session, user_id: str, raw_secret: str) -> dict:
+    """把清洗后的 SESSDATA 写入目标用户的 bilibili_session 配置（本人或管理员代配）。"""
+    sessdata = _extract_sessdata(raw_secret)
 
-    profile = _session_profile(db, user.id)
+    profile = _session_profile(db, user_id)
     if profile is None:
         profile = ProviderProfile(
-            user_id=user.id, kind=SESSION_KIND, adapter=SESSION_ADAPTER,
+            user_id=user_id, kind=SESSION_KIND, adapter=SESSION_ADAPTER,
             endpoint=SESSION_ENDPOINT, model=SESSION_MODEL,
             capabilities_json={}, version=1,
         )
@@ -218,27 +217,25 @@ def put_session(body: SessionSecret, principal=Depends(require_scope("profiles:m
         current.revoked_at = utcnow()
     encrypted = cred_crypto.encrypt_secret(
         sessdata, get_settings().load_master_key(),
-        user_id=user.id, profile_id=profile.id, credential_version=next_version,
+        user_id=user_id, profile_id=profile.id, credential_version=next_version,
     )
-    db.add(Credential(user_id=user.id, profile_id=profile.id, version=next_version,
+    db.add(Credential(user_id=user_id, profile_id=profile.id, version=next_version,
                       master_key_version=get_settings().master_key_version, **encrypted))
 
-    requeued = _requeue_needs_input(db, user.id)
+    requeued = _requeue_needs_input(db, user_id)
     db.commit()
     db.refresh(profile)
     out = _out(db, profile)
     out["requeued_items"] = requeued
-    pipeline.emit_event(db, user.id, item_id=None, bundle_revision=None,
+    pipeline.emit_event(db, user_id, item_id=None, bundle_revision=None,
                         event_type="bilibili_session_updated",
                         payload={"credential_version": next_version, "requeued": requeued})
     db.commit()
     return out
 
 
-@router.delete("/v1/bilibili-session")
-def delete_session(principal=Depends(require_scope("profiles:manage")), db: Session = Depends(get_db)):
-    user = principal.user
-    profile = _session_profile(db, user.id)
+def revoke_session_for_user(db: Session, user_id: str) -> dict:
+    profile = _session_profile(db, user_id)
     if profile is None:
         return {"revoked": True, "note": "本来就没有托管登录态。"}
     now = utcnow()
@@ -253,15 +250,9 @@ def delete_session(principal=Depends(require_scope("profiles:manage")), db: Sess
             "note": "后续提取回到匿名路径；需要登录的视频将进入补充材料。"}
 
 
-@router.post("/v1/bilibili-session/test")
-def test_session(principal=Depends(require_scope("profiles:manage")), db: Session = Depends(get_db)):
-    """检测当前用户的 B 站登录态是否有效（docs/05 §3.3）。
-
-    只验证凭据本身（nav 接口），不触发任何条目重抓；结果（含时间与脱敏原因）
-    存入 profile.meta_json，供 GET 状态区分「已保存未验证 / 最近有效 / 已失效」。
-    """
-    user = principal.user
-    profile = _session_profile(db, user.id)
+def test_session_for_user(db: Session, user_id: str) -> dict:
+    """检测目标用户的 B 站登录态；结果写入 profile.meta_json（脱敏）。"""
+    profile = _session_profile(db, user_id)
     cred = _active_credential(db, profile) if profile else None
     if cred is None:
         raise ApiError("SCHEMA_INVALID", "尚未托管 B 站登录态", status_code=422)
@@ -269,7 +260,7 @@ def test_session(principal=Depends(require_scope("profiles:manage")), db: Sessio
         sessdata = cred_crypto.decrypt_secret(
             cred.encrypted_secret, cred.encrypted_dek, cred.nonces_json,
             get_settings().load_master_key(),
-            user_id=user.id, profile_id=profile.id, credential_version=cred.version,
+            user_id=user_id, profile_id=profile.id, credential_version=cred.version,
         )
     except Exception as exc:
         check = {"status": "invalid", "detail": f"凭据解密失败（{type(exc).__name__}）；请重新提交 SESSDATA",
@@ -282,3 +273,19 @@ def test_session(principal=Depends(require_scope("profiles:manage")), db: Sessio
     profile.meta_json = {**(profile.meta_json or {}), "bilibili_last_check": check}
     db.commit()
     return check
+
+
+@router.put("/v1/bilibili-session")
+def put_session(body: SessionSecret, principal=Depends(require_scope("profiles:manage")), db: Session = Depends(get_db)):
+    return upsert_session_for_user(db, principal.user.id, body.secret)
+
+
+@router.delete("/v1/bilibili-session")
+def delete_session(principal=Depends(require_scope("profiles:manage")), db: Session = Depends(get_db)):
+    return revoke_session_for_user(db, principal.user.id)
+
+
+@router.post("/v1/bilibili-session/test")
+def test_session(principal=Depends(require_scope("profiles:manage")), db: Session = Depends(get_db)):
+    """检测当前用户的 B 站登录态是否有效（docs/05 §3.3）。"""
+    return test_session_for_user(db, principal.user.id)

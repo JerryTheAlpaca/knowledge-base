@@ -46,6 +46,10 @@
   .pwrow input { flex: 1; }  /* 控件基础样式来自 tokens.css */
   .pwrow .eye { min-width: 60px; }
 
+  /* 代配凭据弹窗表单 */
+  .modal-body label.small { display: block; margin: 0 0 10px; font-weight: 500; }
+  .modal-body label.small input { display: block; width: 100%; margin-top: 4px; box-sizing: border-box; }
+
   .denied { text-align: center; padding: 60px 16px; }
   @media (max-width: 720px) {
     .topbar-inner, main { padding-left: 14px; padding-right: 14px; }
@@ -72,6 +76,24 @@
     </div>
     <p class="help" style="margin:0 0 4px">新用户凭邀请码注册；每条邀请码单次使用、默认 7 天有效，完整码只在创建时显示一次。</p>
     <div id="invList"><div class="muted" style="padding:8px 0">加载中…</div></div>
+  </div>
+
+  <div class="card">
+    <div class="list-head">
+      <h2>用户凭据代配</h2>
+      <button class="icon" id="credUsersRefresh" title="刷新" aria-label="刷新">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/>
+        </svg>
+      </button>
+    </div>
+    <p class="help" style="margin:0 0 8px">
+      为试用用户写入云端可用的模型 Key 与 B 站登录态。代配的 LLM Key
+      <b>暂不支持</b>在 Obsidian 中绑定到本机；B 站登录态仅服务器提取字幕。
+      请为每位用户使用可单独作废的独立 Key，不要共用日常生产 Key。
+    </p>
+    <div id="credUsers"><div class="muted" style="padding:8px 0">加载中…</div></div>
   </div>
 
   <div class="card">
@@ -172,6 +194,9 @@ function handleErr(e, prefix) {
 let modalResolve = null;
 let modalLastFocus = null;
 const MODAL_FOCUSABLE = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
+// 只接受已净化 HTML（审查 C-28）：动态数据必须在调用前经 esc()；
+// confirmModal 的 o.title/o.confirmLabel 内部已 esc，o.body 视为可信字面量，
+// 若将来传入动态内容须先 esc。
 function openModalHTML(html) {
   modalLastFocus = document.activeElement;  // U-02：记录触发元素，关闭时归还焦点
   $("modalBox").innerHTML = html;
@@ -350,12 +375,166 @@ async function loadServerStats() {
   }
 }
 
-function loadAdmin() { loadAdminInvitations(); loadAsrOverview(); loadServerStats(); }
+function loadAdmin() { loadAdminInvitations(); loadAsrOverview(); loadServerStats(); loadCredUsers(); }
+
+// ---------- 用户凭据代配 ----------
+function credBadge(ok, yes, no) {
+  return ok
+    ? '<span class="badge b-ready">' + esc(yes) + "</span>"
+    : '<span class="badge b-raw">' + esc(no) + "</span>";
+}
+
+async function loadCredUsers() {
+  const host = $("credUsers");
+  try {
+    const r = await api("/v1/admin/users");
+    const users = r.users || [];
+    if (!users.length) {
+      host.innerHTML = '<div class="muted" style="padding:8px 0">还没有本地用户。</div>';
+      return;
+    }
+    host.innerHTML = users.map((u) => {
+      const llm = u.llm || {};
+      const bili = u.bilibili || {};
+      return '<div class="asruser" data-user-row="' + esc(u.user_id) + '">' +
+        '<span style="font-weight:600">' + esc(u.name) + "</span>" +
+        '<span class="dim">' + esc(u.auth_subject || "—") + "</span>" +
+        credBadge(llm.configured, "LLM 已配置", "LLM 未配置") +
+        (llm.model ? '<span class="small">' + esc(llm.model) + "</span>" : "") +
+        (llm.local_export === "denied" ? '<span class="badge b-queued">禁本地下发</span>' : "") +
+        credBadge(!!bili.configured, "B站已配置", "B站未配置") +
+        (bili.verification ? '<span class="small">' + esc(bili.verification) + "</span>" : "") +
+        '<span style="flex:1"></span>' +
+        '<button class="small" data-cred-open="' + esc(u.user_id) + '">配置</button>' +
+        "</div>";
+    }).join("");
+  } catch (e) {
+    host.innerHTML = '<div class="muted" style="padding:8px 0">加载失败</div>';
+    handleErr(e, "用户列表加载失败：");
+  }
+}
+
+async function openCredPanel(userId) {
+  let detail = { llm: null, llm_local_export: null, bilibili: {} };
+  try {
+    detail = await api("/v1/admin/users/" + encodeURIComponent(userId) + "/credentials");
+  } catch (e) { handleErr(e, "读取凭据状态失败："); return; }
+
+  const llm = detail.llm || {};
+  const bili = detail.bilibili || {};
+  const biliStatus = (bili.last_check && bili.last_check.status) || bili.verification || "unconfigured";
+  openModalHTML(
+    '<div class="modal-title">代配凭据</div>' +
+    '<div class="modal-body">' +
+      '<p class="small muted" style="margin:0 0 12px">用户 ID：<code>' + esc(userId) + "</code></p>" +
+      '<p style="margin:0 0 6px;font-weight:600">LLM 模型 Key</p>' +
+      '<p class="small muted" style="margin:0 0 8px">' +
+        "写入后云端加工可用；<b>暂不支持</b>下发到 Obsidian 本机绑定。当前：" +
+        esc(llm.configured ? "已配置 v" + (llm.credential_version || "?") : "未配置") + "</p>" +
+      '<label class="small">Endpoint<input id="credEndpoint" type="url" autocomplete="off" placeholder="https://api.deepseek.com/v1" value="' +
+        esc(llm.endpoint || "https://api.deepseek.com/v1") + '"></label>' +
+      '<label class="small">模型<input id="credModel" type="text" autocomplete="off" placeholder="deepseek-chat" value="' +
+        esc(llm.model || "") + '"></label>' +
+      '<label class="small">API Key<input id="credSecret" type="password" autocomplete="off" placeholder="sk-…"></label>' +
+      '<div style="display:flex;gap:8px;margin:8px 0 16px;flex-wrap:wrap">' +
+        '<button class="primary" id="credLlmSave">保存 LLM Key</button>' +
+        (llm.configured ? '<button class="danger" id="credLlmRevoke">撤销 LLM</button>' : "") +
+      "</div>" +
+      '<p style="margin:0 0 6px;font-weight:600">B 站登录态（SESSDATA）</p>' +
+      '<p class="small muted" style="margin:0 0 8px">仅服务器提取字幕，不会下发到插件。当前：' +
+        esc(biliStatus) + "</p>" +
+      '<label class="small">SESSDATA<input id="credBili" type="password" autocomplete="off" placeholder="SESSDATA 值或 Cookie 片段"></label>' +
+      '<div style="display:flex;gap:8px;margin:8px 0 0;flex-wrap:wrap">' +
+        '<button class="primary" id="credBiliSave">保存 B 站登录态</button>' +
+        (bili.configured ? '<button id="credBiliTest">检测登录态</button>' : "") +
+        (bili.configured ? '<button class="danger" id="credBiliRevoke">撤销 B 站</button>' : "") +
+      "</div>" +
+    "</div>" +
+    '<div class="modal-foot"><button id="mCancel">关闭</button></div>');
+  $("mCancel").onclick = () => closeModal(null);
+
+  $("credLlmSave").onclick = async () => {
+    const secret = $("credSecret").value.trim();
+    if (!secret) { toast("请填写 API Key", { type: "error" }); return; }
+    try {
+      await api("/v1/admin/users/" + encodeURIComponent(userId) + "/llm-credential", {
+        method: "PUT",
+        body: {
+          endpoint: $("credEndpoint").value.trim(),
+          model: $("credModel").value.trim(),
+          secret,
+        },
+      });
+      toast("已写入该用户的 LLM Key", { type: "ok" });
+      $("credSecret").value = "";
+      closeModal(null);
+      loadCredUsers();
+    } catch (e) { handleErr(e, "保存 LLM Key 失败："); }
+  };
+  const revokeLlm = $("credLlmRevoke");
+  if (revokeLlm) revokeLlm.onclick = async () => {
+    const ok = await confirmModal({
+      title: "撤销 LLM Key",
+      body: "撤销后该用户云端新任务进入等待；已发出的调用可能仍会结束。",
+      confirmLabel: "撤销", danger: true,
+    });
+    if (!ok) return;
+    try {
+      await api("/v1/admin/users/" + encodeURIComponent(userId) + "/llm-credential", { method: "DELETE" });
+      toast("已撤销 LLM Key", { type: "ok" });
+      closeModal(null);
+      loadCredUsers();
+    } catch (e) { handleErr(e, "撤销失败："); }
+  };
+
+  $("credBiliSave").onclick = async () => {
+    const secret = $("credBili").value.trim();
+    if (!secret) { toast("请填写 SESSDATA", { type: "error" }); return; }
+    try {
+      await api("/v1/admin/users/" + encodeURIComponent(userId) + "/bilibili-session", {
+        method: "PUT", body: { secret },
+      });
+      toast("已写入 B 站登录态", { type: "ok" });
+      $("credBili").value = "";
+      closeModal(null);
+      loadCredUsers();
+    } catch (e) { handleErr(e, "保存 B 站登录态失败："); }
+  };
+  const biliTest = $("credBiliTest");
+  if (biliTest) biliTest.onclick = async () => {
+    try {
+      const r = await api("/v1/admin/users/" + encodeURIComponent(userId) + "/bilibili-session/test",
+        { method: "POST", body: {} });
+      toast((r.detail || r.status || "检测完成"), { type: r.status === "valid" ? "ok" : "error" });
+    } catch (e) { handleErr(e, "检测失败："); }
+  };
+  const biliRevoke = $("credBiliRevoke");
+  if (biliRevoke) biliRevoke.onclick = async () => {
+    const ok = await confirmModal({
+      title: "撤销 B 站登录态",
+      body: "后续提取回到匿名路径；需要登录的视频将进入补充材料。",
+      confirmLabel: "撤销", danger: true,
+    });
+    if (!ok) return;
+    try {
+      await api("/v1/admin/users/" + encodeURIComponent(userId) + "/bilibili-session", { method: "DELETE" });
+      toast("已撤销 B 站登录态", { type: "ok" });
+      closeModal(null);
+      loadCredUsers();
+    } catch (e) { handleErr(e, "撤销失败："); }
+  };
+}
 
 // ---------- 启动与事件 ----------
 $("invCreateBtn").addEventListener("click", createInvitation);
 $("asrAdminRefresh").addEventListener("click", loadAsrOverview);
 $("srvStatsRefresh").addEventListener("click", loadServerStats);
+$("credUsersRefresh").addEventListener("click", loadCredUsers);
+$("credUsers").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-cred-open]");
+  if (!b) return;
+  openCredPanel(b.dataset.credOpen);
+});
 $("invList").addEventListener("click", async (e) => {
   const b = e.target.closest("[data-inv-revoke]");
   if (!b) return;
