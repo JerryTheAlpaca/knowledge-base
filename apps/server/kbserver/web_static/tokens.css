@@ -143,7 +143,8 @@ button.ghost:hover { background: var(--surface-2); border-color: transparent; }
 /* U-01：小按钮视觉紧凑（32px），用伪元素把命中区扩到 ≥44px，不改变视觉尺寸 */
 button.small, .btn.small { min-height: 32px; padding: 4px 10px; font-size: var(--fs-small); position: relative; }
 button.small::after, .btn.small::after { content: ""; position: absolute; inset: -6px -4px; }
-button.icon { padding: 8px; min-width: 44px; }
+button.icon { padding: 8px; min-width: 44px; border: none; background: transparent; }
+button.icon:hover { background: var(--surface-2); border: none; }
 button:disabled { opacity: .5; cursor: default; pointer-events: none; }
 button:active { transform: translateY(1px); }
 .spin svg { animation: rot 1s linear infinite; }
