@@ -24,7 +24,7 @@ from ..domain import pipeline
 from ..domain.errors import ApiError
 from ..api.deps import require_scope
 from ..api.rate_limit import SlidingWindowLimiter
-from ..models import AudioAsset, BundleRevision, Capture, Item, SourceRevision, Job, new_id, utcnow
+from ..models import AsrRun, AudioAsset, BundleRevision, Capture, Item, SourceRevision, Job, new_id, utcnow
 from ..repositories import core as repo
 from ..storage.objects import ObjectStore
 
@@ -626,6 +626,16 @@ def delete_item(item_id: str, principal=Depends(require_scope("items:edit")), db
         item.deleted_at = utcnow()
         db.query(Job).filter(Job.item_id == item.id, Job.state.in_(["queued", "retry_wait"])).update(
             {"state": "cancelled"}, synchronize_session=False
+        )
+        # 同步取消进行中的转写：否则 run 停留在 preparing 等活动状态，
+        # 管理页 ASR 总览会一直显示「进行中」（docs/13 §6.3）
+        db.query(AsrRun).filter(
+            AsrRun.item_id == item.id,
+            AsrRun.state.in_(["queued", "preparing", "transcribing", "paused"]),
+        ).update(
+            {"state": "cancelled", "pause_reason": "", "last_error": "条目已删除，任务作废",
+             "updated_at": utcnow()},
+            synchronize_session=False,
         )
         # 删除条目时解除音频原件引用（docs/13 §6.3）：在线对象随后由清理任务回收
         db.query(AudioAsset).filter(

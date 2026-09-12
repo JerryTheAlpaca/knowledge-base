@@ -26,7 +26,7 @@ from ..db import get_db
 from ..api.deps import current_principal
 from ..domain import pipeline
 from ..domain.errors import ApiError
-from ..models import AsrRun, Credential, ProviderProfile, User, utcnow
+from ..models import AsrRun, Credential, Item, ProviderProfile, User, utcnow
 from ..security import credentials as cred_crypto
 from . import routes_bilibili, routes_profiles
 
@@ -110,7 +110,9 @@ def revoke_invitation(invitation_id: str, request: Request, _admin=Depends(requi
 @router.get("/asr-overview")
 def asr_overview(_admin=Depends(require_admin), db: Session = Depends(get_db)):
     """全部用户的 ASR 提交/排队概况与每人累计处理分钟（不含文件名）。"""
-    # 聚合查询代替全表加载（审查 C-08）；active 明细行数少，单独取
+    # 聚合查询代替全表加载（审查 C-08）；active 明细行数少，单独取。
+    # active 一律排除已删除条目：历史脏 run（如删除前卡在 preparing 的孤儿）
+    # 不应让管理页永远显示「进行中」
     ACTIVE = ("queued", "preparing", "transcribing", "paused")
     from sqlalchemy import case, func
 
@@ -119,13 +121,19 @@ def asr_overview(_admin=Depends(require_admin), db: Session = Depends(get_db)):
             AsrRun.user_id,
             func.count(AsrRun.id).label("total_runs"),
             func.coalesce(func.sum(AsrRun.processed_seconds), 0.0).label("processed_seconds"),
-            func.sum(case((AsrRun.state.in_(ACTIVE), 1), else_=0)).label("active_runs"),
+            func.sum(case((AsrRun.state.in_(ACTIVE) & Item.deleted_at.is_(None), 1), else_=0)).label("active_runs"),
         )
+        .join(Item, Item.id == AsrRun.item_id)
         .group_by(AsrRun.user_id)
         .all()
     )
     names = {u.id: u.name for u in db.query(User.id, User.name).all()}
-    active_rows = db.query(AsrRun).filter(AsrRun.state.in_(ACTIVE)).all()
+    active_rows = (
+        db.query(AsrRun)
+        .join(Item, Item.id == AsrRun.item_id)
+        .filter(AsrRun.state.in_(ACTIVE), Item.deleted_at.is_(None))
+        .all()
+    )
 
     users: dict[str, dict] = {}
     for r in agg:
