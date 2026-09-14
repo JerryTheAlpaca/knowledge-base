@@ -6,6 +6,8 @@
 - GET /v1/items/{id}/reading：原始资料与云端提炼的结构化阅读视图；
   复用 Bundle 内的 normalized.md / analysis.json，不新生成 AI 结果。
 - POST /v1/items/{id}/supplements：补充文字/截图/字幕，expected_source_revision 冲突 409，新增不可变来源版本。
+- POST /v1/items/{id}/source-text：编辑原文，一行一块；编辑后文本成为新不可变来源版本，
+  旧版本保留，按用户「AI 自动加工」开关决定是否重新提炼。
 - DELETE /v1/items/{id}：标记 tombstone，取消后续发布。
 - POST /v1/items/{id}/reprocess：基于已有材料重新排队，不默认重新抓站点。
 - POST /v1/items/{id}/refetch：显式重新提取来源；限频，保留旧版本，内容无变化不新增版本。
@@ -13,6 +15,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 
 from fastapi import APIRouter, Depends
@@ -24,9 +27,12 @@ from ..domain import pipeline
 from ..domain.errors import ApiError
 from ..api.deps import require_scope
 from ..api.rate_limit import SlidingWindowLimiter
-from ..models import AsrRun, AudioAsset, BundleRevision, Capture, Item, SourceRevision, Job, new_id, utcnow
+from ..extractors import paragraphs as parafmt
+from ..extractors import subtitles as subfmt
+from ..models import AsrRun, AudioAsset, BundleRevision, Capture, Item, SourceRevision, Job, StoredFile, new_id, utcnow
 from ..repositories import core as repo
 from ..storage.objects import ObjectStore
+from ..workers.publish import auto_enrich_enabled
 
 router = APIRouter(prefix="/v1/items", tags=["items"])
 
@@ -83,6 +89,12 @@ class SupplementInput(BaseModel):
     text: str | None = None
     note: str | None = None
     upload_ids: list[str] = Field(default_factory=list)
+
+
+class SourceTextInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_source_revision: int
+    text: str
 
 
 class ReprocessInput(BaseModel):
@@ -544,6 +556,150 @@ def supplement(
     db.commit()
     db.refresh(item)
     return _item_out(item, new_source, db)
+
+
+# ---- 原文编辑（用户编辑后的文本成为新的不可变来源版本） ----
+
+# 与采集 text/share_text 上限一致（pipeline.validate_capture_payload）
+_EDIT_MAX_BYTES = 1024 * 1024
+
+# 行尾块 ID（^s0001/^p0001）：粘贴带标记的原文回来时容忍并剥离
+_BLOCK_ID_TAIL = re.compile(r"\s+\^[sp]\d{4}\s*$")
+
+
+def _parse_edited_blocks(text: str) -> list[tuple[str, str]]:
+    """编辑文本 → (正文, kind) 块列表：一行一块；`#` 开头视为标题。
+
+    编辑是人对正文的最终裁决：不套段落合并启发式，一行就是一段，
+    保存后证据粒度与阅读粒度一致（每个片段对应一个段落）。
+    """
+    blocks: list[tuple[str, str]] = []
+    for line in text.splitlines():
+        line = _BLOCK_ID_TAIL.sub("", line).strip()
+        if not line:
+            continue
+        if line.startswith("#"):
+            line = line.lstrip("#").strip()
+            if line:
+                blocks.append((line, "heading"))
+        else:
+            blocks.append((line, "paragraph"))
+    return blocks
+
+
+@router.post("/{item_id}/source-text", response_model=ItemOut, status_code=202)
+def edit_source_text(item_id: str, body: SourceTextInput,
+                     principal=Depends(require_scope("items:edit")),
+                     db: Session = Depends(get_db)) -> ItemOut:
+    """编辑原文：以编辑后的文本新增不可变来源版本并重新发布 Bundle。
+
+    - 一行一块（标题行以 # 开头）；旧版本与其提炼结果保留，不覆盖历史；
+    - 编辑会清掉 missing_materials 中的 main_content（用户对正文负责）；
+    - 按用户「AI 自动加工」开关决定是否重新提炼；
+    - 内容与当前版本无变化时不新增版本（幂等）。
+    """
+    user = principal.user
+    item = _require_item(db, user.id, item_id)
+    source = _latest_source(db, item)
+    if body.expected_source_revision != item.source_revision:
+        raise ApiError("REVISION_CONFLICT", "来源版本已变化，请刷新后重试", status_code=409)
+    if not item.bundle_revision:
+        raise ApiError("SCHEMA_INVALID", "该条目还没有可编辑的原文", status_code=422)
+    if len(body.text.encode("utf-8")) > _EDIT_MAX_BYTES:
+        raise ApiError("PAYLOAD_TOO_LARGE", "编辑后的正文超过 1MiB 上限", status_code=413)
+
+    blocks = _parse_edited_blocks(body.text)
+    if not blocks:
+        raise ApiError("SCHEMA_INVALID", "编辑后的正文为空", status_code=422)
+
+    # 内容无变化则不新增版本：与当前原文按同样的块解析规则比较
+    current_text = (_read_bundle_text(db, item, item.bundle_revision, "readable.md")
+                    or _read_bundle_text(db, item, item.bundle_revision, "normalized.md")
+                    or "")
+    if blocks == _parse_edited_blocks(current_text):
+        return _item_out(item, source, db)
+
+    store = ObjectStore()
+    segments = []
+    paragraph_list = []
+    for i, (t, kind) in enumerate(blocks, start=1):
+        sid, pid = f"s{i:04d}", f"p{i:04d}"
+        segments.append({
+            "segment_id": sid, "text": t, "artifact_file_id": None,
+            "locator": {"type": "paragraph", "index": i},
+            "origin": "user_edit", "confidence": None,
+            "kind": kind, "start_ms": None, "end_ms": None,
+        })
+        paragraph_list.append({
+            "paragraph_id": pid, "segment_ids": [sid], "kind": kind,
+            "start_ms": None, "end_ms": None, "char_count": len(t), "text": t,
+        })
+    normalized_md = subfmt.segments_to_normalized_md(segments)
+    readable_md = parafmt.paragraphs_to_readable_md(paragraph_list)
+
+    new_revision = item.source_revision + 1
+    meta2 = dict(source.metadata_json)
+    meta2["edited_by_user"] = True
+    meta2["edited_at"] = utcnow().isoformat()
+    meta2["missing_materials"] = [
+        m for m in meta2.get("missing_materials", []) if m != "main_content"
+    ]
+    meta_updates = {"edited_by_user": True, "edited_at": meta2["edited_at"]}
+    source2 = SourceRevision(
+        item_id=item.id, user_id=user.id, revision=new_revision,
+        content_hash=pipeline.sha256_hex(pipeline.canonical_json(
+            {"segments": segments, "meta_updates": meta_updates})),
+        metadata_json=meta2, artifacts_json={},
+    )
+    db.add(source2)
+    db.flush()
+    item.source_revision = new_revision
+
+    # 先登记编辑版三件套，再按路径取最新登记组装 Bundle 文件清单
+    # （否则旧登记与同路径新登记并存，读取方命中清单里靠前的旧文件）
+    files_new = [
+        pipeline.register_file(
+            db, store, user_id=user.id, item_id=item.id,
+            data=normalized_md.encode("utf-8"), relative_path="normalized.md",
+            role="source_material", mime="text/markdown",
+        ),
+        pipeline.register_file(
+            db, store, user_id=user.id, item_id=item.id,
+            data=readable_md.encode("utf-8"), relative_path="readable.md",
+            role="source_material", mime="text/markdown",
+        ),
+        pipeline.register_file(
+            db, store, user_id=user.id, item_id=item.id,
+            data=pipeline.canonical_json({
+                "source_revision": new_revision,
+                "segments": [dict(s, paragraph_id=p["paragraph_id"])
+                             for s, p in zip(segments, paragraph_list)],
+                "paragraphs": paragraph_list,
+            }),
+            relative_path="segments.json", role="source_material", mime="application/json",
+        ),
+    ]
+    db.flush()
+    latest = {f.relative_path: f for f in pipeline.latest_files_per_path(list(
+        db.query(StoredFile).filter(StoredFile.item_id == item.id, StoredFile.user_id == user.id)
+    ))}
+    for f in files_new:
+        latest[f.relative_path] = f
+    files = list(latest.values())
+
+    auto_enrich = auto_enrich_enabled(db, user.id)
+    pipeline.publish_bundle(
+        db, store, item=item, source=source2, files=files,
+        processing_state="original_only",
+        pipeline_state="enriching" if auto_enrich else "extracted",
+        warnings=["用户编辑了原文；本次正文以编辑版本为准。"],
+    )
+    if auto_enrich:
+        pipeline.enqueue_stage(db, user_id=user.id, item_id=item.id,
+                               source_revision=new_revision, stage="enrich", reset_attempt=True)
+    db.commit()
+    db.refresh(item)
+    return _item_out(item, source2, db)
 
 
 @router.post("/{item_id}/reprocess", response_model=ItemOut, status_code=202)

@@ -953,6 +953,59 @@
         }
       }
     },
+    "/v1/items/{item_id}/source-text": {
+      "post": {
+        "tags": [
+          "items"
+        ],
+        "summary": "Edit Source Text",
+        "description": "编辑原文：以编辑后的文本新增不可变来源版本并重新发布 Bundle。\n\n- 一行一块（标题行以 # 开头）；旧版本与其提炼结果保留，不覆盖历史；\n- 编辑会清掉 missing_materials 中的 main_content（用户对正文负责）；\n- 按用户「AI 自动加工」开关决定是否重新提炼；\n- 内容与当前版本无变化时不新增版本（幂等）。",
+        "operationId": "edit_source_text_v1_items__item_id__source_text_post",
+        "parameters": [
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Item Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SourceTextInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ItemOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/items/{item_id}/reprocess": {
       "post": {
         "tags": [
@@ -1882,7 +1935,7 @@
           "bilibili-session"
         ],
         "summary": "Test Session",
-        "description": "检测当前用户的 B 站登录态是否有效（docs/05 §3.3）。\n\n只验证凭据本身（nav 接口），不触发任何条目重抓；结果（含时间与脱敏原因）\n存入 profile.meta_json，供 GET 状态区分「已保存未验证 / 最近有效 / 已失效」。",
+        "description": "检测当前用户的 B 站登录态是否有效（docs/05 §3.3）。",
         "operationId": "test_session_v1_bilibili_session_test_post",
         "responses": {
           "200": {
@@ -2251,10 +2304,345 @@
           }
         }
       }
+    },
+    "/v1/admin/users": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "List Users",
+        "description": "本地用户列表：配置状态摘要，不含任何密钥。",
+        "operationId": "list_users_v1_admin_users_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/users/{user_id}/credentials": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "User Credentials",
+        "description": "单个用户的凭据状态（复用用户侧展示字段，无 secret）。",
+        "operationId": "user_credentials_v1_admin_users__user_id__credentials_get",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "User Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/users/{user_id}/llm-credential": {
+      "put": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Put User Llm Credential",
+        "description": "为目标用户新建/覆盖主 LLM 配置与 Key；标记暂不允许本地下发。",
+        "operationId": "put_user_llm_credential_v1_admin_users__user_id__llm_credential_put",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "User Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminLlmCredentialIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Delete User Llm Credential",
+        "operationId": "delete_user_llm_credential_v1_admin_users__user_id__llm_credential_delete",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "User Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/users/{user_id}/bilibili-session": {
+      "put": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Put User Bilibili Session",
+        "description": "为目标用户写入 B 站 SESSDATA（仅云端使用，不下发插件）。",
+        "operationId": "put_user_bilibili_session_v1_admin_users__user_id__bilibili_session_put",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "User Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminBiliSessionIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Delete User Bilibili Session",
+        "operationId": "delete_user_bilibili_session_v1_admin_users__user_id__bilibili_session_delete",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "User Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/users/{user_id}/bilibili-session/test": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Test User Bilibili Session",
+        "operationId": "test_user_bilibili_session_v1_admin_users__user_id__bilibili_session_test_post",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "User Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
     "schemas": {
+      "AdminBiliSessionIn": {
+        "properties": {
+          "secret": {
+            "type": "string",
+            "maxLength": 8192,
+            "minLength": 16,
+            "title": "Secret"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "secret"
+        ],
+        "title": "AdminBiliSessionIn"
+      },
+      "AdminLlmCredentialIn": {
+        "properties": {
+          "endpoint": {
+            "type": "string",
+            "title": "Endpoint"
+          },
+          "model": {
+            "type": "string",
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Model"
+          },
+          "capabilities": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Capabilities"
+          },
+          "secret": {
+            "type": "string",
+            "maxLength": 4096,
+            "minLength": 8,
+            "title": "Secret"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "endpoint",
+          "model",
+          "secret"
+        ],
+        "title": "AdminLlmCredentialIn"
+      },
       "AsrSettingsIn": {
         "properties": {
           "auto_when_no_track": {
@@ -3897,6 +4285,25 @@
           "download_base"
         ],
         "title": "SourceMaterialOut"
+      },
+      "SourceTextInput": {
+        "properties": {
+          "expected_source_revision": {
+            "type": "integer",
+            "title": "Expected Source Revision"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "expected_source_revision",
+          "text"
+        ],
+        "title": "SourceTextInput"
       },
       "SupplementInput": {
         "properties": {

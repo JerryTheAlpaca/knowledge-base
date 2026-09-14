@@ -1176,6 +1176,7 @@ async function refreshItems() {
 let detailId = null;
 let detailData = null;
 let detailTab = "auto";   // I3：auto 随状态解析——ready→提炼，否则原文
+let sourceEditing = false; // 原文编辑态：原文页签切到 textarea，保存后还原
 let detailLoading = false;
 let detailPushed = false;
 let asrStatus = null;     // 可转写条目（B 站/网页/上传录音）最近一次转写 run（GET /asr）；驱动顶部进度条与提取音轨按钮
@@ -1315,6 +1316,7 @@ async function openDetail(itemId, opts = {}) {
   asrStatus = null;
   detailTab = "auto";
   segShown = 0;
+  sourceEditing = false;
   $("captureCard").hidden = true;
   $("listWrap").hidden = true;
   $("detailView").hidden = false;
@@ -1380,9 +1382,10 @@ async function refreshDetailStatus() {
   if (actions) actions.innerHTML = manageActionsHTML(reading.item);
   if (changed || (candsShown && detailTab === "manage")) {
     // 流水线阶段跳变（如加工完成）或多音频候选出现（页面多条录音待选择）：
-    // 补充框没在输入时整页刷新拿到新内容，否则只提示不打断
+    // 补充框/编辑框没在输入时整页刷新拿到新内容，否则只提示不打断
     const sup = $("supText");
-    if (sup && sup.value.trim()) {
+    const editBox = $("editSourceText");
+    if ((sup && sup.value.trim()) || (editBox && editBox.value.trim() && sourceEditing)) {
       const ps = reading.item.pipeline_state;
       toast("条目状态已更新（" + (STATE_LABELS[ps] || ps) + "）", { type: "warn" });
     } else renderDetail();
@@ -1476,12 +1479,27 @@ function renderSourcePane(d) {
     rows.push('<div class="muted" style="margin-top:10px">该条目还没有可阅读的原始材料。</div>');
     return rows.join("");
   }
+  const hasEditable = !!(sm.readable_md || sm.normalized_md);
+  // 编辑态：textarea 预填去块 ID 的正文；轮询轻量刷新不会重画这里
+  if (sourceEditing && hasEditable) {
+    rows.push('<div class="small muted" style="margin-top:10px">编辑原文：一行一段，以 # 开头为标题；' +
+      "保存后生成新来源版本（旧版本保留），并按「AI 自动加工」设置决定是否重新提炼。</div>");
+    rows.push('<textarea id="editSourceText" rows="16" style="margin-top:8px" ' +
+      'placeholder="一行一段；以 # 开头为标题">' + esc(sourceEditText(sm)) + "</textarea>");
+    rows.push('<div class="row" style="margin-top:12px">' +
+      '<button class="primary" id="saveSourceBtn" onclick="saveSourceEdit()">保存修改</button>' +
+      '<button onclick="cancelSourceEdit()">取消</button></div>');
+    return rows.join("");
+  }
   // 提取出的原文 Markdown 一键下载（段落版优先，缺则回退规范版）
   const mdFile = (sm.files || []).find((f) => f.relative_path === "readable.md")
     || (sm.files || []).find((f) => f.relative_path === "normalized.md");
-  if (mdFile) {
-    rows.push('<div class="row" style="margin:12px 0 0"><a class="btn small" href="' +
-      esc(sm.download_base + "/" + mdFile.file_id) + '" download>下载原文文件</a></div>');
+  if (mdFile || hasEditable) {
+    rows.push('<div class="row" style="margin:12px 0 0">' +
+      (mdFile ? '<a class="btn small" href="' +
+        esc(sm.download_base + "/" + mdFile.file_id) + '" download>下载原文文件</a>' : "") +
+      (hasEditable ? '<button class="small" onclick="doEditSource()">编辑原文</button>' : "") +
+      "</div>");
   }
   rows.push('<h4>实际取得的全文</h4>');
   const paras = sm.readable_md ? sm.readable_md.split("\n").filter((l) => l.trim()) : null;
@@ -1515,6 +1533,46 @@ function renderParagraphLine(line) {
   if (!m) return '<p class="para">' + esc(line) + "</p>";
   if (m[1]) return '<h5 class="para parahead" id="' + esc(m[3]) + '">' + esc(m[2]) + "</h5>";
   return '<p class="para" id="' + esc(m[3]) + '">' + esc(m[2]) + "</p>";
+}
+// ---- 原文编辑（一行一段；保存后服务端生成新来源版本并按 AI 开关重新加工） ----
+function sourceEditText(sm) {
+  // 预填正文：段落版优先，剥离行尾块 ID（^p0001/^s0001）让用户只看到纯文本
+  const body = sm.readable_md || sm.normalized_md || "";
+  return body.split("\n").map((l) => l.replace(/\s+\^[sp]\d{4}\s*$/, "")).join("\n");
+}
+function doEditSource() {
+  if (!detailData) return;
+  sourceEditing = true;
+  segShown = 0;
+  renderDetail();
+  const t = $("editSourceText");
+  if (t) { t.focus(); t.setSelectionRange(t.value.length, t.value.length); }
+}
+function cancelSourceEdit() {
+  sourceEditing = false;
+  renderDetail();
+}
+async function saveSourceEdit() {
+  if (!detailId || !detailData) return;
+  const box = $("editSourceText");
+  const text = box ? box.value : "";
+  const blocks = text.split("\n").map((l) => l.trim()).filter(Boolean);
+  if (!blocks.length) { toast("编辑后的正文为空", { type: "error" }); return; }
+  const btn = $("saveSourceBtn");
+  if (btn) btn.disabled = true;
+  try {
+    await api("/v1/items/" + encodeURIComponent(detailId) + "/source-text", {
+      method: "POST",
+      body: { expected_source_revision: detailData.item.source_revision, text },
+    });
+    sourceEditing = false;
+    toast("已保存编辑", { type: "ok" });
+    refreshDetail();
+    refreshItems();
+  } catch (e) {
+    if (btn) btn.disabled = false;
+    handleErr(e, "保存编辑失败：");
+  }
 }
 // ---- 提炼（观点/摘录不显示编号，行尾「原文」小按钮定位到原文出处，2026-09-10） ----
 function renderDigestPane(d) {
