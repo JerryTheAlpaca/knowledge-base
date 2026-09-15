@@ -356,6 +356,31 @@ export function initSettings() {
     else if (act === "delete") deleteProfile(id);
   };
   $("profileList").addEventListener("click", onProfileCardClick);
+  document.addEventListener("click", onDocClick);
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeTips(); });
+}
+
+// ---------- 开关说明气泡：点 ⓘ 冒在标题上方，点别处或 Escape 收起 ----------
+function setTip(btn, open) {
+  const tip = btn.closest(".asrtoggle-text").querySelector(".infotip");
+  tip.hidden = !open;
+  btn.setAttribute("aria-expanded", String(open));
+  if (!open) return;
+  // 气泡横向铺满标题列，尾巴要单独对准 ⓘ
+  const box = tip.getBoundingClientRect();
+  const x = btn.getBoundingClientRect().left - box.left + btn.offsetWidth / 2 - 5;
+  tip.style.setProperty("--tail", Math.round(Math.max(14, Math.min(x, box.width - 18))) + "px");
+}
+function closeTips() {
+  document.querySelectorAll(".infobtn[aria-expanded='true']").forEach((b) => setTip(b, false));
+}
+function onDocClick(e) {
+  const btn = e.target.closest(".infobtn");
+  if (!btn) { if (!e.target.closest(".infotip")) closeTips(); return; }
+  e.preventDefault();  // 按钮在 <label> 内，不能连带切换开关
+  const open = btn.getAttribute("aria-expanded") !== "true";
+  closeTips();
+  setTip(btn, open);
 }
 
 export function showSettings() {
