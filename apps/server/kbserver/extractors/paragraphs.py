@@ -10,7 +10,7 @@
 两类合并规则（按片段是否带时间区分）：
 
 - 时序类（字幕 / ASR）：语义话题边界（词汇重叠谷）+ 说话人强停顿，
-  硬顶仅防单段爆炸；
+  无字数上限；
 - 文章类（网页 / 公众号）：优先尊重原文自己的块分段；当检测到排版器
   「一行一块」的软换行时，再按句末标点与长度合并成语义段。
 """
@@ -28,12 +28,11 @@ _SENTENCE_END_TAIL = set("”’」』）)】》\"'")
 # 时序类（字幕/ASR）阈值
 # 2026-09-15（三次调整）：删除固定字数目标——段落应按语义切分。话题边界
 # 用 TextTiling 思想的词汇重叠谷检测（字符 bigram 相似度曲线，无分词依赖）；
-# 说话人强停顿（≥1.8s）仍是直接断段信号；硬顶仅防单段爆炸，正常内容触不到。
+# 说话人强停顿（≥1.8s）是直接断段信号；无字数上限。
 _TIMING_TILE_WINDOW = 6       # 相似度曲线的左右窗口（句数）
 _TIMING_MIN_PARA_SENTS = 4    # 相邻话题断点的最小句距
 _TIMING_MIN_DEPTH = 0.01      # 谷深噪声下限（主筛选靠相对最大谷深的比例）
 _TIMING_DEPTH_RATIO = 0.4     # 谷深须达全局最大谷深的比例
-_TIMED_HARD_CHARS = 600       # 兜底：无谷无停顿时防止单段无限增长
 _TIMED_GAP_MS = 1800          # 说话停顿超过这个间隔视为换段
 _TIMED_MIN_GAP_CHARS = 20     # 停顿断段的最小长度（防时间戳抖动的假停顿）
 
@@ -188,7 +187,7 @@ def _group_timed(segments: list[dict]) -> list[tuple[list[dict], str]]:
                 gap = _timed_gap_ms(seg, segments[i + 1])
                 if gap is not None and gap >= _TIMED_GAP_MS and chars >= _TIMED_MIN_GAP_CHARS:
                     is_break = True  # 说话人强停顿
-        if i == n - 1 or is_break or chars >= _TIMED_HARD_CHARS:
+        if i == n - 1 or is_break:
             _close(cur, groups)
             chars = 0
     return groups
