@@ -255,6 +255,13 @@ details.disclosure.slim .disclosure-body { padding: 0 8px 8px; }
 /* —— 设置页（§8.3） —— */
 .settings-top { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
 .settings-title { font-family: var(--font-display); font-size: var(--fs-h1); font-weight: 600; }
+/* 模型卡：大标题「模型管理」+ 优化/整理两个分区小标题 */
+#secModel h3 { font-size: var(--fs-body); font-weight: 600; }
+.list-head h3 { flex: 1; margin: 0; }
+/* 默认整理配置：标签 + 下拉 + 保存按钮同行 */
+.defrow { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
+.defrow label { margin: 0; white-space: nowrap; flex: none; }
+.defrow select { flex: 1; min-width: 0; width: auto; }
 .pcard { display: flex; align-items: center; gap: 12px; border: 1px solid var(--border);
          border-radius: var(--radius-inner); padding: 14px 16px; margin-top: 12px; }
 .pcard-main { flex: 1; min-width: 0; }

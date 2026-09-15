@@ -125,7 +125,9 @@ class ProfileCreate(BaseModel):
     endpoint: str
     model: str = Field(min_length=1, max_length=120)
     capabilities: dict | None = None
-    secret: str = Field(min_length=8, max_length=4096)
+    secret: str | None = Field(default=None, min_length=8, max_length=4096)
+    # 复用来源：新配置不带 secret 时，从该配置复制一份密钥（优化文本默认复用整理配置）
+    copy_from: str | None = None
 
 
 class ProfileUpdate(BaseModel):
@@ -217,6 +219,23 @@ def create_profile(body: ProfileCreate, principal=Depends(require_scope("profile
     endpoint = _validate_endpoint(body.endpoint)
     caps = _validate_capabilities(body.capabilities)
 
+    # 复用路径：从来源配置复制密钥（解密后按新配置重新加密，凭据仍只进不出）
+    source_cred = None
+    if body.copy_from:
+        source = _require_profile(db, user.id, body.copy_from)
+        if source.kind != "llm":
+            raise ApiError("SCHEMA_INVALID", "copy_from 仅支持 llm 类型的配置")
+        source_cred = (
+            db.query(Credential)
+            .filter(Credential.profile_id == source.id, Credential.revoked_at.is_(None))
+            .order_by(Credential.created_at.desc())
+            .first()
+        )
+        if source_cred is None:
+            raise ApiError("SCHEMA_INVALID", "来源配置还没有可复制的密钥", status_code=422)
+    elif body.secret is None:
+        raise ApiError("SCHEMA_INVALID", "缺少模型服务密钥（API Key）")
+
     profile = ProviderProfile(
         user_id=user.id,
         kind=body.kind,
@@ -229,11 +248,29 @@ def create_profile(body: ProfileCreate, principal=Depends(require_scope("profile
     )
     db.add(profile)
     db.flush()
-    encrypted = cred_crypto.encrypt_secret(
-        body.secret, get_settings().load_master_key(),
-        user_id=user.id, profile_id=profile.id, credential_version=1,
-    )
-    db.add(Credential(user_id=user.id, profile_id=profile.id, version=1, master_key_version=get_settings().master_key_version, **encrypted))
+    if source_cred is not None:
+        settings = get_settings()
+        try:
+            plain = cred_crypto.decrypt_secret(
+                source_cred.encrypted_secret, source_cred.encrypted_dek, source_cred.nonces_json,
+                settings.load_master_key(),
+                user_id=user.id, profile_id=source_cred.profile_id,
+                credential_version=source_cred.version,
+            )
+        except Exception as exc:
+            raise ApiError("PROVIDER_AUTH_FAILED", f"来源凭据解密失败：{type(exc).__name__}",
+                           status_code=422) from exc
+        encrypted = cred_crypto.encrypt_secret(
+            plain, settings.load_master_key(),
+            user_id=user.id, profile_id=profile.id, credential_version=1,
+        )
+    else:
+        encrypted = cred_crypto.encrypt_secret(
+            body.secret, get_settings().load_master_key(),
+            user_id=user.id, profile_id=profile.id, credential_version=1,
+        )
+    db.add(Credential(user_id=user.id, profile_id=profile.id, version=1,
+                      master_key_version=get_settings().master_key_version, **encrypted))
     _requeue_waiting(db, user.id, "waiting_key", "enrich")
     db.commit()
     db.refresh(profile)

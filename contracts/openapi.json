@@ -4046,18 +4046,35 @@
             "title": "Capabilities"
           },
           "secret": {
-            "type": "string",
-            "maxLength": 4096,
-            "minLength": 8,
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 4096,
+                "minLength": 8
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Secret"
+          },
+          "copy_from": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Copy From"
           }
         },
         "additionalProperties": false,
         "type": "object",
         "required": [
           "endpoint",
-          "model",
-          "secret"
+          "model"
         ],
         "title": "ProfileCreate"
       },

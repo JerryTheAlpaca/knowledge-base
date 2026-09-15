@@ -149,36 +149,42 @@
       <span class="settings-title">设置</span>
     </div>
     <div class="card" id="secModel">
+      <h2>模型管理</h2>
+
       <div class="list-head">
-        <h2>整理文本模型</h2>
-        <button class="primary" id="newProfileBtn">新建配置</button>
+        <h3>优化文本模型</h3>
+        <button class="icon" id="newOptimizeProfileBtn" aria-label="添加优化文本模型" title="添加优化文本模型">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        </button>
       </div>
-      <p class="help" style="margin:0 0 4px">负责把原文整理成知识笔记（摘要、要点等）。密钥加密托管在服务器，任何界面都不显示明文，可随时更换或撤销。</p>
-      <label for="defaultProfile" style="margin-top:12px">默认整理配置</label>
-      <select id="defaultProfile"><option value="">（未设置）</option></select>
-      <div class="row" style="margin-top:12px">
-        <button class="primary" id="saveSettings">保存设置</button>
-      </div>
-      <label class="asrtoggle" id="autoEnrichRow" for="autoEnrich">
-        <input type="checkbox" id="autoEnrich">
-        <span class="asrtoggle-text"><b>AI 自动整理</b>
-        <span class="muted">开启时，条目提取完成后自动整理成知识笔记；关闭则只提取原文，之后可在条目里手动「开始整理」。</span></span>
-        <span class="switch" aria-hidden="true"><i></i></span>
-      </label>
+      <p class="help" style="margin:0 0 4px">负责修错别字、语义分段等原文优化，调用更轻量——建议选便宜的非思考模型；未单独配置时默认复用整理模型的配置，可直接编辑成自己的。</p>
+      <div id="optimizeProfileList" style="margin-top:12px"></div>
       <label class="asrtoggle" id="aiParagraphingRow" for="aiParagraphing">
         <input type="checkbox" id="aiParagraphing">
         <span class="asrtoggle-text"><b>AI 语义分段与纠错</b>
         <span class="muted">开启时，AI 整理会按话题划分阅读段落并修正语音识别的听错字词，每次加工多一次模型调用（约几分钱）；关闭则用本地规则分段，不产生额外费用。</span></span>
         <span class="switch" aria-hidden="true"><i></i></span>
       </label>
-      <div id="profileList" style="margin-top:16px"></div>
 
       <div class="list-head" style="margin-top:28px">
-        <h2>优化文本模型</h2>
-        <button id="newOptimizeProfileBtn">新建配置</button>
+        <h3>整理文本模型</h3>
+        <button class="icon" id="newProfileBtn" aria-label="添加整理文本模型" title="添加整理文本模型">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        </button>
       </div>
-      <p class="help" style="margin:0 0 4px">负责修错别字、语义分段等原文优化，调用更轻量——建议选便宜的非思考模型；不配置时使用上面的整理模型。</p>
-      <div id="optimizeProfileList" style="margin-top:12px"></div>
+      <p class="help" style="margin:0 0 4px">负责把原文整理成知识笔记（摘要、要点等）。密钥加密托管在服务器，任何界面都不显示明文，可随时更换或撤销。</p>
+      <div class="defrow">
+        <label for="defaultProfile">默认整理配置</label>
+        <select id="defaultProfile"><option value="">（未设置）</option></select>
+        <button class="primary" id="saveSettings">保存设置</button>
+      </div>
+      <div id="profileList" style="margin-top:16px"></div>
+      <label class="asrtoggle" id="autoEnrichRow" for="autoEnrich">
+        <input type="checkbox" id="autoEnrich">
+        <span class="asrtoggle-text"><b>AI 自动整理</b>
+        <span class="muted">开启时，条目提取完成后自动整理成知识笔记；关闭则只提取原文，之后可在条目里手动「开始整理」。</span></span>
+        <span class="switch" aria-hidden="true"><i></i></span>
+      </label>
     </div>
 
     <div class="card" id="secObsidian">

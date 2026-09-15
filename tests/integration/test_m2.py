@@ -244,6 +244,62 @@ def test_profile_role_create_patch_and_validation(client, user_a):
     assert bad3.status_code == 422
 
 
+def test_profile_copy_from_reuses_credential(client, user_a, user_b, session_factory):
+    """优化文本默认复用整理配置：copy_from 创建新配置并复制密钥（凭据仍只进不出）。"""
+    from kbserver.config import get_settings
+    from kbserver.models import Credential, ProviderProfile
+    from kbserver.security import credentials as cred_crypto
+
+    token = user_a["desktop"]["token"]
+    digest = _create_profile(client, token, capabilities={"thinking_mode": True}).json()
+
+    # 复用创建：不带 secret，密钥从来源配置复制；configured=True 且不回读明文
+    r = client.post("/v1/provider-profiles", json={
+        "kind": "llm", "adapter": "openai-compatible", "role": "optimize",
+        "endpoint": ALLOWED_ENDPOINT, "model": "deepseek-chat",
+        "capabilities": {"thinking_mode": False},
+        "copy_from": digest["id"],
+    }, headers=auth(token))
+    assert r.status_code == 201
+    opt = r.json()
+    assert opt["role"] == "optimize"
+    assert opt["configured"] is True and opt["credential_version"] == 1
+    assert "sk-test" not in json.dumps(opt)
+
+    # 复制的密钥按新配置重新加密，能以新 profile 绑定解密回原文
+    with session_factory() as db:
+        row = db.query(ProviderProfile).filter(ProviderProfile.id == opt["id"]).one()
+        cred = db.query(Credential).filter(
+            Credential.profile_id == opt["id"], Credential.revoked_at.is_(None)).one()
+        plain = cred_crypto.decrypt_secret(
+            cred.encrypted_secret, cred.encrypted_dek, cred.nonces_json,
+            get_settings().load_master_key(),
+            user_id=row.user_id, profile_id=row.id, credential_version=cred.version,
+        )
+        assert plain == "sk-test-1234567890"
+
+    # 来源没有可用密钥时拒绝复制
+    digest2 = _create_profile(client, token, model="deepseek-v2").json()
+    client.delete(f"/v1/provider-profiles/{digest2['id']}/credential", headers=auth(token))
+    r2 = client.post("/v1/provider-profiles", json={
+        "kind": "llm", "adapter": "openai-compatible", "role": "optimize",
+        "endpoint": ALLOWED_ENDPOINT, "model": "m", "copy_from": digest2["id"],
+    }, headers=auth(token))
+    assert r2.status_code == 422
+
+    # 不能复制他人配置（统一 404）；普通创建仍要求密钥
+    r3 = client.post("/v1/provider-profiles", json={
+        "kind": "llm", "adapter": "openai-compatible", "role": "optimize",
+        "endpoint": ALLOWED_ENDPOINT, "model": "m", "copy_from": digest["id"],
+    }, headers=auth(user_b["desktop"]["token"]))
+    assert r3.status_code == 404
+    r4 = client.post("/v1/provider-profiles", json={
+        "kind": "llm", "adapter": "openai-compatible", "role": "digest",
+        "endpoint": ALLOWED_ENDPOINT, "model": "m",
+    }, headers=auth(token))
+    assert r4.status_code == 422
+
+
 # ---- enrich 成功路径 ----
 
 def test_enrich_success_publishes_ready_bundle(client, user_a, session_factory, fake_llm):

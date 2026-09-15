@@ -58,13 +58,23 @@ async function revokeDevice(deviceId) {
 
 let loadedProfiles = [];
 
-function profileCard(p) {
+function profileCard(p, opts = {}) {
+  const reused = !!opts.reused;
   const hostName = (() => { try { return new URL(p.endpoint).host; } catch (e) { return p.endpoint; } })();
-  const stateBadgeHtml = p.configured
-    ? '<span class="badge b-ready">已配置密钥</span>'
-    : '<span class="badge b-needs_input">未配置密钥</span>';
+  const stateBadgeHtml = reused
+    ? '<span class="badge b-queued">复用整理模型</span>'
+    : (p.configured
+      ? '<span class="badge b-ready">已配置密钥</span>'
+      : '<span class="badge b-needs_input">未配置密钥</span>');
   const thinkingBadge = p.capabilities && p.capabilities.thinking_mode === true
     ? '<span class="badge b-queued">思考模式</span>' : "";
+  // 复用卡片：配置尚未固化为独立配置，菜单只提供「编辑配置」（保存时复制密钥创建）
+  const menuItems = reused
+    ? '<button class="menu-item" data-act="edit" data-id="' + esc(p.id) + '" data-copy="1">编辑配置</button>'
+    : '<button class="menu-item" data-act="edit" data-id="' + esc(p.id) + '">编辑配置</button>' +
+      '<button class="menu-item" data-act="test" data-id="' + esc(p.id) + '">测试连接</button>' +
+      '<button class="menu-item" data-act="rotate" data-id="' + esc(p.id) + '">更换密钥</button>' +
+      (p.configured ? '<button class="menu-item danger" data-act="revoke" data-id="' + esc(p.id) + '">撤销密钥</button>' : "");
   return '<div class="pcard" data-id="' + esc(p.id) + '">' +
     '<div class="pcard-main">' +
       '<div class="pcard-top"><span class="pcard-model">' + esc(p.model) + "</span>" + stateBadgeHtml + thinkingBadge + "</div>" +
@@ -73,12 +83,7 @@ function profileCard(p) {
     '<div class="menuwrap"><button class="icon" data-menu aria-label="更多操作" aria-haspopup="menu">' +
       '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">' +
       '<circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg></button>' +
-      '<div class="menu" hidden>' +
-        '<button class="menu-item" data-act="edit" data-id="' + esc(p.id) + '">编辑配置</button>' +
-        '<button class="menu-item" data-act="test" data-id="' + esc(p.id) + '">测试连接</button>' +
-        '<button class="menu-item" data-act="rotate" data-id="' + esc(p.id) + '">更换密钥</button>' +
-        (p.configured ? '<button class="menu-item danger" data-act="revoke" data-id="' + esc(p.id) + '">撤销密钥</button>' : "") +
-      "</div></div>" +
+      '<div class="menu" hidden>' + menuItems + "</div></div>" +
     "</div>";
 }
 
@@ -96,11 +101,19 @@ async function loadSettingsData() {
       .map((p) => '<option value="' + esc(p.id) + '"' + (p.id === settings.default_profile_id ? " selected" : "") + ">" +
         esc(p.model) + "</option>").join("");
     $("profileList").innerHTML = digest.length
-      ? digest.map(profileCard).join("")
-      : '<div class="muted" style="padding:8px 0">还没有整理模型——点右上角「新建配置」开始。</div>';
-    $("optimizeProfileList").innerHTML = optimize.length
-      ? optimize.map(profileCard).join("")
-      : '<div class="muted" style="padding:8px 0">未单独配置——修错别字与分段将使用整理模型。</div>';
+      ? digest.map((p) => profileCard(p)).join("")
+      : '<div class="muted" style="padding:8px 0">还没有整理模型——点右上角的 + 添加。</div>';
+    if (optimize.length) {
+      $("optimizeProfileList").innerHTML = optimize.map((p) => profileCard(p)).join("");
+    } else {
+      // 未单独配置优化模型时服务端默认复用整理模型（workers/enrich.py 缺省回退）；
+      // 把复用的配置渲染成可编辑卡片（取生效的整理配置：默认配置优先，否则最近配置的），编辑保存即固化为独立配置
+      const usable = digest.filter((p) => p.configured);
+      const effective = usable.find((p) => p.id === settings.default_profile_id) || usable[usable.length - 1];
+      $("optimizeProfileList").innerHTML = effective
+        ? profileCard({ ...effective, role: "optimize" }, { reused: true })
+        : '<div class="muted" style="padding:8px 0">未单独配置——默认复用整理文本模型。</div>';
+    }
     renderBili(bili);
     renderAsrSettings(asrSettings);
     renderAutoEnrich(settings);
@@ -184,16 +197,22 @@ async function revokeKey(id) {
   } catch (e) { showErr(e); }
 }
 
-// role: "digest"（整理文本）| "optimize"（优化文本）；profile 传入时为编辑模式
-export function openProfileForm({ role = "digest", profile = null } = {}) {
+// role: "digest"（整理文本）| "optimize"（优化文本）
+// profile 传入时为编辑模式；copyFromId 传入时为「复用卡片」编辑——保存时以该配置为来源
+// 创建独立优化配置（密钥留空则从来源配置复制）
+export function openProfileForm({ role = "digest", profile = null, copyFromId = null } = {}) {
+  const virtual = !!copyFromId;
   const isEdit = !!profile;
   const title = isEdit
     ? "编辑模型配置"
     : (role === "optimize" ? "新建优化文本模型" : "新建整理文本模型");
-  // 思考模式默认值：新配置按角色给默认（整理开、优化关）；编辑时反映已存值
+  // 思考模式默认值：编辑/复用反映来源已存值；新配置按角色给默认（整理开、优化关）
   const thinkingDefault = isEdit
     ? !(profile.capabilities && profile.capabilities.thinking_mode === false)
     : role === "digest";
+  const secretLabel = virtual
+    ? "模型服务密钥（API Key）——留空则沿用整理模型的密钥"
+    : "模型服务密钥（API Key）" + (isEdit ? "——留空则不修改" : "");
   openModalHTML(
     '<div class="modal-title">' + title + "</div>" +
     '<div class="modal-body">' +
@@ -201,7 +220,7 @@ export function openProfileForm({ role = "digest", profile = null } = {}) {
       '<input id="pfEndpoint" placeholder="https://api.deepseek.com/v1" value="' + esc(isEdit ? profile.endpoint : "") + '">' +
       '<label for="pfModel">模型名</label>' +
       '<input id="pfModel" placeholder="deepseek-chat" value="' + esc(isEdit ? profile.model : "") + '">' +
-      '<label for="pfSecret">模型服务密钥（API Key）' + (isEdit ? "——留空则不修改" : "") + "</label>" +
+      '<label for="pfSecret">' + secretLabel + "</label>" +
       '<div class="pwrow"><input id="pfSecret" type="password" autocomplete="off">' +
       '<button type="button" class="ghost eye" id="pfEye">显示</button></div>' +
       '<label class="asrtoggle" for="pfThinking" style="margin-top:14px">' +
@@ -223,11 +242,19 @@ export function openProfileForm({ role = "digest", profile = null } = {}) {
   $("pfOk").onclick = async () => {
     const endpoint = $("pfEndpoint").value.trim(), model = $("pfModel").value.trim(), secret = $("pfSecret").value;
     const thinking = $("pfThinking").checked;
-    if (!endpoint || !model || (!isEdit && !secret)) {
-      toast(isEdit ? "服务地址与模型名必填" : "服务地址、模型名与密钥均必填", { type: "error" }); return;
+    if (!endpoint || !model) {
+      toast("服务地址与模型名必填", { type: "error" }); return;
     }
     try {
-      if (isEdit) {
+      if (virtual) {
+        // 复用卡片保存：固化为独立优化配置；不填密钥则从来源配置复制一份
+        await api("/v1/provider-profiles", { method: "POST", body: {
+          kind: "llm", adapter: "openai-compatible", role: "optimize",
+          endpoint, model,
+          capabilities: { ...(profile.capabilities || {}), thinking_mode: thinking },
+          copy_from: copyFromId, ...(secret ? { secret } : {}) } });
+        toast("优化模型配置已创建", { type: "ok" });
+      } else if (isEdit) {
         const body = {
           endpoint, model,
           capabilities: { ...(profile.capabilities || {}), thinking_mode: thinking },
@@ -236,6 +263,9 @@ export function openProfileForm({ role = "digest", profile = null } = {}) {
         await api("/v1/provider-profiles/" + encodeURIComponent(profile.id), { method: "PATCH", body });
         toast("配置已更新", { type: "ok" });
       } else {
+        if (!secret) {
+          toast("服务地址、模型名与密钥均必填", { type: "error" }); return;
+        }
         await api("/v1/provider-profiles", { method: "POST", body: {
           kind: "llm", adapter: "openai-compatible", role,
           endpoint, model, secret,
@@ -318,7 +348,7 @@ export function initSettings() {
     const rev = e.target.closest("[data-device-revoke]");
     if (rev) revokeDevice(rev.dataset.deviceRevoke);
   });
-  $("profileList").addEventListener("click", (e) => {
+  const onProfileCardClick = (e) => {
     const menuBtn = e.target.closest("[data-menu]");
     if (menuBtn) {
       const menu = menuBtn.parentElement.querySelector(".menu");
@@ -332,13 +362,21 @@ export function initSettings() {
     const act = item.dataset.act, id = item.dataset.id;
     closeMenus();
     if (act === "edit") {
-      const p = loadedProfiles.find((x) => x.id === id);
-      if (p) openProfileForm({ role: p.role || "digest", profile: p });
+      if (item.dataset.copy) {
+        // 复用卡片：编辑的是来源整理配置的拷贝，保存时固化为独立优化配置
+        const src = loadedProfiles.find((x) => x.id === id);
+        if (src) openProfileForm({ role: "optimize", profile: { ...src, role: "optimize" }, copyFromId: src.id });
+      } else {
+        const p = loadedProfiles.find((x) => x.id === id);
+        if (p) openProfileForm({ role: p.role || "digest", profile: p });
+      }
     }
     else if (act === "test") testProfile(id);
     else if (act === "rotate") rotateKey(id);
     else if (act === "revoke") revokeKey(id);
-  });
+  };
+  $("profileList").addEventListener("click", onProfileCardClick);
+  $("optimizeProfileList").addEventListener("click", onProfileCardClick);
 }
 
 export function showSettings() {
