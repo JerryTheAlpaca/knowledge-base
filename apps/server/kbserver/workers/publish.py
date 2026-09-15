@@ -32,7 +32,7 @@ def auto_enrich_enabled(db: Session, user_id: str) -> bool:
     return bool(ai.get("auto_enrich", True))
 
 
-def publish_segments_revision(db: Session, store: ObjectStore, job: Job, item: Item,
+def publish_segments_revision(db: Session, store: ObjectStore, job: Job | None, item: Item,
                               source: SourceRevision, *, segments: list[dict],
                               warnings: list[str], extra_files: list,
                               meta_updates: dict,
@@ -41,13 +41,15 @@ def publish_segments_revision(db: Session, store: ObjectStore, job: Job, item: I
 
     旧版本不修改（docs/02 §6.1）；enrich 按 item.source_revision 校验片段（A13）。
     重新提取时内容与缺失情况均无变化则不新增版本（docs/02 §10.1 refetch 语义）。
+    job 为 None 表示脱离任务上下文调用（管理 CLI 重算场景），只跳过任务状态回写。
     """
     missing = missing_materials if missing_materials is not None else []
     content_hash = pipeline.sha256_hex(
         pipeline.canonical_json({"segments": segments, "meta_updates": meta_updates})
     )
     if content_hash == source.content_hash and source.metadata_json.get("missing_materials", []) == missing:
-        job.state = "succeeded"
+        if job is not None:
+            job.state = "succeeded"
         bundle = None
         if item.bundle_revision:
             bundle = db.query(BundleRevision).filter(
@@ -127,7 +129,8 @@ def publish_segments_revision(db: Session, store: ObjectStore, job: Job, item: I
         pipeline_state="enriching" if auto_enrich else "extracted",
         warnings=warnings,
     )
-    job.state = "succeeded"
+    if job is not None:
+        job.state = "succeeded"
     if auto_enrich:
         pipeline.enqueue_stage(
             db, user_id=item.user_id, item_id=item.id, source_revision=new_revision, stage="enrich"

@@ -621,3 +621,47 @@ def test_merge_results_silence_and_coarse_records():
         {"start_s": 20.0, "end_s": 40.0, "text": "粗粒度文本"},
         {"start_s": 41.0, "end_s": 41.5 + 0.5, "text": "后段"},
     ]
+
+
+# ---- remerge CLI（用存储的识别结果重算，不重新识别音频）----
+
+def test_remerge_cli_skips_unchanged_then_republishes(client, user_a, asr_env, fresh_queue,
+                                                      monkeypatch, capsys):
+    """remerge：合并结果与已发布一致→跳过；有变化→新来源版本；重复执行幂等。"""
+    import argparse
+
+    from kbserver import cli
+
+    asr_env.install()
+    r = _capture_bili_url(client, user_a["phone"]["token"], "asrremerge")
+    item_id = r.json()["item_id"]
+    client.post(f"/v1/items/{item_id}/asr", json={},
+                headers=auth(user_a["desktop"]["token"]))
+    _drain(_session_factory(), gate=AlwaysAllowGate())
+    with _session_factory()() as db:
+        rev0 = db.get(worker.Item, item_id).source_revision
+
+    args = argparse.Namespace(command="remerge", user=None, item=item_id, dry_run=False)
+
+    # 1) 合并结果与已发布一致：无变化，不新增版本
+    cli.cmd_remerge(args)
+    assert "无变化 1 条" in capsys.readouterr().out
+    with _session_factory()() as db:
+        assert db.get(worker.Item, item_id).source_revision == rev0
+
+    # 2) 换合并逻辑（模拟新断句）：发布新来源版本
+    def fake_merge(manifest, results):
+        text = "".join((res.get("text") or "") for res in results)
+        return [{"start_s": 0.0, "end_s": 40.0, "text": text}], []
+
+    monkeypatch.setattr(asr_mod, "_merge_results", fake_merge)
+    cli.cmd_remerge(args)
+    assert "重算 1 条" in capsys.readouterr().out
+    with _session_factory()() as db:
+        assert db.get(worker.Item, item_id).source_revision == rev0 + 1
+
+    # 3) 同样逻辑再跑一遍：已与发布一致，幂等跳过
+    cli.cmd_remerge(args)
+    assert "无变化 1 条" in capsys.readouterr().out
+    with _session_factory()() as db:
+        assert db.get(worker.Item, item_id).source_revision == rev0 + 1

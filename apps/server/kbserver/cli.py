@@ -6,6 +6,7 @@
     python -m kbserver.cli recover-waiting-budget
     python -m kbserver.cli reconcile [--resolve unknown_outcome|failed] [--min-age-hours 1]
     python -m kbserver.cli reparagraph [--user <kb_user_id>] [--dry-run]
+    python -m kbserver.cli remerge [--user <kb_user_id>] [--item <item_id>] [--dry-run]
 
 统一登录上线后不再签发配对码；设备授权走浏览器流程（docs/05 §4.5）。
 """
@@ -221,6 +222,130 @@ def cmd_reparagraph(args) -> None:
         print(f"完成：补算 {done} 条，跳过 {skipped} 条（已有段落版或无片段索引）。")
 
 
+def cmd_remerge(args) -> None:
+    """用存储的识别结果按当前合并逻辑重算 ASR 条目（不重新识别音频）。
+
+    读取 Bundle 内 asr/asr_raw.json，重跑 _merge_results 与规范化，经共享
+    发布路径生成新不可变来源版本（normalized/readable/segments/transcript
+    随新句段重登记，asr 原始输出与来源元数据保持不变）。句段时间与文本
+    均无变化时跳过不新增版本；`--dry-run` 只列出；重发布后按用户
+    「AI 自动加工」开关入 enrich（会消耗模型用量）。
+    """
+    import json
+
+    sf = _prepare()
+    from .domain import pipeline
+    from .extractors import subtitles as subfmt
+    from .models import AsrRun
+    from .repositories import core as repo
+    from .storage.objects import ObjectStore
+    from .workers import asr as asr_mod
+    from .workers.publish import publish_segments_revision
+
+    store = ObjectStore()
+    with sf() as db:
+        runs = db.query(AsrRun).filter(AsrRun.state == "succeeded").order_by(AsrRun.created_at).all()
+        items_with_asr = sorted({run.item_id for run in runs})
+        redone = unchanged = skipped = 0
+        for item_id in items_with_asr:
+            it = db.get(Item, item_id)
+            if it is None or it.deleted_at is not None:
+                skipped += 1
+                continue
+            if args.user and it.user_id != args.user:
+                skipped += 1
+                continue
+            if args.item and it.id != args.item:
+                skipped += 1
+                continue
+            # 只重算「当前版本由 ASR 发布」的条目：run 记录的是发布前版本号
+            # （发布后 item 前进一格），不能直接比对；用户补充新材料后当前
+            # 版本没有 asr 元数据，自然跳过，不会覆盖新材料。
+            source = (
+                db.query(SourceRevision)
+                .filter(SourceRevision.item_id == it.id,
+                        SourceRevision.revision == it.source_revision)
+                .one_or_none()
+            )
+            if source is None or not (source.metadata_json or {}).get("asr"):
+                skipped += 1
+                continue
+            bundle = repo.get_bundle(db, it.user_id, it.id, it.bundle_revision) if it.bundle_revision else None
+            if bundle is None:
+                skipped += 1
+                continue
+            manifest_doc = json.loads(store.read_object(bundle.manifest_key).decode("utf-8"))
+            entries = {f.get("relative_path"): f for f in (manifest_doc.get("files") or [])}
+
+            def _load(rel):
+                entry = entries.get(rel)
+                row = repo.get_file(db, it.user_id, entry["file_id"], item_id=it.id) if entry else None
+                if row is None or not store.object_exists(row.storage_key):
+                    return None
+                return json.loads(store.read_object(row.storage_key).decode("utf-8"))
+
+            raw_doc = _load("asr/asr_raw.json")
+            if not raw_doc or not raw_doc.get("chunks"):
+                skipped += 1
+                continue
+            results = [
+                {
+                    "core_start": c["core_start"], "core_end": c["core_end"],
+                    "input_start": c["input_start"],
+                    "text": c.get("text") or "",
+                    "tokens": c.get("tokens"), "timestamps": c.get("timestamps"),
+                }
+                for c in raw_doc["chunks"]
+                if c.get("core_start") is not None
+            ]
+            if not results:
+                skipped += 1
+                continue
+            records, _silence = asr_mod._merge_results({}, results)
+            mf_doc = _load("asr/asr_manifest.json")
+            total_s = ((mf_doc or {}).get("pcm_manifest") or {}).get("total_duration_s") or None
+            segments, _w = subfmt.normalize_records(
+                records, source="machine_asr", video_duration_s=total_s)
+            for seg in segments:
+                seg["origin"] = "asr"
+                seg["confidence"] = None
+            if not segments:
+                skipped += 1
+                continue
+
+            cur_doc = _load("segments.json")
+            cur_key = [
+                (s.get("start_ms"), s.get("end_ms"), s.get("text"))
+                for s in ((cur_doc or {}).get("segments") or [])
+            ]
+            new_key = [(s["start_ms"], s["end_ms"], s["text"]) for s in segments]
+            if cur_key == new_key:
+                unchanged += 1
+                continue
+
+            print(f"  {it.id[:8]}  rev={it.source_revision}  "
+                  f"句段 {len(cur_key)} → {len(new_key)}")
+            if args.dry_run:
+                redone += 1
+                continue
+            extra = [pipeline.register_file(
+                db, store, user_id=it.user_id, item_id=it.id,
+                data=subfmt.segments_to_srt(segments).encode("utf-8"),
+                relative_path="transcript.srt", role="source_material",
+                mime="application/x-subrip",
+            )]
+            publish_segments_revision(
+                db, store, None, it, source, segments=segments,
+                warnings=list(manifest_doc.get("warnings") or []),
+                extra_files=extra, meta_updates={},
+            )
+            redone += 1
+        db.commit()
+        if args.dry_run:
+            print(f"仅列出：{redone} 条待重算，去掉 --dry-run 执行。")
+        print(f"完成：重算 {redone} 条，无变化 {unchanged} 条，跳过 {skipped} 条。")
+
+
 def cmd_reconcile(args) -> None:
     """处置滞留的供应商操作（不含金额语义）。"""
     sf = _prepare()
@@ -283,6 +408,12 @@ def main() -> None:
     p.add_argument("--user", default=None, help="只处理该 KB user_id；默认全部用户")
     p.add_argument("--dry-run", action="store_true", help="只列出将要补算的条目")
     p.set_defaults(func=cmd_reparagraph)
+
+    p = sub.add_parser("remerge", help="按当前合并逻辑重算 ASR 条目句段（不重新识别音频）")
+    p.add_argument("--user", default=None, help="只处理该 KB user_id；默认全部用户")
+    p.add_argument("--item", default=None, help="只处理该条目")
+    p.add_argument("--dry-run", action="store_true", help="只列出将要重算的条目")
+    p.set_defaults(func=cmd_remerge)
 
     p = sub.add_parser("reconcile", help="处置滞留的供应商操作（sent/prepared）")
     p.add_argument("--resolve", default="report", choices=["report", "unknown_outcome", "failed"],
