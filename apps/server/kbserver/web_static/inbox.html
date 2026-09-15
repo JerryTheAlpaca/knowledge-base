@@ -207,10 +207,21 @@
     background-size: 200% 100%;
     animation: flowline 1.6s linear infinite; }
   @keyframes flowline { from { background-position: 100% 0; } to { background-position: -100% 0; } }
-  /* 转写进度挂在「提取」下方的小字副行（2026-09-10 走查：不单独占进度条圆点） */
-  .ssub { position: absolute; left: 29px; top: calc(100% + 5px); display: inline-flex; align-items: center; gap: 5px;
+  /* 节点下方悬挂区（2026-09-15 走查）：「提取」下挂转写小字与重新提取/重新转写等小操作，
+     「加工」下挂重新加工；纵排在 .sunder 里，不占进度条圆点 */
+  .sunder { position: absolute; left: 29px; top: calc(100% + 6px); display: flex; flex-direction: column;
+            align-items: flex-start; gap: 6px; width: max-content; max-width: 72vw; }
+            /* width:max-content：不被所在 step 的宽度压到折行；72vw 兜底防溢出屏幕 */
+  .sacts { display: flex; flex-wrap: wrap; gap: 6px; }  /* 小按钮横排，避免纵向堆叠压到下方内容 */
+  .stepper.hasact { margin-bottom: 52px; }  /* 节点下有小按钮时加高悬挂区，避免压到下方内容 */
+  .ssub { display: inline-flex; align-items: center; gap: 5px;
           font-size: 11px; line-height: 1; white-space: nowrap; color: var(--text-2);
           font-variant-numeric: tabular-nums; }  /* U-18：段数数字等宽，避免进度跳动推挤布局 */
+  /* 节点下小操作按钮：视觉紧凑，命中区用伪元素适当扩大 */
+  .sbtn { position: relative; min-height: 0; padding: 2px 9px; border-radius: 999px;
+          border-color: var(--border); color: var(--text-2); font-size: 11px; line-height: 1.4; }
+  .sbtn::after { content: ""; position: absolute; inset: -6px -5px; }
+  .sbtn:hover { color: var(--accent); border-color: var(--accent); background: var(--surface); }
   .ssubdot { width: 6px; height: 6px; border-radius: 50%; flex: none; }
   .ssub.tone-active { color: var(--accent); }
   .ssub.tone-active .ssubdot { background: var(--accent); animation: breathe 1.6s var(--ease) infinite; }
@@ -268,6 +279,7 @@
   .asrtoggle-text b { display: block; margin-bottom: 2px; font-size: var(--fs-body); }
   .asrtoggle-text .muted { display: block; font-size: var(--fs-small); line-height: 1.55; }
   .primaryrow { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 14px; }
+  .primaryrow:empty { display: none; }  /* 管理页签操作行为空时不留空隙 */
   .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
 
   /* ============ 折叠组件（docs/10 §5.4：全站唯一 disclosure 实现） ============ */
@@ -1253,19 +1265,51 @@ function asrSubText() {
   }
   return { text: "转写排队中", tone: "active", dot: true };
 }
+// 「重新X」小操作挂到 stepper 对应节点下（2026-09-15 走查）：动作与阶段对应，
+// 且只在对应阶段已有产出时出现——没提取到材料不给「重新提取」，没转过写不给
+// 「重新转写」，没加工过（无 Bundle）不给「重新加工」；进行中的阶段不提供重做
+const EXTRACT_MATERIAL_STATES = ["extracted", "ready", "needs_input"];  // 提取已有产出（材料已落库）
+const PIPELINE_RUNNING_STATES = ["queued", "extracting", "enriching"];  // 流水线进行中，重做无意义
+function stepActionsHTML(it) {
+  const acts = { 0: "", 1: "" };
+  const st = asrStatus;
+  const supported = st ? (st.asr_supported !== false) : mayHaveAudio(it);
+  if (it.original_url && EXTRACT_MATERIAL_STATES.includes(it.pipeline_state)) {
+    acts[0] += '<button class="sbtn" onclick="doRefetch()">重新提取</button>';
+    // 提取图片同样走 refetch 接口（带 include_images），受同一状态门控
+    if (isWebItem(it) && it.images_archived > 0) {
+      acts[0] += '<button class="sbtn" onclick="doRefetchImages()">重新提取图片</button>';
+    }
+  }
+  if (supported && st && st.exists) {
+    acts[0] += ASR_BUSY_STATES.includes(st.state)
+      ? '<button class="sbtn" onclick="doAsrCancel()">取消转写</button>'
+      : '<button class="sbtn" onclick="doAsrTrigger()">' + (isBiliItem(it) ? "重新转写" : "重新提取音轨") + "</button>";
+  }
+  if (it.bundle_revision > 0 && !PIPELINE_RUNNING_STATES.includes(it.pipeline_state)
+      && it.pipeline_state !== "failed") {
+    acts[1] += '<button class="sbtn" onclick="doReprocess()">重新加工</button>';
+  }
+  return acts;
+}
 function stepperHTML(it) {
   const st = stepperState(it.pipeline_state);
   const labels = ["提取", "加工", "发布"];
   const sub = asrStatus && asrStatus.exists ? asrSubText() : null;
-  let html = '<div class="stepper' + (sub ? " hassub" : "") + '">';
+  const acts = stepActionsHTML(it);
+  const hasAct = !!(acts[0] || acts[1]);
+  let html = '<div class="stepper' + ((sub || hasAct) ? " hassub" : "") + (hasAct ? " hasact" : "") + '">';
   for (let i = 0; i < 3; i++) {
     const cls = i < st.done ? "done" : (i === st.cur ? st.tone : "");
     const mark = i < st.done ? "✓" : (cls === "bad" ? "!" : "");
-    const subHtml = (i === 0 && sub)
-      ? '<span class="ssub tone-' + sub.tone + '">' + (sub.dot ? '<i class="ssubdot"></i>' : "") + esc(sub.text) + "</span>" : "";
+    const under = ((i === 0 && (sub || acts[0])) || (i === 1 && acts[1]))
+      ? '<span class="sunder">' +
+        (i === 0 && sub ? '<span class="ssub tone-' + sub.tone + '">' + (sub.dot ? '<i class="ssubdot"></i>' : "") + esc(sub.text) + "</span>" : "") +
+        (acts[i] ? '<span class="sacts">' + acts[i] + "</span>" : "") + "</span>"
+      : "";
     html += '<div class="step ' + cls + (i === 2 ? " last" : "") + '">' +
       '<span class="sball">' + mark + "</span>" +
-      '<span class="slabel">' + labels[i] + "</span>" + subHtml +
+      '<span class="slabel">' + labels[i] + "</span>" + under +
       (i < 2 ? '<span class="sline"></span>' : "") + "</div>";
   }
   html += "</div>";
@@ -1670,29 +1714,14 @@ function fileRow(kind, path, bytes, href) {
     '<span class="fext">' + esc(ext.slice(0, 4)) + "</span>" +
     '<a href="' + esc(href) + '" download>' + esc(path) + "</a><span>" + (bytes / 1024).toFixed(1) + " KB</span></div>";
 }
-// 管理页签主操作行（2026-09-10：下载清单并入下方文件折叠区；音频转写从折叠区提为按钮，
-// 进度由顶部进度条展示；轻量刷新时整行重画，不触碰补充输入框）
+// 管理页签操作行（2026-09-15 走查调整）：「重新提取/重新转写/重新加工」等重做类操作
+// 已挂到 stepper 对应节点下方（见 stepActionsHTML），这里只留首次转写入口
+// （B 站手动触发 / 网页提取音轨；有 run 之后就不再显示，重做入口在节点下）
 function manageActionsHTML(it) {
-  const hasUrl = !!it.original_url;
   const st = asrStatus;
-  // 音频能力由服务端字段决定（B 站 / 网页音频 / 音频直链 / 上传录音都能转写）
   const supported = st ? (st.asr_supported !== false) : mayHaveAudio(it);
-  const isBili = isBiliItem(it);
-  let html = '<button onclick="doReprocess()">重新加工</button>';
-  if (hasUrl) html += '<button onclick="doRefetch()">重新提取来源</button>';
-  if (isWebItem(it)) {
-    html += '<button onclick="doRefetchImages()">' +
-      (it.images_archived > 0 ? "重新提取图片" : "提取图片") + "</button>";
-  }
-  if (supported) {
-    const busy = st && st.exists && ASR_BUSY_STATES.includes(st.state);
-    const label = st && st.exists
-      ? (isBili ? "重新转写" : "重新提取音轨")
-      : (isBili ? "音频转写" : "提取音轨");
-    html += '<button onclick="doAsrTrigger()">' + label + "</button>";
-    if (busy) html += '<button onclick="doAsrCancel()">取消转写</button>';
-  }
-  return html;
+  if (!supported || (st && st.exists)) return "";
+  return '<button onclick="doAsrTrigger()">' + (isBiliItem(it) ? "音频转写" : "提取音轨") + "</button>";
 }
 function renderManagePane(d) {
   const it = d.item;
@@ -1711,7 +1740,7 @@ function renderManagePane(d) {
         "</div>").join("") + "</div>");
   }
   const helps = [];
-  if (hasUrl) helps.push("「重新提取来源」「提取图片」10 分钟内限一次，会生成新的来源版本；内容无变化不会新增版本。");
+  if (hasUrl) helps.push("「重新提取」「重新提取图片」10 分钟内限一次，会生成新的来源版本；内容无变化不会新增版本。");
   if (isWebItem(it)) helps.push("网页/公众号配图默认不下载，点「提取图片」会重新提取来源并保存正文图片。");
   helps.push("音轨提取与转写在服务器空闲时执行，进度见顶部；" +
     "支持最长 10 小时、单文件最大 8GiB。");
