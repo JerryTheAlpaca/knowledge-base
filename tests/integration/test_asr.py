@@ -543,3 +543,81 @@ def test_engine_command_flags():
     assert any("--sense-voice-use-itn=1" in c for c in cmd2)
     assert not any("dolphin" in c for c in cmd2)
     assert any("--num-threads=1" in c for c in cmd + cmd2)
+
+
+# ---- 合并逻辑（_merge_results：跨段续组 / 标点优先断句 / 安全上限）----
+
+def _chunk_result(core_start, core_end, tokens, *, input_start=None):
+    """构造引擎段结果：tokens 为 (绝对秒, token) 列表，换算成引擎本地时间戳。"""
+    if input_start is None:
+        input_start = core_start
+    return {
+        "core_start": core_start, "core_end": core_end,
+        "input_start": input_start,
+        "text": "".join(t for _ts, t in tokens),
+        "tokens": [t for _ts, t in tokens],
+        "timestamps": [round(ts - input_start, 2) for ts, _t in tokens],
+    }
+
+
+def test_merge_results_continues_group_across_chunk_boundary():
+    """连续语音跨 20s 段边界（边界处 gap < 1.2s）不再被腰斩成两条记录。"""
+    results = [
+        _chunk_result(0.0, 20.0, [(18.6, "所"), (18.9, "以"), (19.5, "没")],
+                      input_start=0.0),
+        # 第 2 段输入含 1s 上下文：abs 19.0-20.0 的上下文 token 被裁掉，不产生重复
+        _chunk_result(20.0, 40.0, [(19.2, "没"), (19.9, "哈"),
+                                   (20.3, "必"), (20.8, "要"), (21.3, "学"),
+                                   (21.4, "。")],
+                      input_start=19.0),
+    ]
+    records, silence = asr_mod._merge_results({}, results)
+    assert silence == []
+    assert records == [
+        {"start_s": 18.6, "end_s": 21.4 + 0.5, "text": "所以没必要学。"},
+    ]
+
+
+def test_merge_results_breaks_on_pause():
+    """token 间隔 > 1.2s 视为说话停顿，断成两条记录。"""
+    results = [_chunk_result(0.0, 20.0,
+                             [(1.0, "前半句"), (4.5, "后半句"), (4.6, "。")],
+                             input_start=0.0)]
+    records, _ = asr_mod._merge_results({}, results)
+    assert [r["text"] for r in records] == ["前半句", "后半句。"]
+
+
+def test_merge_results_prefers_sentence_punctuation():
+    """连续语流按句末标点断句，不再等 token 硬上限。"""
+    toks = []
+    t = 10.0
+    for ch in "今天天气很好。我们去爬山。":
+        toks.append((round(t, 2), ch))
+        t += 0.1
+    records, _ = asr_mod._merge_results(
+        {}, [_chunk_result(0.0, 20.0, toks, input_start=0.0)])
+    assert [r["text"] for r in records] == ["今天天气很好。", "我们去爬山。"]
+
+
+def test_merge_results_caps_runaway_group():
+    """无停顿无标点的连续语流到达安全上限强制断，防止记录无界增长。"""
+    toks = [(round(1.0 + i * 0.05, 2), "字")
+            for i in range(asr_mod.GROUP_MAX_TOKENS + 30)]
+    records, _ = asr_mod._merge_results(
+        {}, [_chunk_result(0.0, 20.0, toks, input_start=0.0)])
+    assert [len(r["text"]) for r in records] == [asr_mod.GROUP_MAX_TOKENS, 30]
+
+
+def test_merge_results_silence_and_coarse_records():
+    """静音段入 silence；有文本无 token 的段用粗粒度并与 token 记录按时间排序。"""
+    silent = {"core_start": 0.0, "core_end": 20.0, "input_start": 0.0,
+              "text": "", "tokens": None, "timestamps": None}
+    coarse = {"core_start": 20.0, "core_end": 40.0, "input_start": 19.0,
+              "text": "粗粒度文本", "tokens": None, "timestamps": None}
+    timed = _chunk_result(40.0, 60.0, [(41.0, "后"), (41.5, "段")], input_start=40.0)
+    records, silence = asr_mod._merge_results({}, [silent, coarse, timed])
+    assert silence == [[0.0, 20.0]]
+    assert records == [
+        {"start_s": 20.0, "end_s": 40.0, "text": "粗粒度文本"},
+        {"start_s": 41.0, "end_s": 41.5 + 0.5, "text": "后段"},
+    ]

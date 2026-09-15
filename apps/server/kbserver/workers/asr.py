@@ -937,14 +937,30 @@ def _load_committed_results(settings, work_dir_rel: str, count: int) -> list[dic
 
 # ---- 合并与发布（docs/11 §7）----
 
+# 分组阈值：token 间隔超过 GROUP_PAUSE_S 视为说话停顿；句末标点优先断句；
+# 连续语流无停顿无标点时到 GROUP_MAX_TOKENS 才强制断（安全上限）。
+# 2026-09-15 调整：旧实现按段独立分组 + 50 token 硬上限，会把跨段一句话
+# 切成「所以没。/必要学。」这类碎片；现在分组跨段连续进行。
+GROUP_PAUSE_S = 1.2
+GROUP_MAX_TOKENS = 100
+_GROUP_SENTENCE_END = set("。！？…；!?.")
+# ▁ 是分词器的词边界符，英文输出时替换回空格
+_GROUP_TOKEN_SEP = "▁"
+
+
 def _merge_results(manifest: dict, results: list[dict]) -> tuple[list[dict], list[list[float]]]:
     """段结果 → 原始记录（绝对秒）：有 token 时间用 token，无则段级粗粒度。
 
     相邻重叠边界只按 core 区间裁剪（上下文里的识别结果丢弃，由上一段的
     core 覆盖），禁止按相同文本全局去重；声音真实重复应保留。
+
+    有 token 时间的段汇入同一条全局 token 流后统一分组（不按段重开）：
+    说话停顿断句、句末标点优先断句、安全上限兜底，跨段连续语音不因
+    段边界被腰斩。
     """
     records: list[dict] = []
     silence: list[list[float]] = []
+    stream: list[tuple[float, str]] = []
     for res in results:
         core_start = float(res["core_start"])
         core_end = float(res["core_end"])
@@ -956,37 +972,44 @@ def _merge_results(manifest: dict, results: list[dict]) -> tuple[list[dict], lis
             continue
         if tokens and stamps and len(tokens) == len(stamps):
             # 模型时间 + 输入实际起点 = 视频绝对时间；只保留 core 区间
-            stream_tokens = []
+            added = 0
             for tok, ts in zip(tokens, stamps):
                 try:
                     t = float(ts) + float(res["input_start"])
                 except (TypeError, ValueError):
                     continue
                 if core_start - 1e-6 <= t < core_end:
-                    stream_tokens.append((t, str(tok)))
-            if not stream_tokens:
+                    stream.append((t, str(tok)))
+                    added += 1
+            if not added:
                 silence.append([core_start, core_end])
-                continue
-            group: list[tuple[float, str]] = [stream_tokens[0]]
-            group_start = stream_tokens[0][0]
-            last_t = stream_tokens[0][0]
-            for t, tok in stream_tokens[1:]:
-                if t - last_t > 1.2 or len(group) >= 50:
-                    joined = "".join(tk for _t, tk in group).replace("▁", " ").strip()
-                    if joined:
-                        records.append({"start_s": group_start, "end_s": last_t + 0.5,
-                                        "text": joined})
-                    group = []
-                    group_start = t
-                group.append((t, tok))
-                last_t = t
-            joined = "".join(tk for _t, tk in group).replace("▁", " ").strip()
-            if joined:
-                records.append({"start_s": group_start, "end_s": last_t + 0.5,
-                                "text": joined})
         else:
             # 无 token 时间：切段时间 + 标注粗粒度（不凭文字长度伪造逐字时间）
             records.append({"start_s": core_start, "end_s": core_end, "text": text})
+    stream.sort(key=lambda item: item[0])
+
+    def _flush(group: list[tuple[float, str]], start: float, end: float) -> None:
+        joined = "".join(tok for _t, tok in group).replace(_GROUP_TOKEN_SEP, " ").strip()
+        if joined:
+            records.append({"start_s": start, "end_s": end + 0.5, "text": joined})
+
+    group: list[tuple[float, str]] = []
+    group_start = 0.0
+    last_t = 0.0
+    for t, tok in stream:
+        if group and (t - last_t > GROUP_PAUSE_S or len(group) >= GROUP_MAX_TOKENS):
+            _flush(group, group_start, last_t)
+            group = []
+        if not group:
+            group_start = t
+        group.append((t, tok))
+        last_t = t
+        if tok in _GROUP_SENTENCE_END:
+            _flush(group, group_start, last_t)
+            group = []
+    if group:
+        _flush(group, group_start, last_t)
+    records.sort(key=lambda rec: rec["start_s"])
     return records, silence
 
 
