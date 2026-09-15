@@ -377,12 +377,12 @@ def call_provider(session_factory, plan: EnrichPlan) -> dict:
 
     raws: list[dict] = []
 
-    def _call(prompt: str) -> dict:
+    def _call(prompt: str, *, max_output_tokens: int | None = None) -> dict:
         _lease_refresh(session_factory, plan.job_id, plan.lease_token)
         result = provider.generate(GenerateRequest(
             system=templates.SYSTEM_PROMPT,
             user=prompt,
-            max_output_tokens=plan.max_output_tokens,
+            max_output_tokens=max_output_tokens or plan.max_output_tokens,
             temperature=0.2,
             json_mode=True,
         ))
@@ -475,6 +475,12 @@ def call_provider(session_factory, plan: EnrichPlan) -> dict:
     return {"doc": doc, "raw": raws[-1] if raws else {}, "ai_text_plan": text_plan}
 
 
+# 语义分段调用的输出预算：推理模型会把大量输出花在思维链上，常规
+# max_output_tokens（8K）常在正文输出前耗尽，content 为空（finish_reason=length）。
+# 实测 92 句材料思维链 ~2.5 万 token，放宽到 32K 才能拿到正文。
+_PARAGRAPHING_MAX_OUTPUT_TOKENS = 32768
+
+
 def _semantic_paragraph_starts(plan: EnrichPlan, call) -> dict | None:
     """LLM 语义分段 + 听错词修正（尽力而为）：失败返回 None，阅读层保持现有分段。
 
@@ -499,7 +505,7 @@ def _semantic_paragraph_starts(plan: EnrichPlan, call) -> dict | None:
                 chunk_index=idx if plan.chunked else None,
                 chunk_total=len(chunks) if plan.chunked else None,
             )
-            doc = call(prompt)
+            doc = call(prompt, max_output_tokens=_PARAGRAPHING_MAX_OUTPUT_TOKENS)
             raw = doc.get("paragraph_starts") if isinstance(doc, dict) else None
             if not isinstance(raw, list):
                 return None
