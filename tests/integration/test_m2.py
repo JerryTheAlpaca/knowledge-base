@@ -404,7 +404,7 @@ def test_enrich_applies_ai_semantic_paragraphs(client, user_a, session_factory, 
 
 
 def test_enrich_routes_paragraphing_to_optimize_profile(client, user_a, session_factory, fake_llm, monkeypatch):
-    """分段/纠错走「优化文本」配置（optimize），提炼走「整理文本」配置（digest）。"""
+    """分段/纠错走设置里选择的「优化文本」配置，提炼走「整理文本」配置。"""
     calls: list[tuple[str, str]] = []
 
     def behavior(request):
@@ -424,9 +424,23 @@ def test_enrich_routes_paragraphing_to_optimize_profile(client, user_a, session_
     monkeypatch.setattr(fake_llm, "generate", generate)
 
     token = user_a["desktop"]["token"]
-    _create_profile(client, token, capabilities={"thinking_mode": True})
-    _create_profile(client, token, role="optimize", model="deepseek-flash",
-                    capabilities={"thinking_mode": False})
+    # 配置自身能力与挡位设置相反，证明按用途的挡位设置优先生效
+    digest = _create_profile(client, token, capabilities={"thinking_mode": False}).json()
+    opt = _create_profile(client, token, model="deepseek-flash",
+                          capabilities={"thinking_mode": True}).json()
+    # 整理/优化档都在设置里显式选择（配置池任一配置均可，不再按角色自动取）；
+    # 思考挡位按用途设置：整理 high、优化 off
+    patched = client.patch("/v1/settings", json={
+        "default_profile_id": digest["id"], "optimize_profile_id": opt["id"],
+        "digest_thinking": "high", "optimize_thinking": "off",
+    }, headers=auth(token))
+    assert patched.status_code == 200
+    assert patched.json()["optimize_profile_id"] == opt["id"]
+    assert patched.json()["digest_thinking"] == "high"
+    assert patched.json()["optimize_thinking"] == "off"
+    # 非法思考挡位拒绝
+    bad_level = client.patch("/v1/settings", json={"digest_thinking": "ultra"}, headers=auth(token))
+    assert bad_level.status_code == 422
     c = _capture_text(client, user_a["phone"]["token"], "m2optroute",
                       "第一段：可靠保存材料。\n第二段：加工不丢原文。\n第三段：都属同一话题。")
     item_id = c.json()["item_id"]
@@ -439,15 +453,16 @@ def test_enrich_routes_paragraphing_to_optimize_profile(client, user_a, session_
     digest_models = {m for m, p in calls if '"task": "这份文本是语音识别的原始输出' not in p}
     assert para_models == {"deepseek-flash"}
     assert digest_models == {"deepseek-chat"}
-    # 两个 provider 实例分别按各自配置构造（思考开关随配置走）
+    # 挡位按设置覆盖配置自身能力：整理 high（配置 False）、优化 off（配置 True）
     caps_by_model = {i.kwargs["model"]: i.kwargs["capabilities"] for i in fake_llm.instances}
-    assert caps_by_model["deepseek-chat"] == {"thinking_mode": True}
+    assert caps_by_model["deepseek-chat"] == {"thinking_mode": True, "thinking_effort": "high"}
     assert caps_by_model["deepseek-flash"] == {"thinking_mode": False}
 
 
 def test_enrich_without_optimize_profile_uses_digest_for_paragraphing(
         client, user_a, session_factory, fake_llm, monkeypatch):
-    """未配置「优化文本」：分段/纠错回退整理模型，整理照常完成。"""
+    """未单独选择优化配置：分段/纠错跟随整理模型（同一配置），
+    思考挡位按用途默认独立生效（整理 high、优化关）。"""
     calls: list[tuple[str, str]] = []
 
     def behavior(request):
@@ -476,7 +491,12 @@ def test_enrich_without_optimize_profile_uses_digest_for_paragraphing(
     it = _get_item(client, token, item_id)
     assert it["pipeline_state"] == "ready", it
     assert {m for m, _ in calls} == {"deepseek-chat"}
-    assert len(fake_llm.instances) == 1  # 只构造了整理 provider
+    # 跟随时也独立构造优化 provider（同一配置、不同思考挡位）：
+    # 整理默认 high，优化默认 off——同一份配置无需配两遍
+    assert len(fake_llm.instances) == 2
+    caps_list = [i.kwargs["capabilities"] for i in fake_llm.instances]
+    assert caps_list[0] == {"thinking_mode": True, "thinking_effort": "high"}
+    assert caps_list[1] == {"thinking_mode": False}
 
 
 def test_enrich_paragraphing_failure_falls_back(client, user_a, session_factory, fake_llm):

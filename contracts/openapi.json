@@ -4509,6 +4509,16 @@
             ],
             "title": "Optimize Profile Id"
           },
+          "digest_thinking": {
+            "type": "string",
+            "title": "Digest Thinking",
+            "default": "high"
+          },
+          "optimize_thinking": {
+            "type": "string",
+            "title": "Optimize Thinking",
+            "default": "off"
+          },
           "auto_enrich": {
             "type": "boolean",
             "title": "Auto Enrich",
@@ -4555,6 +4565,28 @@
               }
             ],
             "title": "Optimize Profile Id"
+          },
+          "digest_thinking": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Digest Thinking"
+          },
+          "optimize_thinking": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Optimize Thinking"
           },
           "auto_enrich": {
             "anyOf": [

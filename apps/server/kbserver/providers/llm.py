@@ -90,6 +90,10 @@ class OpenAICompatibleProvider:
         # 发送 thinking 参数；未设置则不带该字段，沿用服务端默认行为。
         thinking = caps.get("thinking_mode")
         self.thinking_mode: bool | None = thinking if isinstance(thinking, bool) else None
+        # 思考强度（reasoning_effort）：仅在开思考时随 thinking 一起发送
+        # （api-docs.deepseek.com/guides/thinking_mode：low/high/max，默认 high）
+        effort = caps.get("thinking_effort")
+        self.thinking_effort: str | None = effort if isinstance(effort, str) else None
         self.timeout_seconds = int(caps.get("timeout_seconds") or timeout_seconds)
         self._transport = transport
 
@@ -115,8 +119,11 @@ class OpenAICompatibleProvider:
             body["response_format"] = {"type": "json_object"}
         if self.thinking_mode is not None:
             # DeepSeek 思考模式开关（api-docs.deepseek.com/guides/thinking_mode）：
-            # {"thinking": {"type": "enabled"|"disabled"}}，默认 enabled/effort=high
+            # {"thinking": {"type": "enabled"|"disabled"}}，默认 enabled/effort=high；
+            # 开思考且配置了挡位时再带 reasoning_effort（low/high/max）
             body["thinking"] = {"type": "enabled" if self.thinking_mode else "disabled"}
+            if self.thinking_mode and self.thinking_effort:
+                body["reasoning_effort"] = self.thinking_effort
 
         headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
         timeout = httpx.Timeout(self.timeout_seconds, connect=15.0)

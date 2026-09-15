@@ -2,6 +2,8 @@
 
 thinking_mode 能力键：显式 True/False 时发送 {"thinking": {"type": ...}}，
 未设置时不带该字段（沿用供应商默认行为，兼容非 DeepSeek 服务）。
+thinking_effort 能力键：开思考时随请求发送 reasoning_effort（low/high/max），
+关闭思考或未设置时不发送。
 """
 from __future__ import annotations
 
@@ -57,3 +59,23 @@ def test_thinking_mode_alongside_other_params():
     # 思考模式下仍按能力键决定其余字段；无响应格式要求时不发 response_format
     assert "response_format" not in body
     assert "temperature" not in body
+
+
+def test_thinking_effort_sent_only_when_enabled():
+    # 开思考 + 挡位：reasoning_effort 随请求发送（DeepSeek low/high/max）
+    bodies: list[dict] = []
+    _generate({"thinking_mode": True, "thinking_effort": "low"}, bodies)
+    assert bodies[0]["thinking"] == {"type": "enabled"}
+    assert bodies[0]["reasoning_effort"] == "low"
+
+    # 关思考时不发挡位（thinking.type=disabled 即关闭，effort 无意义）
+    bodies2: list[dict] = []
+    _generate({"thinking_mode": False, "thinking_effort": "low"}, bodies2)
+    assert bodies2[0]["thinking"] == {"type": "disabled"}
+    assert "reasoning_effort" not in bodies2[0]
+
+    # 开思考但未设置挡位：沿用服务端默认（high），不带字段
+    bodies3: list[dict] = []
+    _generate({"thinking_mode": True}, bodies3)
+    assert bodies3[0]["thinking"] == {"type": "enabled"}
+    assert "reasoning_effort" not in bodies3[0]

@@ -75,7 +75,8 @@ class EnrichPlan:
     model: str
     capabilities: dict
     operation_id: str
-    # 优化文本配置（语义分段与听错词修正）；缺省时回退整理配置
+    # 优化文本配置（语义分段与听错词修正）；未单独选择时填充整理配置
+    # （跟随整理模型），思考挡位仍按优化档设置独立生效
     optimize_profile_id: str | None = None
     optimize_endpoint: str | None = None
     optimize_model: str | None = None
@@ -90,6 +91,22 @@ class EnrichPlan:
     max_output_tokens: int = 2000
     subtitle_refs: dict[str, str] = field(default_factory=dict)
     paragraphing_enabled: bool = True
+
+
+def _caps_with_thinking(caps: dict | None, level: str) -> dict:
+    """按用途思考挡位覆盖能力表：off=显式关思考；low/high/max=开思考并带强度。
+
+    挡位存在设置里（digest_thinking/optimize_thinking），同一份模型配置因此可以
+    整理开思考、优化关思考，无需重复配置两遍。
+    """
+    out = dict(caps or {})
+    if level == "off":
+        out["thinking_mode"] = False
+        out.pop("thinking_effort", None)
+    else:
+        out["thinking_mode"] = True
+        out["thinking_effort"] = level
+    return out
 
 
 # ---- 公共小工具 ----
@@ -204,23 +221,24 @@ def prepare(session_factory, job_id: str, lease_token: str) -> EnrichPlan | None
             )
             .all()
         )
-        # 按角色分档：digest=整理文本（NULL 兼容存量）、optimize=优化文本
+        # 整理档：digest=整理文本（NULL 兼容存量）
         digest_rows = [(p, c) for p, c in rows if (p.role or "digest") == "digest"]
-        optimize_rows = [(p, c) for p, c in rows if p.role == "optimize"]
         if not digest_rows:
             _waiting(db, job, item, "waiting_key",
                      "未配置模型凭据：配置后自动继续；原始材料已保存。", "item_waiting_key")
             db.commit()
             return None
-        # 优先使用用户设置的默认整理配置，否则取最近配置凭据的
+        # 整理档优先使用用户设置的默认整理配置，否则取最近配置凭据的；
+        # 优化档由用户在设置里显式选择（optimize_profile_id），未选择则复用整理配置
         user = db.get(User, item.user_id)
-        default_id = (user.settings_json or {}).get("default_profile_id") if user else None
+        user_settings = (user.settings_json or {}) if user else {}
+        default_id = user_settings.get("default_profile_id")
         profile, _credential = next(
             ((p, c) for p, c in digest_rows if p.id == default_id), None
         ) or max(digest_rows, key=lambda pc: pc[1].created_at)
-        opt_profile, _opt_cred = (
-            max(optimize_rows, key=lambda pc: pc[1].created_at) if optimize_rows else (None, None)
-        )
+        optimize_id = user_settings.get("optimize_profile_id")
+        opt = next(((p, c) for p, c in rows if p.id == optimize_id), None) if optimize_id else None
+        opt_profile, _opt_cred = opt if opt else (None, None)
 
         # 已有未完成操作：sent 表示请求可能已生效，不盲目重发（docs/02 §7.3）
         op = provider_ops.latest_for_job(db, job.id)
@@ -248,9 +266,16 @@ def prepare(session_factory, job_id: str, lease_token: str) -> EnrichPlan | None
         conversation_mode = input_kind in {"conversation", "workflow"} or meta.get("platform") in {
             "ai_conversation", "agent_workflow"
         }
-        caps = profile.capabilities_json or {}
+        # 思考挡位按用途在设置里调（同一份配置可同时用于整理与优化）；
+        # 整理默认 high（DeepSeek 服务端默认一致），优化默认关闭
+        caps = _caps_with_thinking(
+            profile.capabilities_json, user_settings.get("digest_thinking", "high"))
         context_tokens = int(caps.get("context_tokens") or 8000)
         max_output = int(caps.get("max_output_tokens") or 2000)
+        opt_caps = _caps_with_thinking(
+            (opt_profile.capabilities_json if opt_profile else profile.capabilities_json),
+            user_settings.get("optimize_thinking", "off"),
+        )
 
         chunked = False
         chunks: list[list[dict]] = []
@@ -287,10 +312,12 @@ def prepare(session_factory, job_id: str, lease_token: str) -> EnrichPlan | None
             model=profile.model,
             capabilities=caps,
             operation_id=op.id,
-            optimize_profile_id=opt_profile.id if opt_profile else None,
-            optimize_endpoint=opt_profile.endpoint if opt_profile else None,
-            optimize_model=opt_profile.model if opt_profile else None,
-            optimize_capabilities=(opt_profile.capabilities_json or {}) if opt_profile else {},
+            # 优化档：独立选择时用所选配置；未选择时跟随整理模型（同一配置），
+            # 但思考挡位仍按优化档设置独立生效
+            optimize_profile_id=opt_profile.id if opt_profile else profile.id,
+            optimize_endpoint=opt_profile.endpoint if opt_profile else profile.endpoint,
+            optimize_model=opt_profile.model if opt_profile else profile.model,
+            optimize_capabilities=opt_caps,
             segments=segments,
             paragraphs=paragraphs,
             user_note=meta.get("user_note"),
@@ -396,7 +423,8 @@ def call_provider(session_factory, plan: EnrichPlan) -> dict:
         model=plan.model,
         capabilities=plan.capabilities,
     )
-    # 优化文本配置（语义分段/听错词修正）：凭据不可用时回退整理配置，
+    # 优化 provider：未单独选择优化配置时用整理配置的同一份端点/密钥构造
+    # （思考挡位仍按优化档设置独立生效）；凭据不可用时回退整理配置——
     # 分段是尽力而为的加工步骤，不应让它阻塞整条整理
     optimize_provider: OpenAICompatibleProvider | None = None
     if plan.optimize_endpoint:
@@ -452,8 +480,8 @@ def call_provider(session_factory, plan: EnrichPlan) -> dict:
 
     # 语义分段 + 听错词修正先于提炼：修正后的文本让提炼摘录与正文一致
     # （用户关闭「AI 语义分段」时跳过，阅读层保持本地规则分段）。
-    # 分段/纠错属于「优化文本」：有独立配置时走优化模型（通常不开思考，
-    # 更便宜更快），没有或凭据不可用时回退整理模型。
+    # 分段/纠错属于「优化文本」：走优化档 provider（含跟随整理模型的情形，
+    # 思考挡位独立、通常关闭——更便宜更快）；凭据不可用时回退整理 provider。
     text_plan = (
         _semantic_paragraph_starts(
             plan, lambda prompt, **kw: _call(prompt, via=optimize_provider, **kw))

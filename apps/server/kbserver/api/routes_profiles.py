@@ -672,9 +672,18 @@ def test_profile(profile_id: str, principal=Depends(require_scope("profiles:mana
 
 # ---- 设置 ----
 
+# 思考挡位（DeepSeek reasoning_effort）：off=关闭思考；low/high/max=开思考并指定强度
+ALLOWED_THINKING_LEVELS = {"off", "low", "high", "max"}
+
+
 class SettingsOut(BaseModel):
     model_config = ConfigDict(extra="forbid")
     default_profile_id: str | None
+    # 优化档使用的配置；空=跟随整理模型（enrich 缺省回退）
+    optimize_profile_id: str | None = None
+    # 思考挡位按用途设置（同一份配置可两处复用）：整理默认 high，优化默认关闭
+    digest_thinking: str = "high"
+    optimize_thinking: str = "off"
     auto_enrich: bool = True
     ai_paragraphing: bool = True
     note: str = ""
@@ -683,6 +692,9 @@ class SettingsOut(BaseModel):
 class SettingsUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     default_profile_id: str | None = None
+    optimize_profile_id: str | None = None
+    digest_thinking: str | None = None
+    optimize_thinking: str | None = None
     auto_enrich: bool | None = None
     ai_paragraphing: bool | None = None
 
@@ -692,6 +704,9 @@ def _settings_out(user: User) -> SettingsOut:
     ai = s.get("ai") if isinstance(s.get("ai"), dict) else {}
     return SettingsOut(
         default_profile_id=s.get("default_profile_id"),
+        optimize_profile_id=s.get("optimize_profile_id"),
+        digest_thinking=s.get("digest_thinking", "high"),
+        optimize_thinking=s.get("optimize_thinking", "off"),
         auto_enrich=bool(ai.get("auto_enrich", True)),
         ai_paragraphing=bool(ai.get("ai_paragraphing", True)),
         note="模型账单请在供应商平台查看；本系统不统计用量与费用。",
@@ -712,6 +727,16 @@ def update_settings(body: SettingsUpdate, principal=Depends(require_scope("profi
         if body.default_profile_id:
             _require_profile(db, user.id, body.default_profile_id)
         s["default_profile_id"] = body.default_profile_id or None
+    if body.optimize_profile_id is not None:
+        if body.optimize_profile_id:
+            _require_profile(db, user.id, body.optimize_profile_id)
+        s["optimize_profile_id"] = body.optimize_profile_id or None
+    for field in ("digest_thinking", "optimize_thinking"):
+        value = getattr(body, field)
+        if value is not None:
+            if value not in ALLOWED_THINKING_LEVELS:
+                raise ApiError("SCHEMA_INVALID", f"思考挡位仅支持 {sorted(ALLOWED_THINKING_LEVELS)}")
+            s[field] = value
     if body.auto_enrich is not None:
         ai = dict(s.get("ai") or {}) if isinstance(s.get("ai"), dict) else {}
         ai["auto_enrich"] = body.auto_enrich
