@@ -251,16 +251,6 @@
   .segid { font-size: 11px; color: var(--text-2); margin-right: 6px; font-variant-numeric: tabular-nums; }
   .loclink { font-size: 11px; color: var(--accent); background: var(--accent-soft); border: none;
              border-radius: 999px; padding: 2px 9px; cursor: pointer; margin-left: 6px; min-height: 0; }
-  .filelist { font-size: var(--fs-small); }
-  .filelist > div { display: flex; align-items: center; gap: 8px; padding: 3px 0; flex-wrap: wrap; min-width: 0; }
-  .filelist a { overflow-wrap: anywhere; }
-  .fext { display: inline-flex; min-width: 30px; justify-content: center; padding: 1px 6px;
-          border-radius: 6px; background: var(--info-soft); color: var(--info);
-          font-size: 11px; font-weight: 600; text-transform: uppercase; flex: none; }
-  .fkind { display: inline-flex; justify-content: center; padding: 1px 6px;
-           border-radius: 6px; font-size: 11px; font-weight: 600; flex: none; }
-  .fkind.k-raw { background: var(--surface-2); color: var(--text-2); }
-  .fkind.k-refine { background: var(--accent-soft); color: var(--accent); }
   .asrtoggle { position: relative; display: flex; gap: 12px; align-items: center; margin-top: 14px; padding: 12px 14px;
                border: 1px solid var(--border); border-radius: var(--radius-ctl);
                background: var(--surface-2); cursor: pointer; }
@@ -1705,15 +1695,7 @@ function jumpToSegment(sid) {
   if (el) { el.scrollIntoView({ block: "center" }); el.classList.add("highlight"); }
 }
 
-// ---- 管理（操作区 / 补充材料与文件折叠；时间与删除区直接展示，2026-09-10 走查调整） ----
-// 文件行：类别标识（raw=原始 / refine=提炼）+ 类型徽章 + 下载链接（2026-09-10 走查）
-function fileRow(kind, path, bytes, href) {
-  const ext = (path.split(".").pop() || "").toLowerCase();
-  return '<div><span class="fkind ' + (kind === "raw" ? "k-raw" : "k-refine") + '">' +
-    (kind === "raw" ? "原始" : "提炼") + "</span>" +
-    '<span class="fext">' + esc(ext.slice(0, 4)) + "</span>" +
-    '<a href="' + esc(href) + '" download>' + esc(path) + "</a><span>" + (bytes / 1024).toFixed(1) + " KB</span></div>";
-}
+// ---- 管理（操作区 / 补充材料折叠；时间与删除区直接展示，2026-09-10 走查调整） ----
 // 管理页签操作行（2026-09-15 走查调整）：「重新提取/重新转写/重新加工」等重做类操作
 // 已挂到 stepper 对应节点下方（见 stepActionsHTML），这里只留首次转写入口
 // （B 站手动触发 / 网页提取音轨；有 run 之后就不再显示，重做入口在节点下）
@@ -1764,21 +1746,6 @@ function renderManagePane(d) {
     '<label for="supFiles">补充文件</label><input id="supFiles" type="file" multiple>' +
     '<span class="small" id="supProgress"></span>' +
     '<div class="row" style="margin-top:12px"><button class="primary" onclick="doSupplement()">提交补充</button></div>' +
-    "</div></details>");
-  // 文件区：原始文件（来源材料）与提炼文件（bundle 产物）合并展示，每项前有类别标识
-  const sm = d.source_material;
-  const srcFiles = sm
-    ? sm.files.filter((f) => f.relative_path !== "normalized.md" && f.relative_path !== "readable.md")
-    : [];
-  rows.push('<details class="disclosure" id="exportDisc"' +
-    ' ontoggle="if(this.open&amp;&amp;!this.dataset.loaded){this.dataset.loaded=1;loadExport();}">' +
-    '<summary>文件（原始 / 提炼）</summary><div class="disclosure-body">' +
-    '<div class="filelist">' +
-      (srcFiles.length
-        ? srcFiles.map((f) => fileRow("raw", f.relative_path, f.bytes, sm.download_base + "/" + f.file_id)).join("")
-        : '<span class="muted">无原始文件。</span>') +
-    "</div>" +
-    '<div id="exportBody" class="filelist" style="margin-top:6px"><span class="muted">提炼文件展开时加载…</span></div>' +
     "</div></details>");
   const g = d.cloud_digest;
   rows.push('<div class="grid2">' +
@@ -1901,20 +1868,6 @@ async function doSupplement() {
     refreshDetail();
     refreshItems();
   } catch (e) { $("supProgress").textContent = ""; handleErr(e, "补充失败："); }
-}
-async function loadExport() {
-  if (!detailId) return;
-  const body = $("exportBody");
-  if (!body) return;
-  try {
-    const it = await api("/v1/items/" + encodeURIComponent(detailId));
-    if (!it.bundle_revision) { body.innerHTML = '<span class="muted">还没有提炼产物。</span>'; return; }
-    const base = "/v1/items/" + encodeURIComponent(it.item_id) + "/bundles/" + it.bundle_revision;
-    const m = await api(base + "/manifest");
-    body.innerHTML = m.files.map((f) =>
-      fileRow("refine", f.relative_path, f.bytes, base + "/files/" + f.file_id)
-    ).join("") || '<span class="muted">清单中没有文件。</span>';
-  } catch (e) { body.innerHTML = '<span class="muted">提炼文件清单加载失败。</span>'; }
 }
 </script>
 <script>
