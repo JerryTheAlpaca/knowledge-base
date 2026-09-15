@@ -608,6 +608,44 @@ def test_merge_results_caps_runaway_group():
     assert [len(r["text"]) for r in records] == [asr_mod.GROUP_MAX_TOKENS, 30]
 
 
+def test_merge_results_drops_boundary_pseudo_period():
+    """段边界伪句号：句末标点恰为本段 core 最后一 token 且下段紧随 → 丢弃并续组。"""
+    results = [
+        _chunk_result(0.0, 20.0, [(18.6, "所"), (18.9, "以"), (19.5, "没"), (19.9, "。")],
+                      input_start=0.0),
+        _chunk_result(20.0, 40.0, [(20.3, "必"), (20.8, "要"), (21.3, "学"), (21.4, "。")],
+                      input_start=19.0),
+    ]
+    records, _ = asr_mod._merge_results({}, results)
+    assert [r["text"] for r in records] == ["所以没必要学。"]
+
+
+def test_merge_results_keeps_boundary_period_before_pause():
+    """真实句末：边界句号后是 >1.2s 停顿 → 保留句号，正常断句。"""
+    results = [
+        _chunk_result(0.0, 20.0, [(18.6, "第"), (18.9, "一"), (19.5, "句"), (19.9, "。")],
+                      input_start=0.0),
+        _chunk_result(20.0, 40.0, [(22.0, "第"), (22.3, "二"), (22.6, "句"), (22.7, "。")],
+                      input_start=19.0),
+    ]
+    records, _ = asr_mod._merge_results({}, results)
+    assert [r["text"] for r in records] == ["第一句。", "第二句。"]
+
+
+def test_merge_results_dedupes_boundary_punctuation():
+    """段边界重识别的重复标点：句号后紧跟的下一段开头逗号被丢弃。"""
+    results = [
+        _chunk_result(0.0, 20.0, [(18.0, "资"), (18.5, "产"), (18.9, "负"),
+                                  (19.4, "债"), (19.6, "表"), (19.9, "。")],
+                      input_start=0.0),
+        _chunk_result(20.0, 40.0, [(21.5, "，"), (21.8, "比"), (22.1, "如"),
+                                   (22.4, "说"), (22.7, "复"), (22.9, "利"), (23.0, "。")],
+                      input_start=19.0),
+    ]
+    records, _ = asr_mod._merge_results({}, results)
+    assert [r["text"] for r in records] == ["资产负债表。", "比如说复利。"]
+
+
 def test_merge_results_silence_and_coarse_records():
     """静音段入 silence；有文本无 token 的段用粗粒度并与 token 记录按时间排序。"""
     silent = {"core_start": 0.0, "core_end": 20.0, "input_start": 0.0,

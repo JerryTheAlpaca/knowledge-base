@@ -944,6 +944,8 @@ def _load_committed_results(settings, work_dir_rel: str, count: int) -> list[dic
 GROUP_PAUSE_S = 1.2
 GROUP_MAX_TOKENS = 100
 _GROUP_SENTENCE_END = set("。！？…；!?.")
+# 参与边界去重的标点（含逗号等句中标点；不含引号括号等成对符号）
+_GROUP_PUNCT = set("，。、！？…；：,.!?;:")
 # ▁ 是分词器的词边界符，英文输出时替换回空格
 _GROUP_TOKEN_SEP = "▁"
 
@@ -960,8 +962,8 @@ def _merge_results(manifest: dict, results: list[dict]) -> tuple[list[dict], lis
     """
     records: list[dict] = []
     silence: list[list[float]] = []
-    stream: list[tuple[float, str]] = []
-    for res in results:
+    stream: list[tuple[float, str, int]] = []
+    for seq, res in enumerate(results):
         core_start = float(res["core_start"])
         core_end = float(res["core_end"])
         tokens = res.get("tokens")
@@ -979,14 +981,19 @@ def _merge_results(manifest: dict, results: list[dict]) -> tuple[list[dict], lis
                 except (TypeError, ValueError):
                     continue
                 if core_start - 1e-6 <= t < core_end:
-                    stream.append((t, str(tok)))
+                    stream.append((t, str(tok), seq))
                     added += 1
             if not added:
                 silence.append([core_start, core_end])
         else:
             # 无 token 时间：切段时间 + 标注粗粒度（不凭文字长度伪造逐字时间）
             records.append({"start_s": core_start, "end_s": core_end, "text": text})
-    stream.sort(key=lambda item: item[0])
+    stream.sort(key=lambda item: (item[0], item[2]))
+    # token 是否为本段 core 的最后一个 token（跨段边界判定用）
+    chunk_final = [False] * len(stream)
+    for i in range(len(stream) - 1):
+        if stream[i][2] != stream[i + 1][2]:
+            chunk_final[i] = True
 
     def _flush(group: list[tuple[float, str]], start: float, end: float) -> None:
         joined = "".join(tok for _t, tok in group).replace(_GROUP_TOKEN_SEP, " ").strip()
@@ -996,12 +1003,26 @@ def _merge_results(manifest: dict, results: list[dict]) -> tuple[list[dict], lis
     group: list[tuple[float, str]] = []
     group_start = 0.0
     last_t = 0.0
-    for t, tok in stream:
+    for i, (t, tok, _seq) in enumerate(stream):
         if group and (t - last_t > GROUP_PAUSE_S or len(group) >= GROUP_MAX_TOKENS):
             _flush(group, group_start, last_t)
             group = []
         if not group:
             group_start = t
+        # 段边界伪收尾：句末标点恰好是本段 core 的最后一个 token，且下一段
+        # 第一个 token 紧随其后（连续语音）——模型对切段边界的虚假句读，
+        # 丢弃标点让句子跨段续在一起（「所以没。/必要学。」→「所以没必要学。」）。
+        # 真实的句末停顿间隔 > GROUP_PAUSE_S，不受影响。
+        if tok in _GROUP_SENTENCE_END and chunk_final[i] and i + 1 < len(stream) \
+                and stream[i + 1][0] - t <= GROUP_PAUSE_S:
+            last_t = t
+            continue
+        # 段边界重识别产生的重复标点（「。，」「。。」）：连续标点只保留第一个
+        if tok in _GROUP_PUNCT:
+            tail = group[-1][1] if group else (records[-1]["text"][-1:] if records else "")
+            if tail and tail[-1] in _GROUP_PUNCT:
+                last_t = t
+                continue
         group.append((t, tok))
         last_t = t
         if tok in _GROUP_SENTENCE_END:

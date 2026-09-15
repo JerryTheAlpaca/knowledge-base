@@ -1531,13 +1531,13 @@ function renderSourcePane(d) {
       '<button onclick="cancelSourceEdit()">取消</button></div>');
     return rows.join("");
   }
-  // 提取出的原文 Markdown 一键下载（段落版优先，缺则回退规范版）
+  // 提取出的原文 Markdown 一键下载（段落版优先，缺则回退规范版）：
+  // 下载前去块 ID（^p0001/^s0001），文件名用条目标题
   const mdFile = (sm.files || []).find((f) => f.relative_path === "readable.md")
     || (sm.files || []).find((f) => f.relative_path === "normalized.md");
   if (mdFile || hasEditable) {
     rows.push('<div class="row" style="margin:12px 0 0">' +
-      (mdFile ? '<a class="btn small" href="' +
-        esc(sm.download_base + "/" + mdFile.file_id) + '" download>下载原文文件</a>' : "") +
+      (mdFile ? '<button class="btn small" onclick="downloadSourceMd()">下载原文文件</button>' : "") +
       (hasEditable ? '<button class="small" onclick="doEditSource()">编辑原文</button>' : "") +
       "</div>");
   }
@@ -1579,6 +1579,39 @@ function sourceEditText(sm) {
   // 预填正文：段落版优先，剥离行尾块 ID（^p0001/^s0001）让用户只看到纯文本
   const body = sm.readable_md || sm.normalized_md || "";
   return body.split("\n").map((l) => l.replace(/\s+\^[sp]\d{4}\s*$/, "")).join("\n");
+}
+// 下载原文：拉完整段落版文件（缺则回退规范版/内联副本），去块 ID 后以条目标题命名
+async function downloadSourceMd() {
+  if (!detailData) return;
+  const it = detailData.item, sm = detailData.source_material;
+  if (!sm) return;
+  const mdFile = (sm.files || []).find((f) => f.relative_path === "readable.md")
+    || (sm.files || []).find((f) => f.relative_path === "normalized.md");
+  let raw = "";
+  if (mdFile) {
+    try {
+      const r = await fetch(sm.download_base + "/" + mdFile.file_id);
+      if (r.ok) raw = await r.text();
+    } catch (e) { /* 拉取失败落到内联副本（可能截断） */ }
+  }
+  if (!raw) raw = sm.readable_md || sm.normalized_md || "";
+  if (!raw) { toast("没有可下载的原文文件", { type: "error" }); return; }
+  const cleaned = raw.split("\n")
+    .map((l) => l.replace(/\s+\^[sp]\d{4,}\s*$/, ""))
+    .join("\n").replace(/\n{3,}/g, "\n\n").trim() + "\n";
+  const name = sanitizeFilename((it.title || "").trim() || "原文") + ".md";
+  const blob = new Blob([cleaned], { type: "text/markdown;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+function sanitizeFilename(name) {
+  return name.replace(/[\\/:*?"<>|\x00-\x1f]/g, "_").slice(0, 80).trim() || "原文";
 }
 function doEditSource() {
   if (!detailData) return;
