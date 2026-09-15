@@ -324,7 +324,11 @@ def cmd_remerge(args) -> None:
                 for s in ((cur_doc or {}).get("segments") or [])
             ]
             new_key = [(s["start_ms"], s["end_ms"], s["text"]) for s in segments]
-            if cur_key == new_key:
+            # 句段无变化即跳过；但 --force 且当前版本仍带人工编辑标记时放行，
+            # 让发布路径清掉标记（否则该条目永远跳不过去）
+            if cur_key == new_key and not (
+                args.force and (source.metadata_json or {}).get("edited_by_user")
+            ):
                 unchanged += 1
                 continue
 
