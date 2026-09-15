@@ -72,6 +72,34 @@ def test_timed_breaks_on_sentence_end_and_gap():
     assert paras[-1]["end_ms"] == segments[-1]["end_ms"]
 
 
+def test_timed_breaks_on_topic_lexical_shift():
+    """语义切分：词汇域切换处断段，不依赖固定字数与停顿。"""
+    topic_finance = [
+        "复利是银行存款利息滚动的计算方法，本金和利率共同决定增长。",
+        "存款利率越高，复利增长的速度就越快，长期持有收益明显。",
+        "银行理财产品的复利收益需要时间沉淀，短期赎回会打断滚动。",
+        "指数基金的复利效应同样依赖时间，分红再投入是关键。",
+        "所以复利的核心是把收益再投入本金，让利息继续生息。",
+        "理解了复利，再看贷款时就明白等额本息的真实成本。",
+        "房贷的利息总额往往接近本金，提前还款可以减少滚动负债。",
+    ]
+    topic_cooking = [
+        "火锅底料要先炒香再加高汤炖煮，味道才够厚。",
+        "毛肚和鸭肠在火锅里烫几秒就能吃，久了会老。",
+        "吃火锅最好搭配香油蒜泥蘸料，降温又提味。",
+        "火锅店的味道关键在底料配方和食材新鲜度。",
+        "麻辣火锅讲究花椒和辣椒的比例，麻而不燥。",
+        "清汤锅底适合涮蔬菜和海鲜，保留原味。",
+        "一顿火锅吃到最后，煮几根面条收尾最舒服。",
+    ]
+    segments = timed_segments(topic_finance + topic_cooking)
+    paras = parafmt.group_paragraphs(segments)
+    starts = [p["segment_ids"][0] for p in paras]
+    assert starts[0] == "s0001" and "s0008" in starts
+    # 两个词汇域内部不再被字数规则拆碎
+    assert len(paras) <= 3
+
+
 def test_join_adds_space_only_between_ascii_words():
     paras = parafmt.group_paragraphs(timed_segments(["Hello", "world"]))
     assert paras[0]["text"] == "Hello world"

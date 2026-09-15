@@ -9,24 +9,33 @@
 
 两类合并规则（按片段是否带时间区分）：
 
-- 时序类（字幕 / ASR）：句末标点 + 说话停顿 + 长度上限；
+- 时序类（字幕 / ASR）：语义话题边界（词汇重叠谷）+ 说话人强停顿，
+  硬顶仅防单段爆炸；
 - 文章类（网页 / 公众号）：优先尊重原文自己的块分段；当检测到排版器
   「一行一块」的软换行时，再按句末标点与长度合并成语义段。
 """
 from __future__ import annotations
+
+import math
+
+# 词汇重叠计算时剔除的标点与格式字符（bigram 只看实文）
+_PUNCT_ALL = set("，。、！？…；：,.!?;:（）()【】《》<>「」『』“”‘’\"'\u3000—…·-_=+*/\\|[]{}#&@~^$%")
 
 # 句末标点：中英文句号、问号、感叹、省略、分号，以及常见收尾引号/括号
 _SENTENCE_END_CHARS = set("。！？…；!?.")
 _SENTENCE_END_TAIL = set("”’」』）)】》\"'")
 
 # 时序类（字幕/ASR）阈值
-# 2026-09-15：110 会让"几乎不歇气"的语流每攒够 110 字碰到句号就断
-# （实测一条视频 24 个断点 23 个由此触发，说话人段内停顿全部 ≤0.5s），
-# 提高到 180：段落按更大的句群收束，stop 停顿优先规则不变。
-_TIMED_TARGET_CHARS = 180  # 到句末标点且不少于这个长度就断段
-_TIMED_HARD_CHARS = 380  # 没遇到标点也强制断段
-_TIMED_MIN_GAP_CHARS = 45  # 靠停顿断段时的最小长度
-_TIMED_GAP_MS = 1800  # 说话停顿超过这个间隔视为换段
+# 2026-09-15（三次调整）：删除固定字数目标——段落应按语义切分。话题边界
+# 用 TextTiling 思想的词汇重叠谷检测（字符 bigram 相似度曲线，无分词依赖）；
+# 说话人强停顿（≥1.8s）仍是直接断段信号；硬顶仅防单段爆炸，正常内容触不到。
+_TIMING_TILE_WINDOW = 6       # 相似度曲线的左右窗口（句数）
+_TIMING_MIN_PARA_SENTS = 4    # 相邻话题断点的最小句距
+_TIMING_MIN_DEPTH = 0.01      # 谷深噪声下限（主筛选靠相对最大谷深的比例）
+_TIMING_DEPTH_RATIO = 0.4     # 谷深须达全局最大谷深的比例
+_TIMED_HARD_CHARS = 600       # 兜底：无谷无停顿时防止单段无限增长
+_TIMED_GAP_MS = 1800          # 说话停顿超过这个间隔视为换段
+_TIMED_MIN_GAP_CHARS = 20     # 停顿断段的最小长度（防时间戳抖动的假停顿）
 
 # 文章类阈值
 _ARTICLE_SOFT_WRAP_AVG = 35  # 平均块长低于它且块够多，判定为排版器软换行
@@ -85,28 +94,103 @@ def _close(cur: list[dict], out: list[list[dict]], kind: str = "paragraph") -> N
         cur.clear()
 
 
+def _timed_gap_ms(a: dict, b: dict) -> float | None:
+    if a.get("end_ms") is None or b.get("start_ms") is None:
+        return None
+    return int(b["start_ms"]) - int(a["end_ms"])
+
+
+def _tile_tokens(text: str) -> set[str]:
+    """字符 bigram 集合：中文无需分词的词汇重叠度量；标点与空白不计。"""
+    chars = [c.lower() for c in text if not c.isspace() and c not in _PUNCT_ALL]
+    if len(chars) < 2:
+        return set(chars)
+    return {chars[i] + chars[i + 1] for i in range(len(chars) - 1)}
+
+
+def _tile_breaks(segments: list[dict]) -> set[int]:
+    """TextTiling 式话题边界：返回应断段的缝隙下标（句 i 与 i+1 之间）。
+
+    相似度曲线 = 左右各 w 句的 tf-idf 加权余弦（字符 bigram；几乎每句都
+    出现的功能字组 idf 趋零，由内容词主导）；曲线的显著深谷即话题转换点。
+    谷深要求同时满足绝对下限与相对全局最大深度的比例，且相邻断点之间
+    至少相距 MIN_PARA_SENTS 句。
+    """
+    n = len(segments)
+    if n < 2 * _TIMING_TILE_WINDOW:
+        return set()
+    toks = [_tile_tokens(_text(s)) for s in segments]
+    df: dict[str, int] = {}
+    for t in toks:
+        for g in t:
+            df[g] = df.get(g, 0) + 1
+    idf = {g: math.log(n / c) for g, c in df.items()}
+
+    def vec(lo: int, hi: int) -> dict[str, float]:
+        out: dict[str, float] = {}
+        for t in toks[lo:hi]:
+            for g in t:
+                out[g] = out.get(g, 0.0) + idf.get(g, 0.0)
+        return out
+
+    def cos(a: dict[str, float], b: dict[str, float]) -> float | None:
+        na = math.sqrt(sum(v * v for v in a.values()))
+        nb = math.sqrt(sum(v * v for v in b.values()))
+        if not na or not nb:
+            return None
+        small, big = (a, b) if len(a) <= len(b) else (b, a)
+        dot = sum(v * big.get(g, 0.0) for g, v in small.items())
+        return dot / (na * nb)
+
+    w = _TIMING_TILE_WINDOW
+    sims: list[float | None] = [None] * (n - 1)
+    for i in range(n - 1):
+        lo, hi = i - w + 1, i + 1
+        if lo < 0 or hi + w > n:
+            continue
+        sims[i] = cos(vec(lo, hi), vec(hi, hi + w))
+    cands: list[tuple[int, float]] = []
+    for i, s in enumerate(sims):
+        if s is None:
+            continue
+        lpeak = max((x for x in sims[max(0, i - w):i] if x is not None), default=None)
+        rpeak = max((x for x in sims[i + 1:i + w] if x is not None), default=None)
+        if lpeak is None or rpeak is None or s > lpeak or s > rpeak:
+            continue  # 只取局部极小值
+        depth = (lpeak + rpeak) / 2 - s
+        if depth >= _TIMING_MIN_DEPTH:
+            cands.append((i, depth))
+    if not cands:
+        return set()
+    limit = max(d for _, d in cands) * _TIMING_DEPTH_RATIO
+    out: set[int] = set()
+    for i, d in sorted(cands, key=lambda x: -x[1]):
+        if d < limit or any(abs(i - b) < _TIMING_MIN_PARA_SENTS for b in out):
+            continue
+        out.add(i)
+    return out
+
+
 def _group_timed(segments: list[dict]) -> list[tuple[list[dict], str]]:
+    n = len(segments)
+    breaks = _tile_breaks(segments)
     groups: list[tuple[list[dict], str]] = []
     cur: list[dict] = []
-    chars = 0  # 当前组累计字符数（增量维护，避免每片重算全组，审查 C-11）
+    chars = 0
     for i, seg in enumerate(segments):
         cur.append(seg)
         chars += len(_text(seg))
-        nxt = segments[i + 1] if i + 1 < len(segments) else None
-        gap_ms = 0
-        if nxt is not None and nxt.get("start_ms") is not None and seg.get("end_ms") is not None:
-            gap_ms = int(nxt["start_ms"]) - int(seg["end_ms"])
-        text = _text(seg)
-        if _ends_sentence(text) and chars >= _TIMED_TARGET_CHARS:
+        is_break = False
+        if i < n - 1:
+            if i in breaks:
+                is_break = True  # 话题边界（词汇重叠谷）
+            else:
+                gap = _timed_gap_ms(seg, segments[i + 1])
+                if gap is not None and gap >= _TIMED_GAP_MS and chars >= _TIMED_MIN_GAP_CHARS:
+                    is_break = True  # 说话人强停顿
+        if i == n - 1 or is_break or chars >= _TIMED_HARD_CHARS:
             _close(cur, groups)
             chars = 0
-        elif chars >= _TIMED_HARD_CHARS:
-            _close(cur, groups)
-            chars = 0
-        elif gap_ms >= _TIMED_GAP_MS and chars >= _TIMED_MIN_GAP_CHARS:
-            _close(cur, groups)
-            chars = 0
-    _close(cur, groups)
     return groups
 
 
