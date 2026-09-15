@@ -292,6 +292,11 @@
   details.disclosure.slim > summary::before { content: "▸"; }
   details.disclosure.slim[open] > summary::before { transform: rotate(90deg); }
   details.disclosure.slim .disclosure-body { padding: 0 8px 8px; }
+  /* 补充材料：常开区块（2026-09-15 走查：不再折叠，直接展开） */
+  .supblock { background: var(--surface-2); border: 1px solid var(--border);
+              border-radius: var(--radius-inner); margin-top: 12px; padding: 14px 14px 14px;
+              scroll-margin-top: 76px; }
+  .supblock .suphead { font-weight: 600; font-size: 14px; margin: 0 0 10px; }
 
   /* ============ 设置页（docs/10 §4.3：四卡纵向，无侧栏锚点） ============ */
   .pcard { display: flex; align-items: center; gap: 12px; border: 1px solid var(--border);
@@ -1351,6 +1356,7 @@ async function openDetail(itemId, opts = {}) {
   detailTab = "auto";
   segShown = 0;
   sourceEditing = false;
+  supFilesState.length = 0;  // 补充文件选择不跨条目残留
   $("captureCard").hidden = true;
   $("listWrap").hidden = true;
   $("detailView").hidden = false;
@@ -1695,7 +1701,28 @@ function jumpToSegment(sid) {
   if (el) { el.scrollIntoView({ block: "center" }); el.classList.add("highlight"); }
 }
 
-// ---- 管理（操作区 / 补充材料折叠；时间与删除区直接展示，2026-09-10 走查调整） ----
+// ---- 管理（操作区 / 补充材料常开；时间与删除区直接展示，2026-09-10 走查调整） ----
+// 补充文件：与首页上传入口同款 ghost 按钮 + chips（选择后可单独移除，切换条目即清空）
+const supFilesState = [];
+function supChipsHTML() {
+  return supFilesState.map((f, i) =>
+    '<span class="chip"><span class="lbl" title="' + esc(f.name) + '">' + esc(f.name) +
+    "（" + (f.size / 1024).toFixed(0) + " KB）</span>" +
+    '<button class="xbtn" onclick="removeSupFile(' + i + ')" aria-label="移除该附件">✕</button></span>').join("");
+}
+function renderSupChips() {
+  const host = $("supFileChips");
+  if (!host) return;
+  host.hidden = supFilesState.length === 0;
+  host.innerHTML = supChipsHTML();
+}
+function pickSupFiles() { $("supFiles").click(); }
+function supFilesPicked(inp) {
+  for (const f of inp.files) supFilesState.push(f);
+  inp.value = "";
+  renderSupChips();
+}
+function removeSupFile(i) { supFilesState.splice(i, 1); renderSupChips(); }
 // 管理页签操作行（2026-09-15 走查调整）：「重新提取/重新转写/重新加工」等重做类操作
 // 已挂到 stepper 对应节点下方（见 stepActionsHTML），这里只留首次转写入口
 // （B 站手动触发 / 网页提取音轨；有 run 之后就不再显示，重做入口在节点下）
@@ -1707,7 +1734,6 @@ function manageActionsHTML(it) {
 }
 function renderManagePane(d) {
   const it = d.item;
-  const hasUrl = !!it.original_url;
   const rows = [];
   rows.push('<div class="primaryrow" id="manageActions">' + manageActionsHTML(it) + "</div>");
   // 页面多条音频：先选一条再转写（docs/13 §4.3）
@@ -1722,14 +1748,10 @@ function renderManagePane(d) {
         "</div>").join("") + "</div>");
   }
   const helps = [];
-  if (hasUrl) helps.push("「重新提取」「重新提取图片」10 分钟内限一次，会生成新的来源版本；内容无变化不会新增版本。");
   if (isWebItem(it)) helps.push("网页/公众号配图默认不下载，点「提取图片」会重新提取来源并保存正文图片。");
-  helps.push("音轨提取与转写在服务器空闲时执行，进度见顶部；" +
-    "支持最长 10 小时、单文件最大 8GiB。");
   if (it.audio_original_retained && it.audio_original_download) {
     helps.push("上传录音原件保留在服务器，可下载；不会随 Bundle 自动同步到 Vault。");
   }
-  if (it.expires_at) helps.push("云端原件保留至 " + fmtTime(it.expires_at) + "，过期后提炼结果仍可阅读。");
   if (helps.length) {
     // 每句一行：按句号拆开后逐句转义再拼接，句号后换行
     const sentences = helps.join("").split("。").filter((s) => s.trim())
@@ -1740,13 +1762,21 @@ function renderManagePane(d) {
     rows.push('<div class="row"><a class="btn small" href="' +
       esc(it.audio_original_download) + '" download>下载上传原件</a></div>');
   }
-  rows.push('<details class="disclosure" id="supDisc"' + (it.pipeline_state === "needs_input" ? " open" : "") + '>' +
-    '<summary>补充材料（文字 / 字幕 / 截图）</summary><div class="disclosure-body">' +
+  rows.push('<div class="supblock" id="supDisc">' +
+    '<p class="suphead">补充材料（文字 / 字幕 / 截图）</p>' +
     '<label for="supText">补充文字</label><textarea id="supText" rows="3" placeholder="粘贴缺失的正文、字幕内容…"></textarea>' +
-    '<label for="supFiles">补充文件</label><input id="supFiles" type="file" multiple>' +
+    '<div class="uploadrow">' +
+    '<button type="button" class="uploadbtn" onclick="pickSupFiles()" title="选择文件（可多选）">' +
+    '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+    'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+    '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M17 8l-5-5-5 5"/><path d="M12 3v12"/>' +
+    "</svg>补充文件</button>" +
+    '<input id="supFiles" type="file" multiple hidden onchange="supFilesPicked(this)">' +
+    "</div>" +
+    '<div class="chiprow" id="supFileChips"' + (supFilesState.length ? "" : " hidden") + ">" + supChipsHTML() + "</div>" +
     '<span class="small" id="supProgress"></span>' +
     '<div class="row" style="margin-top:12px"><button class="primary" onclick="doSupplement()">提交补充</button></div>' +
-    "</div></details>");
+    "</div>");
   const g = d.cloud_digest;
   rows.push('<div class="grid2">' +
     '<div class="kv"><b>创建时间</b><span class="num">' + fmtTime(it.created_at) + "</span></div>" +
@@ -1760,13 +1790,12 @@ function renderManagePane(d) {
   return rows.join("");
 }
 
-// 主操作条入口：切到管理页签并展开对应折叠区 + 滚动 + flash（docs/10 §4.2）
+// 主操作条入口：切到管理页签 + 滚动 + flash（docs/10 §4.2）；补充区常开，无需再展开
 function focusSupplement() {
   detailTab = "manage";
   renderDetail();
   const el = $("supDisc");
   if (!el) return;
-  el.open = true;
   el.scrollIntoView({ behavior: "smooth", block: "center" });
   el.classList.add("flash");
   setTimeout(() => el.classList.remove("flash"), 2200);
@@ -1854,7 +1883,7 @@ async function doDelete() {
 async function doSupplement() {
   if (!detailId) return;
   const text = $("supText").value.trim();
-  const files = Array.from($("supFiles").files || []);
+  const files = supFilesState.slice();
   if (!text && !files.length) { toast("请填写文字或选择文件", { type: "error" }); return; }
   try {
     const uploadIds = await uploadFiles(files, (s) => ($("supProgress").textContent = s));
@@ -1863,7 +1892,7 @@ async function doSupplement() {
       method: "POST",
       body: { expected_source_revision: it.source_revision, text: text || null, upload_ids: uploadIds },
     });
-    $("supText").value = ""; $("supFiles").value = "";
+    $("supText").value = ""; supFilesState.length = 0; renderSupChips();
     toast("已补充，开始重新处理", { type: "ok" });
     refreshDetail();
     refreshItems();
