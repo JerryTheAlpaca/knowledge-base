@@ -178,6 +178,9 @@ def cmd_reparagraph(args) -> None:
             if not segments:
                 skipped += 1
                 continue
+            if doc.get("paragraph_source") == "ai":
+                skipped += 1  # AI 语义分段：不由本地规则重算覆盖
+                continue
             paragraphs = parafmt.group_paragraphs(segments)
             mapping = parafmt.segment_paragraph_map(paragraphs)
             print(f"  {it.id[:8]}  rev={it.source_revision}  片段 {len(segments)} → 段落 {len(paragraphs)}")

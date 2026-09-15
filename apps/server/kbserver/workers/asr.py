@@ -686,7 +686,9 @@ def execute_transcribe(session_factory, job_id: str, lease_token: str,
         if index >= chunk_count:
             ctx.item.state_detail = "转写收尾中"
             db.commit()
-            _finish_if_complete(session_factory, job_id, lease_token)
+            subtitle_ref = _fetch_platform_subtitle_ref(session_factory, run_id)
+            _finish_if_complete(session_factory, job_id, lease_token,
+                                subtitle_ref=subtitle_ref)
             return
         chunk = chunks[index]
         # 校验已提交段的文件摘要；损坏的已提交清单不静默续跑
@@ -744,7 +746,9 @@ def execute_transcribe(session_factory, job_id: str, lease_token: str,
         if run.next_chunk_index >= chunk_count:
             ctx.item.state_detail = f"转写完成，共 {chunk_count} 段；正在整理发布"
             db.commit()
-            _finish_if_complete(session_factory, job_id, lease_token)
+            subtitle_ref = _fetch_platform_subtitle_ref(session_factory, run_id)
+            _finish_if_complete(session_factory, job_id, lease_token,
+                                subtitle_ref=subtitle_ref)
             return
         # 同一逻辑任务重新排队：普通任务可随时插队（docs/11 §6.1）
         ctx.job.state = "queued"
@@ -1034,7 +1038,39 @@ def _merge_results(manifest: dict, results: list[dict]) -> tuple[list[dict], lis
     return records, silence
 
 
-def _finish_if_complete(session_factory, job_id: str, lease_token: str) -> None:
+def _fetch_platform_subtitle_ref(session_factory, run_id: str) -> list[dict] | None:
+    """ASR 收尾时尝试抓取平台字幕作听写校对参考；失败一律静默跳过。
+
+    只对 B 站来源尝试（用用户托管的 SESSDATA，匿名也可）。平台字幕没有
+    标点、可能省略语气词，不能当正文，但用词准确，供 AI 修正听错字词对照。
+    """
+    try:
+        platform = url = None
+        sessdata = None
+        with session_factory() as db:
+            run = db.get(AsrRun, run_id)
+            if run is None:
+                return None
+            frozen = (run.input_json or {}).get("source") or {}
+            platform = frozen.get("platform")
+            url = frozen.get("canonical_url")
+            if platform == "bilibili" and url:
+                sessdata, _err = _user_sessdata(db, run.user_id)
+        if platform != "bilibili" or not url:
+            return None
+        ext = bili.extract(url, sessdata=sessdata)
+        records = [
+            {"start_ms": int(s["start_ms"]), "end_ms": int(s["end_ms"]),
+             "text": (s.get("text") or "").strip()}
+            for s in ext.segments if (s.get("text") or "").strip()
+        ]
+        return records or None
+    except Exception:  # noqa: BLE001 —— 字幕参考是尽力而为，失败不影响发布
+        return None
+
+
+def _finish_if_complete(session_factory, job_id: str, lease_token: str,
+                        subtitle_ref: list[dict] | None = None) -> None:
     """全部段已提交：合并 → 发布 ASR 来源版本 → 入 enrich → 清理 PCM。
 
     发布在单个短事务内完成（与 enrich Phase C 同模式）；发布前复查租约、
@@ -1124,7 +1160,7 @@ def _finish_if_complete(session_factory, job_id: str, lease_token: str) -> None:
         }
         store = ObjectStore()
         extra_files = _register_asr_files(db, store, item, run, manifest, results, segments,
-                                          retained=retained)
+                                          retained=retained, subtitle_ref=subtitle_ref)
         publish_segments_revision(
             db, store, job, item, ctx_source(db, item, run),
             segments=segments, warnings=warnings, extra_files=extra_files,
@@ -1196,7 +1232,8 @@ def _asr_meta(run: AsrRun, manifest: dict, silence: list, failed_ranges: list,
 
 
 def _register_asr_files(db, store, item, run, manifest, results, segments,
-                        *, retained: bool = False) -> list:
+                        *, retained: bool = False,
+                        subtitle_ref: list[dict] | None = None) -> list:
     """原始模型输出与执行清单进 Bundle；原件（大录音）不进自动投递文件列表。"""
     raw_doc = {
         "schema": "asr-raw-v1",
@@ -1224,6 +1261,20 @@ def _register_asr_files(db, store, item, run, manifest, results, segments,
         files.append(pipeline.register_file(
             db, store, user_id=item.user_id, item_id=item.id,
             data=data, relative_path=path, role="source_material", mime=mime,
+        ))
+    if subtitle_ref:
+        # 平台字幕对照参考：无标点不作正文，仅供 AI 修正听错字词时对照用词
+        ref_doc = {
+            "schema": "asr-subtitle-ref-v1",
+            "note": "平台字幕对照参考（无标点、可能省略语气词），不作为正文；"
+                    "用词供 AI 修正语音识别听错字词时对照。",
+            "records": subtitle_ref,
+        }
+        files.append(pipeline.register_file(
+            db, store, user_id=item.user_id, item_id=item.id,
+            data=pipeline.canonical_json(ref_doc),
+            relative_path="asr/subtitle_ref.json", role="source_material",
+            mime="application/json",
         ))
     if retained:
         # 只投递一个原件引用说明，不把 GB 级音频放进 Bundle（docs/13 §6.3）

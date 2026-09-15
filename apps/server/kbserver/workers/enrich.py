@@ -81,6 +81,7 @@ class EnrichPlan:
     chunked: bool = False
     chunks: list[list[dict]] = field(default_factory=list)
     max_output_tokens: int = 2000
+    subtitle_refs: dict[str, str] = field(default_factory=dict)
 
 
 # ---- 公共小工具 ----
@@ -222,6 +223,8 @@ def prepare(session_factory, job_id: str, lease_token: str) -> EnrichPlan | None
             db.commit()
             return None
 
+        subtitle_refs = _align_subtitle_refs(segments, _load_subtitle_ref(db, item))
+
         meta = source.metadata_json
         conversation_mode = input_kind in {"conversation", "workflow"} or meta.get("platform") in {
             "ai_conversation", "agent_workflow"
@@ -269,7 +272,49 @@ def prepare(session_factory, job_id: str, lease_token: str) -> EnrichPlan | None
             chunked=chunked,
             chunks=chunks,
             max_output_tokens=max_output,
+            subtitle_refs=subtitle_refs,
         )
+
+
+def _load_subtitle_ref(db: Session, item: Item) -> list[dict] | None:
+    """读取 Bundle 内平台字幕对照参考（asr/subtitle_ref.json）；无则 None。"""
+    rows = (
+        db.query(StoredFile)
+        .filter(StoredFile.item_id == item.id,
+                StoredFile.relative_path == "asr/subtitle_ref.json")
+        .order_by(StoredFile.created_at.desc(), StoredFile.id)
+        .all()
+    )
+    store = ObjectStore()
+    for f in rows:
+        try:
+            doc = json.loads(store.read_object(f.storage_key).decode("utf-8"))
+        except Exception:
+            continue
+        records = doc.get("records") or []
+        if records:
+            return records
+    return None
+
+
+def _align_subtitle_refs(segments: list[dict],
+                         records: list[dict] | None) -> dict[str, str]:
+    """按时间重叠把平台字幕行并到 ASR 句段：句段取与其时间重叠的字幕行拼接。"""
+    refs: dict[str, str] = {}
+    if not records:
+        return refs
+    for s in segments:
+        st, en = s.get("start_ms"), s.get("end_ms")
+        if st is None or en is None:
+            continue
+        parts = [
+            r["text"] for r in records
+            if r.get("text") and r.get("start_ms") is not None
+            and r["start_ms"] < en and (r.get("end_ms") or 0) > st
+        ]
+        if parts:
+            refs[s["segment_id"]] = "".join(parts)
+    return refs
 
 
 def _waiting(db: Session, job: Job, item: Item, state: str, detail: str, event_type: str) -> None:
@@ -361,6 +406,14 @@ def call_provider(session_factory, plan: EnrichPlan) -> dict:
         raws.append(result.raw)
         return parse_model_json(result.output_text)
 
+    # 语义分段 + 听错词修正先于提炼：修正后的文本让提炼摘录与正文一致
+    text_plan = _semantic_paragraph_starts(plan, _call)
+    if text_plan:
+        corrected = {c["segment_id"]: c["corrected"] for c in text_plan["corrections"]}
+        for s in plan.segments:
+            if s["segment_id"] in corrected:
+                s["text"] = corrected[s["segment_id"]]
+
     segment_ids = {s["segment_id"] for s in plan.segments}
     segment_texts = {s["segment_id"]: s.get("text") or "" for s in plan.segments}
     segment_order = [s["segment_id"] for s in plan.segments]
@@ -419,7 +472,72 @@ def call_provider(session_factory, plan: EnrichPlan) -> dict:
         doc = _call(prompt)
         doc = _validate(doc, prompt, json.dumps(doc, ensure_ascii=False))
 
-    return {"doc": doc, "raw": raws[-1] if raws else {}}
+    return {"doc": doc, "raw": raws[-1] if raws else {}, "ai_text_plan": text_plan}
+
+
+def _semantic_paragraph_starts(plan: EnrichPlan, call) -> dict | None:
+    """LLM 语义分段 + 听错词修正（尽力而为）：失败返回 None，阅读层保持现有分段。
+
+    分块材料逐块调用（用上一块结尾两句作承接判断，块首句若承接上文则
+    不算段首），汇总各块的段首句并校验顺序；同时收集确信的听错句修正
+    （逐字保留、仅改错字，长度比例守卫防改写）。
+    """
+    try:
+        chunks = plan.chunks if plan.chunked else [plan.segments]
+        order = [s["segment_id"] for s in plan.segments]
+        order_index = {sid: k for k, sid in enumerate(order)}
+        seg_by_id = {s["segment_id"]: s for s in plan.segments}
+        starts: list[str] = []
+        corrections: list[dict] = []
+        seen_corr: set[str] = set()
+        for idx, chunk in enumerate(chunks, start=1):
+            prev_tail = chunks[idx - 2][-2:] if idx > 1 else None
+            chunk_ids = {s["segment_id"] for s in chunk}
+            refs = {k: v for k, v in plan.subtitle_refs.items() if k in chunk_ids}
+            prompt = templates.build_paragraphing_prompt(
+                segments=chunk, prev_tail=prev_tail, subtitle_refs=refs or None,
+                chunk_index=idx if plan.chunked else None,
+                chunk_total=len(chunks) if plan.chunked else None,
+            )
+            doc = call(prompt)
+            raw = doc.get("paragraph_starts") if isinstance(doc, dict) else None
+            if not isinstance(raw, list):
+                return None
+            picked_set = {x for x in raw if isinstance(x, str)}
+            chunk_order = [s["segment_id"] for s in chunk]
+            picked = [sid for sid in chunk_order if sid in picked_set]
+            if not picked:
+                return None
+            starts.extend(picked)
+
+            raw_corr = doc.get("corrections") if isinstance(doc, dict) else None
+            if isinstance(raw_corr, list):
+                for c in raw_corr:
+                    if not isinstance(c, dict):
+                        continue
+                    sid = c.get("segment_id")
+                    new_text = (c.get("text") or "").strip()
+                    if sid not in chunk_ids or sid in seen_corr or not new_text:
+                        continue
+                    orig = (seg_by_id[sid].get("text") or "").strip()
+                    if not orig or new_text == orig:
+                        continue
+                    # 长度比例守卫：防模型整句改写（只允许字词级修正）
+                    if not (len(orig) * 0.4 <= len(new_text) <= len(orig) * 2.5 + 4):
+                        continue
+                    seen_corr.add(sid)
+                    corrections.append(
+                        {"segment_id": sid, "original": orig, "corrected": new_text})
+        if not starts:
+            return None
+        if order and starts[0] != order[0]:
+            starts.insert(0, order[0])
+        pos = [order_index.get(sid) for sid in starts]
+        if any(p is None for p in pos) or pos != sorted(pos) or len(set(pos)) != len(pos):
+            return None
+        return {"starts": starts, "corrections": corrections}
+    except Exception:  # noqa: BLE001 —— 分段/修正失败不是致命错误，回退现有分段
+        return None
 
 
 # ---- Phase C：落定状态与发布 ----
@@ -469,14 +587,56 @@ def finish(session_factory, plan: EnrichPlan, result: dict) -> None:
         )
         db.flush()
 
+        # AI 语义分段 + 听错词修正：按模型给出的段首句重算阅读层段落、
+        # 应用修正文本，覆盖 Bundle 内 readable.md / segments.json
+        #（失败或缺失时保持原分段，不回退）
+        extra_files: list[StoredFile] = []
+        text_plan = result.get("ai_text_plan") or {}
+        ai_starts = text_plan.get("starts")
+        ai_corrections = text_plan.get("corrections") or []
+        corrected_by_id = {c["segment_id"]: c["corrected"] for c in ai_corrections}
+        if ai_starts:
+            publish_segments = [dict(s) for s in plan.segments]
+            for s in publish_segments:
+                if s["segment_id"] in corrected_by_id:
+                    s["text"] = corrected_by_id[s["segment_id"]]
+            ai_paragraphs = parafmt.group_paragraphs_from_starts(publish_segments, ai_starts)
+            if ai_paragraphs:
+                mapping = parafmt.segment_paragraph_map(ai_paragraphs)
+                indexed = [
+                    dict(s, paragraph_id=mapping.get(s.get("segment_id")))
+                    for s in publish_segments
+                ]
+                extra_files.append(pipeline.register_file(
+                    db, store, user_id=item.user_id, item_id=item.id,
+                    data=parafmt.paragraphs_to_readable_md(ai_paragraphs).encode("utf-8"),
+                    relative_path="readable.md", role="source_material", mime="text/markdown",
+                ))
+                extra_files.append(pipeline.register_file(
+                    db, store, user_id=item.user_id, item_id=item.id,
+                    data=pipeline.canonical_json({
+                        "source_revision": plan.source_revision,
+                        "segments": indexed,
+                        "paragraphs": ai_paragraphs,
+                        "paragraph_source": "ai",
+                        "ai_corrections": ai_corrections,
+                    }),
+                    relative_path="segments.json", role="source_material",
+                    mime="application/json",
+                ))
+                db.flush()
+
         source = (
             db.query(SourceRevision)
             .filter(SourceRevision.item_id == item.id, SourceRevision.revision == plan.source_revision)
             .one()
         )
+        base = {f.relative_path: f for f in _base_bundle_files(db, item)}
+        for f in extra_files:
+            base[f.relative_path] = f
         pipeline.publish_bundle(
             db, store, item=item, source=source,
-            files=_base_bundle_files(db, item) + [analysis_file, preview_file],
+            files=list(base.values()) + [analysis_file, preview_file],
             processing_state="ready", pipeline_state="ready",
             result_file_id=analysis_file.file_id,
         )

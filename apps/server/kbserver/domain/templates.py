@@ -223,6 +223,64 @@ def build_chunk_user_prompt(
     return json.dumps(payload, ensure_ascii=False)
 
 
+def build_paragraphing_prompt(
+    *, segments: list[dict], prev_tail: list[dict] | None = None,
+    chunk_index: int | None = None, chunk_total: int | None = None,
+    subtitle_refs: dict[str, str] | None = None,
+) -> str:
+    """语义分段 + 听错词修正调用（独立于提炼）：按话题给段首句，顺带修正 ASR 听错的句子。"""
+    refs = [
+        {"segment_id": sid, "subtitle_text": text}
+        for sid, text in (subtitle_refs or {}).items()
+    ]
+    payload = {
+        "task": "这份文本是语音识别的原始输出，请做两件事："
+                "1) 按话题与语义分成自然段：只找话题转换点，"
+                "同一话题（含其例子、展开、数据、类比、补充说明）不要拆开；"
+                "不要按文字长度或句子数量切。"
+                "2) 找出明显是语音识别听错的句子并给出修正后的完整原文。",
+        "chunk": ({"index": chunk_index, "total": chunk_total}
+                  if chunk_index is not None else None),
+        "previous_tail": (
+            [{"segment_id": s["segment_id"], "text": (s.get("text") or "")}
+             for s in prev_tail] if prev_tail else None
+        ),
+        "previous_tail_note": (
+            "previous_tail 是上一部分结尾的两句原文，仅供判断本部分首句是否承接上文；"
+            "不要把它列入输出。本部分首句若承接上文，就不要把它列入 paragraph_starts。"
+            if prev_tail else None
+        ),
+        "subtitle_refs": refs or None,
+        "subtitle_refs_note": (
+            "subtitle_refs 是按时间对齐的平台字幕原文：字幕没有标点、可能省略语气词，"
+            "但用词通常比语音识别准确。用它校正听错的字词（尤其是同音字与专有名词），"
+            "但保留 ASR 输出的标点、分段和语气词，不要照抄字幕。"
+            if refs else None
+        ),
+        "segments": _segments_json(segments),
+        "output_schema": {
+            "paragraph_starts": ["自然段第一句的 segment_id，按原文顺序"],
+            "corrections": [
+                {"segment_id": "听错句子的 segment_id",
+                 "text": "该句修正后的完整原文"}
+            ],
+        },
+        "output_rules": [
+            "只输出一个 JSON 对象。",
+            "paragraph_starts 按原文顺序列出每个自然段第一句的 segment_id。",
+            "同一话题的例子、展开、数据、类比都留在同一段；只有话题确实转移才另起一段。",
+            "段落数量由内容决定，宁少勿滥；大段连续叙述可以整段不切。",
+            "corrections 只收你确信是语音识别听错的句子（同音/近音字词、专有名词写错）："
+            "text 给出该句修正后的完整原文，除错字外逐字保留，"
+            "不得改写句式、增删内容或润色表达。若提供了 subtitle_refs，"
+            "修正以字幕用词为优先依据。",
+            "没有听错、拿不准或只是口语表达的句子，不要出现在 corrections 里；"
+            "宁可少改，不要把对的改错。",
+        ],
+    }
+    return json.dumps(payload, ensure_ascii=False)
+
+
 def build_merge_user_prompt(
     *, source_meta: dict, user_note: str | None, candidates: dict, conversation_mode: bool,
     source_revision: int,

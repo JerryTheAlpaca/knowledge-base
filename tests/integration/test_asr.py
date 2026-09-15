@@ -354,6 +354,41 @@ def test_prepare_and_transcribe_end_to_end(client, user_a, asr_env, fresh_queue)
         assert not (get_settings().tmp_dir / run.work_dir).exists()
 
 
+def test_asr_finish_stores_platform_subtitle_ref(client, user_a, asr_env, fresh_queue,
+                                                 monkeypatch):
+    """收尾时抓到平台字幕 → Bundle 存 asr/subtitle_ref.json（听写校对参考）。"""
+    asr_env.install()
+    # 覆盖 install 的 no_track 桩：该视频实际存在平台字幕
+    monkeypatch.setattr(bili, "extract", lambda url, sessdata=None: SimpleNamespace(
+        segments=[
+            {"segment_id": "x1", "start_ms": 1000, "end_ms": 8000,
+             "text": "探讨是否应该取消英语的主科地位"},
+            {"segment_id": "x2", "start_ms": 8000, "end_ms": 15000,
+             "text": "如果中高考不考英语了学生会轻松吗"},
+        ]))
+    r = _capture_bili_url(client, user_a["phone"]["token"], "asrsubref")
+    item_id = r.json()["item_id"]
+    client.post(f"/v1/items/{item_id}/asr", json={},
+                headers=auth(user_a["desktop"]["token"]))
+    _drain(_session_factory(), gate=AlwaysAllowGate())
+
+    with _session_factory()() as db:
+        run = _get_run(db, item_id)
+        assert run.state == "succeeded"
+    token = user_a["desktop"]["token"]
+    it = client.get(f"/v1/items/{item_id}", headers=auth(token)).json()
+    m = client.get(f"/v1/items/{item_id}/bundles/{it['bundle_revision']}/manifest",
+                   headers=auth(token)).json()
+    paths = {f["relative_path"]: f["file_id"] for f in m["files"]}
+    assert "asr/subtitle_ref.json" in paths
+    ref = json.loads(client.get(
+        f"/v1/items/{item_id}/bundles/{it['bundle_revision']}/files/{paths['asr/subtitle_ref.json']}",
+        headers=auth(token)).content)
+    assert ref["schema"] == "asr-subtitle-ref-v1"
+    assert [r["text"] for r in ref["records"]] == [
+        "探讨是否应该取消英语的主科地位", "如果中高考不考英语了学生会轻松吗"]
+
+
 def test_prepare_chunk_tamper_fails_final(client, user_a, monkeypatch, asr_env, fresh_queue):
     """清单提交后被外部篡改 → 段摘要校验失败，终态失败不静默续跑。"""
     asr_env.install()

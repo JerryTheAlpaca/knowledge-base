@@ -243,6 +243,107 @@ def test_enrich_success_publishes_ready_bundle(client, user_a, session_factory, 
     assert client.get("/v1/usage", headers=auth(token)).status_code == 404
 
 
+def test_enrich_applies_ai_semantic_paragraphs(client, user_a, session_factory, fake_llm):
+    """语义分段：模型返回段首句 → readable/segments.json 按 AI 分组发布并带标记。"""
+
+    def behavior(request):
+        prompt = request.user
+        if '"task": "这份文本是语音识别的原始输出' in prompt:
+            payload = json.loads(prompt)
+            segs = json.loads(payload["segments"])
+            return llm_result({
+                "paragraph_starts": [segs[0]["segment_id"]],
+                "corrections": [{"segment_id": segs[0]["segment_id"],
+                                 "text": "第一段：可靠保存材料已修正。"}],
+            })
+        return llm_result(doc_from_prompt(prompt))
+
+    fake_llm.behavior = behavior
+    token = user_a["desktop"]["token"]
+    _create_profile(client, token)
+    c = _capture_text(client, user_a["phone"]["token"], "m2parai",
+                      "第一段：可靠保存材料。\n第二段：加工不丢原文。\n第三段：都属同一话题。")
+    item_id = c.json()["item_id"]
+    _drain(session_factory)
+
+    it = _get_item(client, token, item_id)
+    assert it["pipeline_state"] == "ready"
+    m = client.get(f"/v1/items/{item_id}/bundles/{it['bundle_revision']}/manifest",
+                   headers=auth(token)).json()
+    seg_file = next(f for f in m["files"] if f["relative_path"] == "segments.json")
+    seg_doc = json.loads(client.get(
+        f"/v1/items/{item_id}/bundles/{it['bundle_revision']}/files/{seg_file['file_id']}",
+        headers=auth(token)).content)
+    assert seg_doc["paragraph_source"] == "ai"
+    assert len(seg_doc["paragraphs"]) == 1  # 模型判定整篇同一个话题
+    assert seg_doc["segments"][0]["text"] == "第一段：可靠保存材料已修正。"
+    assert seg_doc["ai_corrections"][0]["original"] == "第一段：可靠保存材料。"
+
+    readable_file = next(f for f in m["files"] if f["relative_path"] == "readable.md")
+    readable = client.get(
+        f"/v1/items/{item_id}/bundles/{it['bundle_revision']}/files/{readable_file['file_id']}",
+        headers=auth(token)).content.decode("utf-8")
+    assert readable.count(" ^p") == 1
+    assert "已修正" in readable
+
+
+def test_enrich_paragraphing_failure_falls_back(client, user_a, session_factory, fake_llm):
+    """语义分段调用失败：enrich 照常完成，阅读层保持本地规则分段。"""
+
+    def behavior(request):
+        if '"task": "这份文本是语音识别的原始输出' in request.user:
+            raise RuntimeError("段落模型不可用")
+        return llm_result(doc_from_prompt(request.user))
+
+    fake_llm.behavior = behavior
+    token = user_a["desktop"]["token"]
+    _create_profile(client, token)
+    c = _capture_text(client, user_a["phone"]["token"], "m2parafail",
+                      "第一段：可靠保存材料。\n第二段：加工不丢原文。\n第三段：都属同一话题。")
+    item_id = c.json()["item_id"]
+    _drain(session_factory)
+
+    it = _get_item(client, token, item_id)
+    assert it["pipeline_state"] == "ready"
+    m = client.get(f"/v1/items/{item_id}/bundles/{it['bundle_revision']}/manifest",
+                   headers=auth(token)).json()
+    seg_file = next(f for f in m["files"] if f["relative_path"] == "segments.json")
+    seg_doc = json.loads(client.get(
+        f"/v1/items/{item_id}/bundles/{it['bundle_revision']}/files/{seg_file['file_id']}",
+        headers=auth(token)).content)
+    assert "paragraph_source" not in seg_doc
+
+
+def test_paragraphing_prompt_includes_subtitle_refs():
+    """有平台字幕参考时，分段提示词携带按句对齐的字幕文本；无参考则不带。"""
+    from kbserver.domain import templates
+
+    prompt = templates.build_paragraphing_prompt(
+        segments=[{"segment_id": "s0001", "text": "语音识别输出。"}],
+        subtitle_refs={"s0001": "平台字幕参考文本"})
+    assert "subtitle_refs" in prompt
+    assert "平台字幕参考文本" in prompt
+    plain = templates.build_paragraphing_prompt(
+        segments=[{"segment_id": "s0001", "text": "x"}])
+    assert "subtitle_refs" in plain and "平台字幕参考文本" not in plain
+
+
+def test_align_subtitle_refs_by_time_overlap():
+    """字幕参考按时间重叠并到 ASR 句段。"""
+    from kbserver.workers.enrich import _align_subtitle_refs
+
+    segments = [
+        {"segment_id": "s0001", "start_ms": 0, "end_ms": 10000, "text": "x"},
+        {"segment_id": "s0002", "start_ms": 10000, "end_ms": 20000, "text": "y"},
+    ]
+    records = [
+        {"start_ms": 500, "end_ms": 6000, "text": "甲"},
+        {"start_ms": 12000, "end_ms": 15000, "text": "乙"},
+    ]
+    assert _align_subtitle_refs(segments, records) == {"s0001": "甲", "s0002": "乙"}
+    assert _align_subtitle_refs(segments, None) == {}
+
+
 def test_enrich_succeeds_without_usage_in_response(client, user_a, session_factory, fake_llm):
     """供应商响应不返回 usage、配置无价格：加工照常完成（docs/05 §5）。"""
     fake_llm.behavior = chunk_aware_behavior
@@ -277,7 +378,7 @@ def test_enrich_repairs_invalid_json(client, user_a, session_factory, fake_llm):
     _drain(session_factory)
 
     assert _get_item(client, token, item_id)["pipeline_state"] == "ready"
-    assert calls["n"] == 2
+    assert calls["n"] == 3  # 提取坏输出 + 修复 + 语义分段调用
 
 
 def test_enrich_validation_failure_keeps_diagnostic(client, user_a, session_factory, fake_llm):

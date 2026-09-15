@@ -237,7 +237,29 @@ def group_paragraphs(segments: list[dict]) -> list[dict]:
     if not usable:
         return []
     groups = _group_timed(usable) if _is_timed(usable) else _group_article(usable)
+    return _build_paragraphs(groups)
 
+
+def group_paragraphs_from_starts(segments: list[dict], start_ids) -> list[dict]:
+    """按显式的段落起始句集合分组（AI 语义分段结果）。
+
+    start_ids 为段首 segment_id 集合；材料首句始终视为段首。
+    """
+    usable = [s for s in segments if s.get("segment_id") and _text(s)]
+    if not usable:
+        return []
+    starts = set(start_ids or ())
+    groups: list[tuple[list[dict], str]] = []
+    cur: list[dict] = []
+    for s in usable:
+        if cur and s["segment_id"] in starts:
+            _close(cur, groups)
+        cur.append(s)
+    _close(cur, groups)
+    return _build_paragraphs(groups)
+
+
+def _build_paragraphs(groups: list[tuple[list[dict], str]]) -> list[dict]:
     paragraphs: list[dict] = []
     for idx, (group, kind) in enumerate(groups, start=1):
         starts = [s.get("start_ms") for s in group if s.get("start_ms") is not None]
