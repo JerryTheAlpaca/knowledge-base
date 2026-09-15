@@ -58,11 +58,14 @@
         <div class="chiprow" id="fileChips" hidden></div>
         <div class="chiprow" id="audioChips" hidden></div>
         <div class="smartbox-foot">
-          <button type="button" class="icon ghost" id="uploadPick" aria-label="添加文件或录音" title="添加文件或录音">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          <button type="button" id="uploadPick" aria-label="添加文件或录音" title="添加文件或录音">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                  stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M12 5v14"/><path d="M5 12h14"/>
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="17 8 12 3 7 8"/>
+              <line x1="12" y1="3" x2="12" y2="15"/>
             </svg>
+            上传文件
           </button>
           <span class="small" id="capAudioState"></span>
           <span class="spacer"></span>
