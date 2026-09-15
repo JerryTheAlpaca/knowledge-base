@@ -80,6 +80,20 @@
 
   <div class="card">
     <div class="list-head">
+      <h2>用户</h2>
+      <button class="icon" id="userListRefresh" title="刷新" aria-label="刷新">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/>
+        </svg>
+      </button>
+    </div>
+    <p class="help" style="margin:0 0 4px">全部注册用户与条目统计。删除账户会连同中心认证账号与其全部数据一起删除，不可恢复。</p>
+    <div id="userList"><div class="muted" style="padding:8px 0">加载中…</div></div>
+  </div>
+
+  <div class="card">
+    <div class="list-head">
       <h2>用户凭据代配</h2>
       <button class="icon" id="credUsersRefresh" title="刷新" aria-label="刷新">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -193,11 +207,15 @@ function handleErr(e, prefix) {
 
 let modalResolve = null;
 let modalLastFocus = null;
+let modalGen = 0;       // 关闭清理的代数：新弹窗打开后旧关闭定时器不得清掉它
+let modalLocked = false; // 锁定弹窗：点遮罩 / Escape 不关闭（如只显示一次的邀请码）
 const MODAL_FOCUSABLE = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
 // 只接受已净化 HTML（审查 C-28）：动态数据必须在调用前经 esc()；
 // confirmModal 的 o.title/o.confirmLabel 内部已 esc，o.body 视为可信字面量，
 // 若将来传入动态内容须先 esc。
-function openModalHTML(html) {
+function openModalHTML(html, locked = false) {
+  modalGen += 1;
+  modalLocked = locked;
   modalLastFocus = document.activeElement;  // U-02：记录触发元素，关闭时归还焦点
   $("modalBox").innerHTML = html;
   const ov = $("overlay");
@@ -209,9 +227,15 @@ function openModalHTML(html) {
   });
 }
 function closeModal(val) {
+  modalGen += 1;
+  const gen = modalGen;
+  modalLocked = false;
   const ov = $("overlay");
   ov.classList.remove("show");
-  setTimeout(() => { ov.hidden = true; $("modalBox").innerHTML = ""; }, 200);
+  // 竞态防护：若 200ms 内又打开了新弹窗（如生成邀请码），这轮清理必须跳过
+  setTimeout(() => {
+    if (gen === modalGen) { ov.hidden = true; $("modalBox").innerHTML = ""; }
+  }, 200);
   if (modalLastFocus && document.contains(modalLastFocus)) {
     try { modalLastFocus.focus(); } catch (e) { /* 元素已不可聚焦则忽略 */ }
   }
@@ -275,7 +299,10 @@ async function loadAdminInvitations() {
         : '<span class="dim">—</span>') + "</span>" +
       '<span style="flex:1"></span>' +
       (inv.status === "unused"
-        ? '<button class="small danger" data-inv-revoke="' + esc(inv.id) + '">撤销</button>' : "") +
+        ? '<button class="small danger" data-inv-revoke="' + esc(inv.id) + '">撤销</button>'
+        : ((inv.status === "revoked" || inv.status === "expired")
+          ? '<button class="small danger" data-inv-delete="' + esc(inv.id) + '">删除</button>'
+          : "")) +
       "</div>").join("");
   } catch (e) {
     host.innerHTML = '<div class="muted" style="padding:8px 0">加载失败</div>';
@@ -292,14 +319,16 @@ async function createInvitation() {
   if (!ok) return;
   try {
     const r = await api("/v1/admin/invitations", { method: "POST", body: {} });
+    // locked=true：完整码只出现一次，点遮罩/Escape 不关闭，必须显式「我已保存」
     openModalHTML(
       '<div class="modal-title">邀请码已生成</div>' +
-      '<div class="modal-body"><p style="margin:0 0 10px">完整码只显示这一次：</p>' +
+      '<div class="modal-body"><p style="margin:0 0 10px">完整码只显示这一次，请先复制保存：</p>' +
       '<div class="pwrow"><input id="invCode" readonly value="' + esc(r.code) + '">' +
       '<button type="button" class="eye" id="invCopy">复制</button></div>' +
       '<p class="small muted" style="margin:10px 0 0">有效期至 ' + esc(fmtTime(r.expiresAt)) + "</p></div>" +
-      '<div class="modal-foot"><button id="mCancel">关闭</button></div>');
-    $("mCancel").onclick = () => closeModal(null);
+      '<div class="modal-foot"><button id="mOk" class="primary">我已保存，关闭</button></div>',
+      true);
+    $("mOk").onclick = () => closeModal(null);
     $("invCopy").onclick = async () => {
       const input = $("invCode");
       try { await navigator.clipboard.writeText(input.value); }
@@ -308,6 +337,32 @@ async function createInvitation() {
     };
     loadAdminInvitations();
   } catch (e) { handleErr(e, "生成邀请码失败："); }
+}
+
+// ---------- 用户列表 ----------
+async function loadUserList() {
+  const host = $("userList");
+  try {
+    const r = await api("/v1/admin/users");
+    const users = r.users || [];
+    if (!users.length) { host.innerHTML = '<div class="muted" style="padding:8px 0">还没有用户。</div>'; return; }
+    host.innerHTML = users.map((u) =>
+      '<div class="asruser">' +
+      '<span style="font-weight:600">' + esc(u.name) + "</span>" +
+      (u.status === "active"
+        ? '<span class="badge b-ready">正常</span>'
+        : '<span class="badge b-failed">停用</span>') +
+      '<span class="dim num">注册 ' + esc(fmtShort(u.created_at)) + "</span>" +
+      '<span class="small num">' + esc(u.item_count == null ? "—" : u.item_count) + " 条</span>" +
+      (u.last_item_at ? '<span class="dim num">最近 ' + esc(fmtShort(u.last_item_at)) + "</span>" : "") +
+      '<span style="flex:1"></span>' +
+      '<button class="small danger" data-user-delete="' + esc(u.user_id) +
+      '" data-user-name="' + esc(u.name) + '">删除账户</button>' +
+      "</div>").join("");
+  } catch (e) {
+    host.innerHTML = '<div class="muted" style="padding:8px 0">加载失败</div>';
+    handleErr(e, "用户列表加载失败：");
+  }
 }
 
 // ---------- ASR 处理状态 ----------
@@ -375,7 +430,7 @@ async function loadServerStats() {
   }
 }
 
-function loadAdmin() { loadAdminInvitations(); loadAsrOverview(); loadServerStats(); loadCredUsers(); }
+function loadAdmin() { loadAdminInvitations(); loadUserList(); loadAsrOverview(); loadServerStats(); loadCredUsers(); }
 
 // ---------- 用户凭据代配 ----------
 function credBadge(ok, yes, no) {
@@ -527,6 +582,22 @@ async function openCredPanel(userId) {
 
 // ---------- 启动与事件 ----------
 $("invCreateBtn").addEventListener("click", createInvitation);
+$("userListRefresh").addEventListener("click", loadUserList);
+$("userList").addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-user-delete]");
+  if (!b) return;
+  const ok = await confirmModal({
+    title: "删除账户：" + b.dataset.userName,
+    body: "将<b>永久删除</b>该用户的全部数据：收件箱条目与文件、模型与 B 站凭据、设备绑定，以及中心认证账号（含其在中心站的全部数据）。<b>不可恢复。</b>",
+    confirmLabel: "永久删除", danger: true,
+  });
+  if (!ok) return;
+  try {
+    await api("/v1/admin/users/" + encodeURIComponent(b.dataset.userDelete), { method: "DELETE" });
+    toast("已删除账户 " + b.dataset.userName, { type: "ok" });
+    loadUserList(); loadCredUsers(); loadAsrOverview();
+  } catch (err) { handleErr(err, "删除账户失败："); }
+});
 $("asrAdminRefresh").addEventListener("click", loadAsrOverview);
 $("srvStatsRefresh").addEventListener("click", loadServerStats);
 $("credUsersRefresh").addEventListener("click", loadCredUsers);
@@ -536,6 +607,21 @@ $("credUsers").addEventListener("click", (e) => {
   openCredPanel(b.dataset.credOpen);
 });
 $("invList").addEventListener("click", async (e) => {
+  const del = e.target.closest("[data-inv-delete]");
+  if (del) {
+    const ok = await confirmModal({
+      title: "删除邀请码",
+      body: "把这条已失效的邀请码从列表中删掉。只影响记录展示，不影响已注册的用户。",
+      confirmLabel: "删除", danger: true,
+    });
+    if (!ok) return;
+    try {
+      await api("/v1/admin/invitations/" + encodeURIComponent(del.dataset.invDelete), { method: "DELETE" });
+      toast("已删除邀请码记录", { type: "ok" });
+      loadAdminInvitations();
+    } catch (err) { handleErr(err, "删除失败："); }
+    return;
+  }
   const b = e.target.closest("[data-inv-revoke]");
   if (!b) return;
   const ok = await confirmModal({
@@ -550,9 +636,11 @@ $("invList").addEventListener("click", async (e) => {
     loadAdminInvitations();
   } catch (err) { handleErr(err, "撤销失败："); }
 });
-$("overlay").addEventListener("click", (e) => { if (e.target === $("overlay")) closeModal(null); });
+$("overlay").addEventListener("click", (e) => {
+  if (e.target === $("overlay") && !modalLocked) closeModal(null);
+});
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && !$("overlay").hidden) closeModal(null);
+  if (e.key === "Escape" && !$("overlay").hidden && !modalLocked) closeModal(null);
 });
 
 (async function boot() {

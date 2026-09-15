@@ -9,6 +9,8 @@
 - 凭据代配：按目标用户写入 llm / bilibili_session 凭据（docs/16）。
   密文 AAD 绑定目标用户；响应不回显 secret。代配的 LLM 配置标记
   local_export=denied，暂不允许经本机绑定下发到试用用户电脑。
+- 删除账户：先删中心认证账号再硬删本地全部数据（条目、凭据、设备、
+  在线对象与临时目录），仅限管理员且不能删自己。
 """
 from __future__ import annotations
 
@@ -26,7 +28,31 @@ from ..db import get_db
 from ..api.deps import current_principal
 from ..domain import pipeline
 from ..domain.errors import ApiError
-from ..models import AsrRun, Credential, Item, ProviderProfile, User, utcnow
+from ..models import (
+    AsrRun,
+    AudioAsset,
+    AudioUploadSession,
+    BundleRevision,
+    Capture,
+    Credential,
+    Device,
+    Event,
+    IdempotencyRecord,
+    Item,
+    Job,
+    LocalKeyBinding,
+    PairingCode,
+    ProviderOperation,
+    ProviderProfile,
+    Receipt,
+    SourceRevision,
+    StoredFile,
+    SuppressedItem,
+    Token,
+    Upload,
+    User,
+    utcnow,
+)
 from ..security import credentials as cred_crypto
 from . import routes_bilibili, routes_profiles
 
@@ -105,6 +131,12 @@ def create_invitation(request: Request, _admin=Depends(require_admin)):
 def revoke_invitation(invitation_id: str, request: Request, _admin=Depends(require_admin)):
     """撤销一条未使用的邀请码。"""
     return _proxy_central(request, "POST", f"/api/invitations/{invitation_id}/revoke", {})
+
+
+@router.delete("/invitations/{invitation_id}")
+def delete_invitation(invitation_id: str, request: Request, _admin=Depends(require_admin)):
+    """删除一条已撤销/已过期的邀请码记录（已使用/未使用的不允许删）。"""
+    return _proxy_central(request, "DELETE", f"/api/invitations/{invitation_id}")
 
 
 @router.get("/asr-overview")
@@ -283,8 +315,18 @@ def _mask_subject(subject: str | None) -> str:
 
 @router.get("/users")
 def list_users(_admin=Depends(require_admin), db: Session = Depends(get_db)):
-    """本地用户列表：配置状态摘要，不含任何密钥。"""
+    """本地用户列表：配置状态摘要与条目统计，不含任何密钥。"""
     users = db.query(User).order_by(User.created_at).all()
+    # 条目统计：一次分组查询带出每人的有效条目数与最近一条时间
+    from sqlalchemy import func
+
+    item_stats = {
+        row[0]: (int(row[1]), row[2])
+        for row in db.query(Item.user_id, func.count(Item.id), func.max(Item.created_at))
+        .filter(Item.deleted_at.is_(None))
+        .group_by(Item.user_id)
+        .all()
+    }
     out = []
     for u in users:
         llm = _primary_llm_profile(db, u.id)
@@ -297,12 +339,15 @@ def list_users(_admin=Depends(require_admin), db: Session = Depends(get_db)):
         )
         bili_cred = _active_cred(db, bili.id) if bili else None
         bili_check = ((bili.meta_json or {}) if bili else {}).get("bilibili_last_check")
+        item_count, last_item_at = item_stats.get(u.id, (0, None))
         out.append({
             "user_id": u.id,
             "name": u.name,
             "status": u.status,
             "auth_subject": _mask_subject(u.auth_subject),
             "created_at": u.created_at.isoformat(),
+            "item_count": item_count,
+            "last_item_at": last_item_at.isoformat() if last_item_at else None,
             "llm": {
                 "configured": llm_cred is not None,
                 "profile_id": llm.id if llm else None,
@@ -448,3 +493,67 @@ def test_user_bilibili_session(
 ):
     user = _require_target_user(db, user_id)
     return routes_bilibili.test_session_for_user(db, user.id)
+
+
+# ---- 删除用户账户 ----
+
+def purge_user_local_data(db: Session, user_id: str) -> int:
+    """硬删除一个本地用户在 KB 的全部数据（行 + 在线对象 + 临时目录）。
+
+    供管理端点与服务器侧脚本共用。必须先删磁盘对象再删行：行删掉之后
+    retention sweep 看不到这些登记，对象必须在此处显式回收。
+    """
+    from ..storage.objects import ObjectStore
+    from ..workers.asr import _cleanup_by_work_dir
+
+    store = ObjectStore()
+    settings = get_settings()
+
+    # 1) 磁盘对象：文件登记、上传原件、Bundle 清单（同 key 去重）
+    keys = [k for (k,) in db.query(StoredFile.storage_key).filter(StoredFile.user_id == user_id).all()]
+    keys += [k for (k,) in db.query(Upload.storage_key).filter(Upload.user_id == user_id).all()]
+    keys += [k for (k,) in db.query(BundleRevision.manifest_key).filter(BundleRevision.user_id == user_id).all()]
+    for key in dict.fromkeys(keys):
+        store.delete_object(key)
+    # ASR 工作目录（PCM 与临时输入）与未完成音频会话的 staging 占用
+    for (work_dir,) in db.query(AsrRun.work_dir).filter(
+        AsrRun.user_id == user_id, AsrRun.work_dir != ""
+    ).all():
+        _cleanup_by_work_dir(settings, work_dir)
+    for (staging,) in db.query(AudioUploadSession.staging_path).filter(
+        AudioUploadSession.user_id == user_id, AudioUploadSession.state == "receiving"
+    ).all():
+        store.discard_staging(staging)
+
+    # 2) 行：先子后父
+    deleted = 0
+    for model in (
+        ProviderOperation, Job, AsrRun, Receipt, SuppressedItem, AudioAsset,
+        SourceRevision, BundleRevision, StoredFile, LocalKeyBinding,
+        Credential, ProviderProfile, Item, Capture, Upload, AudioUploadSession,
+        Token, PairingCode, Event, IdempotencyRecord, Device,
+    ):
+        deleted += db.query(model).filter(model.user_id == user_id).delete(synchronize_session=False)
+    deleted += db.query(User).filter(User.id == user_id).delete(synchronize_session=False)
+    return deleted
+
+
+@router.delete("/users/{user_id}")
+def delete_user(user_id: str, request: Request, _admin=Depends(require_admin), db: Session = Depends(get_db)):
+    """删除用户账户：先删中心认证账号，再清本地全部数据。不可恢复。"""
+    user = db.get(User, user_id)
+    if user is None:
+        raise ApiError("NOT_FOUND", "用户不存在", status_code=404)
+    if user.id == _admin.user.id:
+        raise ApiError("FORBIDDEN", "不能删除当前登录的账号", status_code=403)
+
+    # 先删中心账号（失败则本地不动，可直接重试）；中心已无此账号（404）视为成功。
+    if user.auth_subject:
+        try:
+            _proxy_central(request, "DELETE", f"/api/admin/users/{user.auth_subject}")
+        except ApiError as exc:
+            if exc.status_code != 404:
+                raise
+    purge_user_local_data(db, user.id)
+    db.commit()
+    return {"user_id": user.id, "deleted": True}

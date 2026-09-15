@@ -2447,6 +2447,47 @@
         }
       }
     },
+    "/v1/admin/invitations/{invitation_id}": {
+      "delete": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Delete Invitation",
+        "description": "删除一条已撤销/已过期的邀请码记录（已使用/未使用的不允许删）。",
+        "operationId": "delete_invitation_v1_admin_invitations__invitation_id__delete",
+        "parameters": [
+          {
+            "name": "invitation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Invitation Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/admin/asr-overview": {
       "get": {
         "tags": [
@@ -2493,7 +2534,7 @@
           "admin"
         ],
         "summary": "List Users",
-        "description": "本地用户列表：配置状态摘要，不含任何密钥。",
+        "description": "本地用户列表：配置状态摘要与条目统计，不含任何密钥。",
         "operationId": "list_users_v1_admin_users_get",
         "responses": {
           "200": {
@@ -2733,6 +2774,47 @@
         ],
         "summary": "Test User Bilibili Session",
         "operationId": "test_user_bilibili_session_v1_admin_users__user_id__bilibili_session_test_post",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "User Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/users/{user_id}": {
+      "delete": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Delete User",
+        "description": "删除用户账户：先删中心认证账号，再清本地全部数据。不可恢复。",
+        "operationId": "delete_user_v1_admin_users__user_id__delete",
         "parameters": [
           {
             "name": "user_id",
@@ -4416,6 +4498,17 @@
             ],
             "title": "Default Profile Id"
           },
+          "optimize_profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Optimize Profile Id"
+          },
           "auto_enrich": {
             "type": "boolean",
             "title": "Auto Enrich",
@@ -4451,6 +4544,17 @@
               }
             ],
             "title": "Default Profile Id"
+          },
+          "optimize_profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Optimize Profile Id"
           },
           "auto_enrich": {
             "anyOf": [
