@@ -22,7 +22,7 @@ router = APIRouter(prefix="/v1/onboarding", tags=["onboarding"])
 
 
 def _model_step(db: Session, user_id: str) -> dict:
-    """整理模型：存在带有效凭据的 LLM 配置即完成（与 enrich 取配置同口径）。"""
+    """整理模型：存在带有效凭据的整理（digest）配置即完成（与 enrich 取配置同口径）。"""
     row = (
         db.query(ProviderProfile, Credential)
         .join(Credential, Credential.profile_id == ProviderProfile.id)
@@ -30,6 +30,7 @@ def _model_step(db: Session, user_id: str) -> dict:
             ProviderProfile.user_id == user_id,
             ProviderProfile.kind == "llm",
             ProviderProfile.adapter == "openai-compatible",
+            ProviderProfile.role.is_(None) | (ProviderProfile.role == "digest"),
             Credential.revoked_at.is_(None),
         )
         .order_by(Credential.created_at.desc())

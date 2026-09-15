@@ -114,6 +114,8 @@ class ProviderProfile(Base, TimestampMixin):
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
     kind: Mapped[str] = mapped_column(String(20))  # llm|vision_ocr|bilibili_session
     adapter: Mapped[str] = mapped_column(String(40))  # openai-compatible|bilibili-web|...
+    # llm 配置的角色：digest=整理文本（默认/NULL，历史行）、optimize=优化文本（分段与纠错）
+    role: Mapped[str | None] = mapped_column(String(20), nullable=True)
     endpoint: Mapped[str] = mapped_column(String(512))
     model: Mapped[str] = mapped_column(String(120))
     capabilities_json: Mapped[dict] = mapped_column(JSON, default=dict)

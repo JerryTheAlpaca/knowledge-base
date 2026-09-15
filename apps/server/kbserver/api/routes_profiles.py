@@ -45,6 +45,8 @@ router = APIRouter(tags=["profiles"])
 
 ALLOWED_KINDS = {"llm", "vision_ocr"}
 ALLOWED_ADAPTERS = {"openai-compatible"}
+# llm 配置角色：digest=整理文本（提炼）、optimize=优化文本（语义分段与听错词修正）
+ALLOWED_ROLES = {"digest", "optimize"}
 ALLOWED_CAPABILITY_KEYS = {
     "context_tokens": int,
     "max_output_tokens": int,
@@ -52,6 +54,7 @@ ALLOWED_CAPABILITY_KEYS = {
     "temperature": bool,
     "json_mode": bool,
     "vision": bool,
+    "thinking_mode": bool,
 }
 
 # 连接测试限流：每用户每模型档 60 秒一次（惰性清理见 rate_limit.py）
@@ -98,12 +101,27 @@ def _validate_capabilities(caps: dict | None) -> dict:
     return out
 
 
+def _validate_role(role: str | None, kind: str) -> str | None:
+    """llm 配置角色校验：只允许 digest/optimize，且只对 llm 配置有意义。
+
+    返回归一化值：llm 配置缺省归为 digest；非 llm 配置不接受角色。
+    """
+    if role is None:
+        return "digest" if kind == "llm" else None
+    if role not in ALLOWED_ROLES:
+        raise ApiError("SCHEMA_INVALID", f"role 仅支持 {sorted(ALLOWED_ROLES)}")
+    if kind != "llm":
+        raise ApiError("SCHEMA_INVALID", "role 仅适用于 llm 类型的配置")
+    return role
+
+
 # ---- 模型配置 ----
 
 class ProfileCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     kind: str = "llm"
     adapter: str = "openai-compatible"
+    role: str | None = None
     endpoint: str
     model: str = Field(min_length=1, max_length=120)
     capabilities: dict | None = None
@@ -112,6 +130,7 @@ class ProfileCreate(BaseModel):
 
 class ProfileUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    role: str | None = None
     endpoint: str | None = None
     model: str | None = Field(default=None, min_length=1, max_length=120)
     capabilities: dict | None = None
@@ -124,6 +143,7 @@ class ProfileOut(BaseModel):
     id: str
     kind: str
     adapter: str
+    role: str | None = None
     endpoint: str
     model: str
     capabilities: dict
@@ -144,6 +164,7 @@ def _profile_out(db: Session, profile: ProviderProfile) -> ProfileOut:
         id=profile.id,
         kind=profile.kind,
         adapter=profile.adapter,
+        role=(profile.role or "digest") if profile.kind == "llm" else profile.role,
         endpoint=profile.endpoint,
         model=profile.model,
         capabilities=profile.capabilities_json or {},
@@ -192,6 +213,7 @@ def create_profile(body: ProfileCreate, principal=Depends(require_scope("profile
         raise ApiError("SCHEMA_INVALID", f"kind 仅支持 {sorted(ALLOWED_KINDS)}")
     if body.adapter not in ALLOWED_ADAPTERS:
         raise ApiError("SCHEMA_INVALID", f"adapter 仅支持 {sorted(ALLOWED_ADAPTERS)}")
+    role = _validate_role(body.role, body.kind)
     endpoint = _validate_endpoint(body.endpoint)
     caps = _validate_capabilities(body.capabilities)
 
@@ -199,6 +221,7 @@ def create_profile(body: ProfileCreate, principal=Depends(require_scope("profile
         user_id=user.id,
         kind=body.kind,
         adapter=body.adapter,
+        role=role,
         endpoint=endpoint,
         model=body.model,
         capabilities_json=caps,
@@ -225,6 +248,11 @@ def update_profile(profile_id: str, body: ProfileUpdate, principal=Depends(requi
         raise ApiError("REVISION_CONFLICT", "配置版本已变化，请刷新后重试", status_code=409)
 
     changed = False
+    if body.role is not None:
+        role = _validate_role(body.role, profile.kind)
+        if role != profile.role:
+            profile.role = role
+            changed = True
     if body.endpoint is not None and body.endpoint != profile.endpoint:
         profile.endpoint = _validate_endpoint(body.endpoint)
         changed = True

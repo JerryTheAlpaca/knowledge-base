@@ -118,15 +118,18 @@ def _drain(session_factory, max_rounds=20):
             break
 
 
-def _create_profile(client, token, *, capabilities=None, secret="sk-test-1234567890"):
+def _create_profile(client, token, *, capabilities=None, secret="sk-test-1234567890",
+                    role=None, model="deepseek-chat"):
     body = {
         "kind": "llm",
         "adapter": "openai-compatible",
         "endpoint": ALLOWED_ENDPOINT,
-        "model": "deepseek-chat",
+        "model": model,
         "capabilities": capabilities or {},
         "secret": secret,
     }
+    if role is not None:
+        body["role"] = role
     return client.post("/v1/provider-profiles", json=body, headers=auth(token))
 
 
@@ -211,6 +214,36 @@ def test_profile_tenant_isolation(client, user_a, user_b):
     assert client.post(f"/v1/provider-profiles/{out['id']}/test", headers=b).status_code == 404
 
 
+# ---- 模型角色（整理文本 digest / 优化文本 optimize）----
+
+def test_profile_role_create_patch_and_validation(client, user_a):
+    token = user_a["desktop"]["token"]
+
+    # 缺省归为整理（digest）；显式 optimize 原样保存
+    legacy = _create_profile(client, token).json()
+    assert legacy["role"] == "digest"
+    opt = _create_profile(client, token, role="optimize", model="deepseek-flash").json()
+    assert opt["role"] == "optimize"
+
+    # PATCH 可以改角色；非法角色与非 llm 配置的角色都拒绝
+    patched = client.patch(f"/v1/provider-profiles/{opt['id']}",
+                           json={"role": "digest"}, headers=auth(token))
+    assert patched.status_code == 200 and patched.json()["role"] == "digest"
+    bad = client.post("/v1/provider-profiles", json={
+        "kind": "llm", "adapter": "openai-compatible", "role": "workflow",
+        "endpoint": ALLOWED_ENDPOINT, "model": "m", "secret": "sk-test-1234567890",
+    }, headers=auth(token))
+    assert bad.status_code == 422
+    bad2 = client.post("/v1/provider-profiles", json={
+        "kind": "vision_ocr", "adapter": "openai-compatible", "role": "optimize",
+        "endpoint": ALLOWED_ENDPOINT, "model": "m", "secret": "sk-test-1234567890",
+    }, headers=auth(token))
+    assert bad2.status_code == 422
+    bad3 = client.patch(f"/v1/provider-profiles/{legacy['id']}",
+                        json={"role": "workflow"}, headers=auth(token))
+    assert bad3.status_code == 422
+
+
 # ---- enrich 成功路径 ----
 
 def test_enrich_success_publishes_ready_bundle(client, user_a, session_factory, fake_llm):
@@ -285,6 +318,82 @@ def test_enrich_applies_ai_semantic_paragraphs(client, user_a, session_factory, 
         headers=auth(token)).content.decode("utf-8")
     assert readable.count(" ^p") == 1
     assert "已修正" in readable
+
+
+def test_enrich_routes_paragraphing_to_optimize_profile(client, user_a, session_factory, fake_llm, monkeypatch):
+    """分段/纠错走「优化文本」配置（optimize），提炼走「整理文本」配置（digest）。"""
+    calls: list[tuple[str, str]] = []
+
+    def behavior(request):
+        prompt = request.user
+        if '"task": "这份文本是语音识别的原始输出' in prompt:
+            payload = json.loads(prompt)
+            segs = json.loads(payload["segments"])
+            return llm_result({"paragraph_starts": [segs[0]["segment_id"]], "corrections": []})
+        return llm_result(doc_from_prompt(prompt))
+
+    fake_llm.behavior = behavior
+
+    def generate(self, request):
+        calls.append((self.kwargs.get("model"), request.user))
+        return type(self).behavior(request)
+
+    monkeypatch.setattr(fake_llm, "generate", generate)
+
+    token = user_a["desktop"]["token"]
+    _create_profile(client, token, capabilities={"thinking_mode": True})
+    _create_profile(client, token, role="optimize", model="deepseek-flash",
+                    capabilities={"thinking_mode": False})
+    c = _capture_text(client, user_a["phone"]["token"], "m2optroute",
+                      "第一段：可靠保存材料。\n第二段：加工不丢原文。\n第三段：都属同一话题。")
+    item_id = c.json()["item_id"]
+    _drain(session_factory)
+
+    it = _get_item(client, token, item_id)
+    assert it["pipeline_state"] == "ready", it
+
+    para_models = {m for m, p in calls if '"task": "这份文本是语音识别的原始输出' in p}
+    digest_models = {m for m, p in calls if '"task": "这份文本是语音识别的原始输出' not in p}
+    assert para_models == {"deepseek-flash"}
+    assert digest_models == {"deepseek-chat"}
+    # 两个 provider 实例分别按各自配置构造（思考开关随配置走）
+    caps_by_model = {i.kwargs["model"]: i.kwargs["capabilities"] for i in fake_llm.instances}
+    assert caps_by_model["deepseek-chat"] == {"thinking_mode": True}
+    assert caps_by_model["deepseek-flash"] == {"thinking_mode": False}
+
+
+def test_enrich_without_optimize_profile_uses_digest_for_paragraphing(
+        client, user_a, session_factory, fake_llm, monkeypatch):
+    """未配置「优化文本」：分段/纠错回退整理模型，整理照常完成。"""
+    calls: list[tuple[str, str]] = []
+
+    def behavior(request):
+        prompt = request.user
+        if '"task": "这份文本是语音识别的原始输出' in prompt:
+            payload = json.loads(prompt)
+            segs = json.loads(payload["segments"])
+            return llm_result({"paragraph_starts": [segs[0]["segment_id"]], "corrections": []})
+        return llm_result(doc_from_prompt(prompt))
+
+    fake_llm.behavior = behavior
+
+    def generate(self, request):
+        calls.append((self.kwargs.get("model"), request.user))
+        return type(self).behavior(request)
+
+    monkeypatch.setattr(fake_llm, "generate", generate)
+
+    token = user_a["desktop"]["token"]
+    _create_profile(client, token)
+    c = _capture_text(client, user_a["phone"]["token"], "m2optfall",
+                      "第一段：可靠保存材料。\n第二段：加工不丢原文。\n第三段：都属同一话题。")
+    item_id = c.json()["item_id"]
+    _drain(session_factory)
+
+    it = _get_item(client, token, item_id)
+    assert it["pipeline_state"] == "ready", it
+    assert {m for m, _ in calls} == {"deepseek-chat"}
+    assert len(fake_llm.instances) == 1  # 只构造了整理 provider
 
 
 def test_enrich_paragraphing_failure_falls_back(client, user_a, session_factory, fake_llm):

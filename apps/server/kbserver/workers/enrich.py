@@ -36,6 +36,7 @@ from ..models import (
     ProviderProfile,
     SourceRevision,
     StoredFile,
+    User,
     utcnow,
 )
 from ..providers.llm import (
@@ -74,6 +75,11 @@ class EnrichPlan:
     model: str
     capabilities: dict
     operation_id: str
+    # 优化文本配置（语义分段与听错词修正）；缺省时回退整理配置
+    optimize_profile_id: str | None = None
+    optimize_endpoint: str | None = None
+    optimize_model: str | None = None
+    optimize_capabilities: dict = field(default_factory=dict)
     segments: list[dict] = field(default_factory=list)
     paragraphs: list[dict] = field(default_factory=list)
     user_note: str | None = None
@@ -187,7 +193,7 @@ def prepare(session_factory, job_id: str, lease_token: str) -> EnrichPlan | None
             db.commit()
             return None
 
-        row = (
+        rows = (
             db.query(ProviderProfile, Credential)
             .join(Credential, Credential.profile_id == ProviderProfile.id)
             .filter(
@@ -196,15 +202,25 @@ def prepare(session_factory, job_id: str, lease_token: str) -> EnrichPlan | None
                 ProviderProfile.adapter == "openai-compatible",
                 Credential.revoked_at.is_(None),
             )
-            .order_by(Credential.created_at.desc())
-            .first()
+            .all()
         )
-        if row is None:
+        # 按角色分档：digest=整理文本（NULL 兼容存量）、optimize=优化文本
+        digest_rows = [(p, c) for p, c in rows if (p.role or "digest") == "digest"]
+        optimize_rows = [(p, c) for p, c in rows if p.role == "optimize"]
+        if not digest_rows:
             _waiting(db, job, item, "waiting_key",
                      "未配置模型凭据：配置后自动继续；原始材料已保存。", "item_waiting_key")
             db.commit()
             return None
-        profile, _credential = row
+        # 优先使用用户设置的默认整理配置，否则取最近配置凭据的
+        user = db.get(User, item.user_id)
+        default_id = (user.settings_json or {}).get("default_profile_id") if user else None
+        profile, _credential = next(
+            ((p, c) for p, c in digest_rows if p.id == default_id), None
+        ) or max(digest_rows, key=lambda pc: pc[1].created_at)
+        opt_profile, _opt_cred = (
+            max(optimize_rows, key=lambda pc: pc[1].created_at) if optimize_rows else (None, None)
+        )
 
         # 已有未完成操作：sent 表示请求可能已生效，不盲目重发（docs/02 §7.3）
         op = provider_ops.latest_for_job(db, job.id)
@@ -244,7 +260,11 @@ def prepare(session_factory, job_id: str, lease_token: str) -> EnrichPlan | None
             chunks = templates.plan_chunks(segments, int(context_tokens * 0.6), paragraphs)
 
         fingerprint_src = json.dumps(
-            [pipeline.RECIPE_VERSION, profile.id, profile.model, source.content_hash, chunked, len(chunks)],
+            [
+                pipeline.RECIPE_VERSION, profile.id, profile.model,
+                opt_profile.id if opt_profile else "", opt_profile.model if opt_profile else "",
+                source.content_hash, chunked, len(chunks),
+            ],
             sort_keys=True,
         )
         op = provider_ops.create_operation(
@@ -267,6 +287,10 @@ def prepare(session_factory, job_id: str, lease_token: str) -> EnrichPlan | None
             model=profile.model,
             capabilities=caps,
             operation_id=op.id,
+            optimize_profile_id=opt_profile.id if opt_profile else None,
+            optimize_endpoint=opt_profile.endpoint if opt_profile else None,
+            optimize_model=opt_profile.model if opt_profile else None,
+            optimize_capabilities=(opt_profile.capabilities_json or {}) if opt_profile else {},
             segments=segments,
             paragraphs=paragraphs,
             user_note=meta.get("user_note"),
@@ -346,30 +370,45 @@ def call_provider(session_factory, plan: EnrichPlan) -> dict:
     抛出 ProviderError 子类或 AnalysisInvalid。
     """
     settings = get_settings()
-    with session_factory() as db:
-        cred = (
-            db.query(Credential)
-            .filter(Credential.profile_id == plan.profile_id, Credential.revoked_at.is_(None))
-            .order_by(Credential.created_at.desc())
-            .first()
-        )
-        if cred is None:
-            raise ProviderAuthFailed("凭据不存在或已撤销")
-        try:
-            api_key = cred_crypto.decrypt_secret(
-                cred.encrypted_secret, cred.encrypted_dek, cred.nonces_json,
-                settings.load_master_key(),
-                user_id=plan.user_id, profile_id=plan.profile_id, credential_version=cred.version,
-            )
-        except Exception as exc:  # 解密失败=凭据不可用；不回退其他用户或管理员 Key
-            raise ProviderAuthFailed(f"凭据解密失败：{type(exc).__name__}") from exc
 
-    provider = OpenAICompatibleProvider(
+    def _decrypt_key(profile_id: str) -> str:
+        with session_factory() as db:
+            cred = (
+                db.query(Credential)
+                .filter(Credential.profile_id == profile_id, Credential.revoked_at.is_(None))
+                .order_by(Credential.created_at.desc())
+                .first()
+            )
+            if cred is None:
+                raise ProviderAuthFailed("凭据不存在或已撤销")
+            try:
+                return cred_crypto.decrypt_secret(
+                    cred.encrypted_secret, cred.encrypted_dek, cred.nonces_json,
+                    settings.load_master_key(),
+                    user_id=plan.user_id, profile_id=profile_id, credential_version=cred.version,
+                )
+            except Exception as exc:  # 解密失败=凭据不可用；不回退其他用户或管理员 Key
+                raise ProviderAuthFailed(f"凭据解密失败：{type(exc).__name__}") from exc
+
+    digest_provider = OpenAICompatibleProvider(
         endpoint=plan.endpoint,
-        api_key=api_key,
+        api_key=_decrypt_key(plan.profile_id),
         model=plan.model,
         capabilities=plan.capabilities,
     )
+    # 优化文本配置（语义分段/听错词修正）：凭据不可用时回退整理配置，
+    # 分段是尽力而为的加工步骤，不应让它阻塞整条整理
+    optimize_provider: OpenAICompatibleProvider | None = None
+    if plan.optimize_endpoint:
+        try:
+            optimize_provider = OpenAICompatibleProvider(
+                endpoint=plan.optimize_endpoint,
+                api_key=_decrypt_key(plan.optimize_profile_id),
+                model=plan.optimize_model,
+                capabilities=plan.optimize_capabilities,
+            )
+        except ProviderAuthFailed:
+            optimize_provider = None
 
     # 标记已发送：此后进程崩溃/租约丢失都按 unknown_outcome 处理（docs/02 §7.3）
     with session_factory() as db:
@@ -381,9 +420,10 @@ def call_provider(session_factory, plan: EnrichPlan) -> dict:
 
     raws: list[dict] = []
 
-    def _call(prompt: str, *, max_output_tokens: int | None = None) -> dict:
+    def _call(prompt: str, *, max_output_tokens: int | None = None,
+              via: OpenAICompatibleProvider | None = None) -> dict:
         _lease_refresh(session_factory, plan.job_id, plan.lease_token)
-        result = provider.generate(GenerateRequest(
+        result = (via or digest_provider).generate(GenerateRequest(
             system=templates.SYSTEM_PROMPT,
             user=prompt,
             max_output_tokens=max_output_tokens or plan.max_output_tokens,
@@ -400,7 +440,7 @@ def call_provider(session_factory, plan: EnrichPlan) -> dict:
     def _repair(original_prompt: str, raw_output: str, errors: list[str]) -> dict:
         _lease_refresh(session_factory, plan.job_id, plan.lease_token)
         prompt = templates.build_repair_user_prompt(original_prompt, raw_output, errors)
-        result = provider.generate(GenerateRequest(
+        result = digest_provider.generate(GenerateRequest(
             system=templates.SYSTEM_PROMPT,
             user=prompt,
             max_output_tokens=plan.max_output_tokens,
@@ -411,9 +451,13 @@ def call_provider(session_factory, plan: EnrichPlan) -> dict:
         return parse_model_json(result.output_text)
 
     # 语义分段 + 听错词修正先于提炼：修正后的文本让提炼摘录与正文一致
-    # （用户关闭「AI 语义分段」时跳过，阅读层保持本地规则分段）
+    # （用户关闭「AI 语义分段」时跳过，阅读层保持本地规则分段）。
+    # 分段/纠错属于「优化文本」：有独立配置时走优化模型（通常不开思考，
+    # 更便宜更快），没有或凭据不可用时回退整理模型。
     text_plan = (
-        _semantic_paragraph_starts(plan, _call) if plan.paragraphing_enabled else None
+        _semantic_paragraph_starts(
+            plan, lambda prompt, **kw: _call(prompt, via=optimize_provider, **kw))
+        if plan.paragraphing_enabled else None
     )
     if text_plan:
         corrected = {c["segment_id"]: c["corrected"] for c in text_plan["corrections"]}

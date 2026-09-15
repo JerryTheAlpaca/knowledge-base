@@ -150,11 +150,11 @@
     </div>
     <div class="card" id="secModel">
       <div class="list-head">
-        <h2>整理模型</h2>
+        <h2>整理文本模型</h2>
         <button class="primary" id="newProfileBtn">新建配置</button>
       </div>
-      <p class="help" style="margin:0 0 4px">密钥加密托管在服务器，任何界面都不显示明文，可随时更换或撤销。</p>
-      <label for="defaultProfile" style="margin-top:12px">默认模型配置</label>
+      <p class="help" style="margin:0 0 4px">负责把原文整理成知识笔记（摘要、要点等）。密钥加密托管在服务器，任何界面都不显示明文，可随时更换或撤销。</p>
+      <label for="defaultProfile" style="margin-top:12px">默认整理配置</label>
       <select id="defaultProfile"><option value="">（未设置）</option></select>
       <div class="row" style="margin-top:12px">
         <button class="primary" id="saveSettings">保存设置</button>
@@ -172,6 +172,13 @@
         <span class="switch" aria-hidden="true"><i></i></span>
       </label>
       <div id="profileList" style="margin-top:16px"></div>
+
+      <div class="list-head" style="margin-top:28px">
+        <h2>优化文本模型</h2>
+        <button id="newOptimizeProfileBtn">新建配置</button>
+      </div>
+      <p class="help" style="margin:0 0 4px">负责修错别字、语义分段等原文优化，调用更轻量——建议选便宜的非思考模型；不配置时使用上面的整理模型。</p>
+      <div id="optimizeProfileList" style="margin-top:12px"></div>
     </div>
 
     <div class="card" id="secObsidian">

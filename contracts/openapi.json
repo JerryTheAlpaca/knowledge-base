@@ -4012,6 +4012,17 @@
             "title": "Adapter",
             "default": "openai-compatible"
           },
+          "role": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role"
+          },
           "endpoint": {
             "type": "string",
             "title": "Endpoint"
@@ -4063,6 +4074,17 @@
           "adapter": {
             "type": "string",
             "title": "Adapter"
+          },
+          "role": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role"
           },
           "endpoint": {
             "type": "string",
@@ -4119,6 +4141,17 @@
       },
       "ProfileUpdate": {
         "properties": {
+          "role": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role"
+          },
           "endpoint": {
             "anyOf": [
               {

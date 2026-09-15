@@ -54,21 +54,27 @@ async function revokeDevice(deviceId) {
   } catch (e) { showErr(e); }
 }
 
-// ---------- 整理模型 ----------
+// ---------- 模型配置（整理文本 / 优化文本） ----------
+
+let loadedProfiles = [];
+
 function profileCard(p) {
   const hostName = (() => { try { return new URL(p.endpoint).host; } catch (e) { return p.endpoint; } })();
   const stateBadgeHtml = p.configured
     ? '<span class="badge b-ready">已配置密钥</span>'
     : '<span class="badge b-needs_input">未配置密钥</span>';
+  const thinkingBadge = p.capabilities && p.capabilities.thinking_mode === true
+    ? '<span class="badge b-queued">思考模式</span>' : "";
   return '<div class="pcard" data-id="' + esc(p.id) + '">' +
     '<div class="pcard-main">' +
-      '<div class="pcard-top"><span class="pcard-model">' + esc(p.model) + "</span>" + stateBadgeHtml + "</div>" +
+      '<div class="pcard-top"><span class="pcard-model">' + esc(p.model) + "</span>" + stateBadgeHtml + thinkingBadge + "</div>" +
       '<div class="small" style="margin-top:4px">' + esc(hostName) + "</div>" +
     "</div>" +
     '<div class="menuwrap"><button class="icon" data-menu aria-label="更多操作" aria-haspopup="menu">' +
       '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">' +
       '<circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg></button>' +
       '<div class="menu" hidden>' +
+        '<button class="menu-item" data-act="edit" data-id="' + esc(p.id) + '">编辑配置</button>' +
         '<button class="menu-item" data-act="test" data-id="' + esc(p.id) + '">测试连接</button>' +
         '<button class="menu-item" data-act="rotate" data-id="' + esc(p.id) + '">更换密钥</button>' +
         (p.configured ? '<button class="menu-item danger" data-act="revoke" data-id="' + esc(p.id) + '">撤销密钥</button>' : "") +
@@ -82,15 +88,19 @@ async function loadSettingsData() {
       api("/v1/provider-profiles"), api("/v1/settings"), api("/v1/bilibili-session"),
       api("/v1/asr-settings").catch(() => null),
     ]);
+    loadedProfiles = profiles.filter((p) => p.kind === "llm");
+    const digest = loadedProfiles.filter((p) => (p.role || "digest") === "digest");
+    const optimize = loadedProfiles.filter((p) => p.role === "optimize");
     const sel = $("defaultProfile");
-    sel.innerHTML = '<option value="">（未设置）</option>' + profiles
-      .filter((p) => p.kind === "llm")
+    sel.innerHTML = '<option value="">（未设置）</option>' + digest
       .map((p) => '<option value="' + esc(p.id) + '"' + (p.id === settings.default_profile_id ? " selected" : "") + ">" +
         esc(p.model) + "</option>").join("");
-    const llm = profiles.filter((p) => p.kind === "llm");
-    $("profileList").innerHTML = llm.length
-      ? llm.map(profileCard).join("")
-      : '<div class="muted" style="padding:8px 0">还没有模型配置——点右上角「新建配置」开始。</div>';
+    $("profileList").innerHTML = digest.length
+      ? digest.map(profileCard).join("")
+      : '<div class="muted" style="padding:8px 0">还没有整理模型——点右上角「新建配置」开始。</div>';
+    $("optimizeProfileList").innerHTML = optimize.length
+      ? optimize.map(profileCard).join("")
+      : '<div class="muted" style="padding:8px 0">未单独配置——修错别字与分段将使用整理模型。</div>';
     renderBili(bili);
     renderAsrSettings(asrSettings);
     renderAutoEnrich(settings);
@@ -174,20 +184,35 @@ async function revokeKey(id) {
   } catch (e) { showErr(e); }
 }
 
-export function openProfileForm() {
+// role: "digest"（整理文本）| "optimize"（优化文本）；profile 传入时为编辑模式
+export function openProfileForm({ role = "digest", profile = null } = {}) {
+  const isEdit = !!profile;
+  const title = isEdit
+    ? "编辑模型配置"
+    : (role === "optimize" ? "新建优化文本模型" : "新建整理文本模型");
+  // 思考模式默认值：新配置按角色给默认（整理开、优化关）；编辑时反映已存值
+  const thinkingDefault = isEdit
+    ? !(profile.capabilities && profile.capabilities.thinking_mode === false)
+    : role === "digest";
   openModalHTML(
-    '<div class="modal-title">新建模型配置</div>' +
+    '<div class="modal-title">' + title + "</div>" +
     '<div class="modal-body">' +
       '<label for="pfEndpoint">服务地址（Endpoint，HTTPS）</label>' +
-      '<input id="pfEndpoint" placeholder="https://api.deepseek.com/v1">' +
+      '<input id="pfEndpoint" placeholder="https://api.deepseek.com/v1" value="' + esc(isEdit ? profile.endpoint : "") + '">' +
       '<label for="pfModel">模型名</label>' +
-      '<input id="pfModel" placeholder="deepseek-chat">' +
-      '<label for="pfSecret">模型服务密钥（API Key）</label>' +
+      '<input id="pfModel" placeholder="deepseek-chat" value="' + esc(isEdit ? profile.model : "") + '">' +
+      '<label for="pfSecret">模型服务密钥（API Key）' + (isEdit ? "——留空则不修改" : "") + "</label>" +
       '<div class="pwrow"><input id="pfSecret" type="password" autocomplete="off">' +
       '<button type="button" class="ghost eye" id="pfEye">显示</button></div>' +
+      '<label class="asrtoggle" for="pfThinking" style="margin-top:14px">' +
+        '<input type="checkbox" id="pfThinking"' + (thinkingDefault ? " checked" : "") + ">" +
+        '<span class="asrtoggle-text"><b>思考模式</b>' +
+        '<span class="muted">开启后调用 DeepSeek 等支持该参数的服务时显式请求思考模式（整理文本建议开启，优化文本建议关闭以省时省钱）；服务不支持该参数时请关闭。</span></span>' +
+        '<span class="switch" aria-hidden="true"><i></i></span>' +
+      "</label>" +
     "</div>" +
     '<div class="modal-foot"><button id="mCancel">取消</button>' +
-    '<button id="pfOk" class="primary">创建配置</button></div>');
+    '<button id="pfOk" class="primary">' + (isEdit ? "保存修改" : "创建配置") + "</button></div>");
   const inp = $("pfSecret");
   $("pfEye").onclick = () => {
     const pw = inp.type === "password";
@@ -197,12 +222,27 @@ export function openProfileForm() {
   $("mCancel").onclick = () => closeModal(null);
   $("pfOk").onclick = async () => {
     const endpoint = $("pfEndpoint").value.trim(), model = $("pfModel").value.trim(), secret = $("pfSecret").value;
-    if (!endpoint || !model || !secret) { toast("服务地址、模型名与密钥均必填", { type: "error" }); return; }
+    const thinking = $("pfThinking").checked;
+    if (!endpoint || !model || (!isEdit && !secret)) {
+      toast(isEdit ? "服务地址与模型名必填" : "服务地址、模型名与密钥均必填", { type: "error" }); return;
+    }
     try {
-      await api("/v1/provider-profiles", { method: "POST", body: {
-        kind: "llm", adapter: "openai-compatible", endpoint, model, secret } });
+      if (isEdit) {
+        const body = {
+          endpoint, model,
+          capabilities: { ...(profile.capabilities || {}), thinking_mode: thinking },
+        };
+        if (secret) body.secret = secret;
+        await api("/v1/provider-profiles/" + encodeURIComponent(profile.id), { method: "PATCH", body });
+        toast("配置已更新", { type: "ok" });
+      } else {
+        await api("/v1/provider-profiles", { method: "POST", body: {
+          kind: "llm", adapter: "openai-compatible", role,
+          endpoint, model, secret,
+          capabilities: { thinking_mode: thinking } } });
+        toast("配置已创建", { type: "ok" });
+      }
       closeModal(null);
-      toast("配置已创建", { type: "ok" });
       loadSettingsData();
     } catch (e) { showErr(e); }
   };
@@ -266,7 +306,8 @@ async function biliRevoke() {
 }
 
 export function initSettings() {
-  $("newProfileBtn").addEventListener("click", openProfileForm);
+  $("newProfileBtn").addEventListener("click", () => openProfileForm({ role: "digest" }));
+  $("newOptimizeProfileBtn").addEventListener("click", () => openProfileForm({ role: "optimize" }));
   $("saveSettings").addEventListener("click", saveDefaultProfile);
   $("biliSave").addEventListener("click", biliSave);
   $("biliCheck").addEventListener("click", biliCheck);
@@ -290,7 +331,11 @@ export function initSettings() {
     if (!item) return;
     const act = item.dataset.act, id = item.dataset.id;
     closeMenus();
-    if (act === "test") testProfile(id);
+    if (act === "edit") {
+      const p = loadedProfiles.find((x) => x.id === id);
+      if (p) openProfileForm({ role: p.role || "digest", profile: p });
+    }
+    else if (act === "test") testProfile(id);
     else if (act === "rotate") rotateKey(id);
     else if (act === "revoke") revokeKey(id);
   });

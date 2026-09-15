@@ -86,6 +86,10 @@ class OpenAICompatibleProvider:
         caps = capabilities or {}
         self.allow_temperature = bool(caps.get("temperature", True))
         self.json_mode = bool(caps.get("json_mode", True))
+        # thinking_mode 显式设置（True/False）时向 DeepSeek 等 OpenAI 兼容服务
+        # 发送 thinking 参数；未设置则不带该字段，沿用服务端默认行为。
+        thinking = caps.get("thinking_mode")
+        self.thinking_mode: bool | None = thinking if isinstance(thinking, bool) else None
         self.timeout_seconds = int(caps.get("timeout_seconds") or timeout_seconds)
         self._transport = transport
 
@@ -109,6 +113,10 @@ class OpenAICompatibleProvider:
             body["temperature"] = request.temperature
         if request.json_mode and self.json_mode:
             body["response_format"] = {"type": "json_object"}
+        if self.thinking_mode is not None:
+            # DeepSeek 思考模式开关（api-docs.deepseek.com/guides/thinking_mode）：
+            # {"thinking": {"type": "enabled"|"disabled"}}，默认 enabled/effort=high
+            body["thinking"] = {"type": "enabled" if self.thinking_mode else "disabled"}
 
         headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
         timeout = httpx.Timeout(self.timeout_seconds, connect=15.0)
