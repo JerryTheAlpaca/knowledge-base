@@ -573,19 +573,32 @@ def test_profile(profile_id: str, principal=Depends(require_scope("profiles:mana
         capabilities=profile.capabilities_json or {},
         timeout_seconds=int((profile.capabilities_json or {}).get("timeout_seconds") or 30),
     )
-    try:
-        result = provider.generate(GenerateRequest(
-            system="你是连接测试探针。", user="连接测试：请只回复 OK。",
-            max_output_tokens=16, temperature=0.0, json_mode=False,
-        ))
-    except ProviderOutcomeUnknown as exc:
-        provider_ops.mark_unknown(op, "连接测试结果未知")
+    # 探针预算沿用配置的 max_output_tokens（默认 2048）：思考型模型会把小预算
+    # 花在内部思考上导致正文为空（实测 deepseek-v4-flash-vision-exp 在 16 token 下
+    # 三次里两次 finish_reason=length 且正文为空），大预算只封顶不实花
+    probe = GenerateRequest(
+        system="你是连接测试探针。", user="连接测试：请只回复 OK。",
+        max_output_tokens=max(int((profile.capabilities_json or {}).get("max_output_tokens") or 2048), 256),
+        temperature=0.0, json_mode=False,
+    )
+    result = None
+    last_exc: ProviderError | None = None
+    for attempt in range(2):  # 偶发空响应/限流再试一次，避免误报
+        try:
+            result = provider.generate(probe)
+            break
+        except ProviderOutcomeUnknown as exc:
+            provider_ops.mark_unknown(op, "连接测试结果未知")
+            db.commit()
+            return {"ok": False, "code": "PROVIDER_OUTCOME_UNKNOWN", "message": str(exc)}
+        except ProviderError as exc:
+            last_exc = exc
+            if attempt == 0:
+                time.sleep(1.0)
+    if result is None:
+        provider_ops.finish_operation(op, "failed", f"连接测试失败：{type(last_exc).__name__}")
         db.commit()
-        return {"ok": False, "code": "PROVIDER_OUTCOME_UNKNOWN", "message": str(exc)}
-    except ProviderError as exc:
-        provider_ops.finish_operation(op, "failed", f"连接测试失败：{type(exc).__name__}")
-        db.commit()
-        return {"ok": False, "code": type(exc).__name__, "message": str(exc)}
+        return {"ok": False, "code": type(last_exc).__name__, "message": str(last_exc)}
 
     provider_ops.finish_operation(op, "succeeded", "连接测试通过")
     db.commit()

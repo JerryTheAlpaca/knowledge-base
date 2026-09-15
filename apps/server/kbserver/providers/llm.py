@@ -147,7 +147,11 @@ class OpenAICompatibleProvider:
         message = choices[0].get("message") or {}
         content = message.get("content")
         if not isinstance(content, str) or not content.strip():
-            raise ProviderRetryable("供应商返回空内容")
+            # 空正文多为思考型模型把 max_tokens 预算花在内部思考上（finish_reason=length），
+            # 带上 finish_reason 便于在连接测试与任务错误里区分诊断
+            finish = choices[0].get("finish_reason")
+            hint = f"（finish_reason={finish}）" if finish else ""
+            raise ProviderRetryable(f"供应商返回空内容{hint}")
         return GenerateResult(
             output_text=content,
             provider_request_id=resp.headers.get("x-request-id") or data.get("id"),

@@ -12,6 +12,18 @@ const FETCH_LIMIT = 50;
 let refreshing = false;
 let searchTimer = null;
 
+// 滚动显现（走查反馈）：卡片进入视口时淡入上移；已显现的行不再重复动画
+const revealIO = ("IntersectionObserver" in window)
+  ? new IntersectionObserver((entries) => {
+      for (const en of entries) {
+        if (!en.isIntersecting) continue;
+        en.target.classList.remove("pre");
+        en.target.classList.add("enter");
+        revealIO.unobserve(en.target);
+      }
+    }, { rootMargin: "60px 0px" })
+  : null;
+
 function rowJSON(it) {
   const wf = it.workflow || {};
   return JSON.stringify([
@@ -32,12 +44,14 @@ function rowInner(it) {
 
 function rowEl(it) {
   const li = document.createElement("li");
-  li.className = "item";
+  li.className = "item pre";
   li.setAttribute("role", "button");
   li.tabIndex = 0;
   li.dataset.id = it.item_id;
   li.dataset.json = rowJSON(it);
   li.innerHTML = rowInner(it);
+  if (revealIO) revealIO.observe(li);
+  else li.classList.remove("pre");
   return li;
 }
 
@@ -52,7 +66,10 @@ function fillGroup(groupKey, items) {
   section.hidden = items.length === 0;
   const keep = new Set(items.map((it) => it.item_id));
   for (const li of Array.from(ul.children)) {
-    if (!keep.has(li.dataset.id)) li.remove();
+    if (!keep.has(li.dataset.id)) {
+      if (revealIO) revealIO.unobserve(li);
+      li.remove();
+    }
   }
   let anchor = ul.firstChild;
   for (const it of items) {

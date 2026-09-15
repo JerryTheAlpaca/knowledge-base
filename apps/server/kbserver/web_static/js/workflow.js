@@ -25,9 +25,9 @@ export function actionLabel(code) {
 }
 
 // 可用操作 → 更多菜单项文案（§7.5：不存在对应能力时不显示菜单项）
+// view_source 不再进菜单（2026-09 走查：原始内容页签已常驻，菜单项冗余）
 export function availableActionLabels() {
   return {
-    view_source: "查看原始内容",
     refetch: "重新提取",
     cancel_process: "取消转写",
     retry_process: "重新转写",

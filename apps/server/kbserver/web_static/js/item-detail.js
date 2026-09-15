@@ -333,11 +333,6 @@ function renderMoreMenu(it) {
     seen.add(code);
     if (labels[code]) items.push({ code, label: labels[code] });
   }
-  const sm = detailData && detailData.source_material;
-  const mdFile = sm && ((sm.files || []).find((f) => f.relative_path === "readable.md")
-    || (sm.files || []).find((f) => f.relative_path === "normalized.md"));
-  if (mdFile && !seen.has("download-source")) items.push({ code: "download-source", label: "下载原文文件" });
-  if (sm && (sm.readable_md || sm.normalized_md) && !sourceEditing) items.push({ code: "edit-source", label: "编辑原始内容" });
   if (it.audio_original_retained && it.audio_original_download) items.push({ code: "download-audio", label: "下载上传的录音原件" });
   items.push({ code: "view-records", label: "查看处理记录" });
   const menu = $("moreMenu");
@@ -630,8 +625,6 @@ export function initDetail() {
     const code = b.dataset.more;
     if (code === "view-records") openRecords();
     else if (code === "delete") doDelete();
-    else if (code === "download-source") downloadSourceMd();
-    else if (code === "edit-source") startEditSource();
     else if (code === "download-audio") window.location.href = detailData.item.audio_original_download;
     else if (code === "refetch") doRefetch();
     else if (code === "cancel_process") doAsrCancel();
@@ -641,7 +634,6 @@ export function initDetail() {
     else if (code === "choose_model") goSettingsCard("secModel");
     else if (code === "connect_obsidian") goSettingsCard("secObsidian");
     else if (code === "connect_bilibili") goSettingsCard("secBili");
-    else if (code === "view_source") { detailTab = "source"; renderDetail(); }
   });
   $("stagePanelHost").addEventListener("click", (e) => {
     const b = e.target.closest("[data-stage-action]");

@@ -87,7 +87,7 @@ export function toast(text, o = {}) {
   el.appendChild(x);
   host.appendChild(el);
   requestAnimationFrame(() => el.classList.add("show"));
-  if (o.type !== "error" && !o.sticky) setTimeout(() => dismissToast(el), o.type === "ok" ? 3000 : 4200);
+  setTimeout(() => dismissToast(el), 5000);  // 走查反馈：所有提示（含错误）5 秒后自动消失
   return el;
 }
 export function dismissToast(el) {

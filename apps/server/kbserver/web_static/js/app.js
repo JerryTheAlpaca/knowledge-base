@@ -24,7 +24,7 @@ function showApp(me) {
   $("appView").hidden = false;
   $("topbar").hidden = false;
   const name = me.central_username || me.display_name || me.user_id;
-  $("whoChip").textContent = name.slice(0, 1) || "我";
+  $("whoChip").textContent = name;
   $("menuUserName").textContent = name;
   $("menuAdmin").hidden = !me.is_admin;
 }
@@ -76,6 +76,13 @@ function wireTopbar() {
   $("gearBtn").addEventListener("click", () => {
     if (!$("settingsView").hidden) { try { history.pushState({}, "", "/inbox"); } catch (e) {} route(); }
     else openSettings();
+  });
+  $("settingsBack").addEventListener("click", () => {
+    // openSettings 进入时带 {view:"settings"} 历史态：直接 back 回到进入前的位置；
+    // 直接以 ?view=settings 打开（无历史态）时兜底推回收件箱
+    if (history.state && history.state.view === "settings") { history.back(); return; }
+    try { history.pushState({}, "", "/inbox"); } catch (e) { /* 忽略 */ }
+    route();
   });
   $("userChip").addEventListener("click", (e) => {
     e.stopPropagation();

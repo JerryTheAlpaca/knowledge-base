@@ -142,7 +142,7 @@ function closeMenus() {
 }
 
 async function testProfile(id) {
-  const t = toast("正在测试连接…", { type: "info", sticky: true });
+  const t = toast("正在测试连接…", { type: "info" });
   try {
     const r = await api("/v1/provider-profiles/" + id + "/test", { method: "POST" });
     dismissToast(t);
