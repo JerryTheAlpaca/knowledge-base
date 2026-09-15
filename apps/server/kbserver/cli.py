@@ -342,7 +342,9 @@ def cmd_remerge(args) -> None:
             publish_segments_revision(
                 db, store, None, it, source, segments=segments,
                 warnings=list(manifest_doc.get("warnings") or []),
-                extra_files=extra, meta_updates={},
+                # 重算产物是机器版本：清掉上一版可能继承的人工编辑标记
+                extra_files=extra,
+                meta_updates={"edited_by_user": None, "edited_at": None},
             )
             redone += 1
         db.commit()
