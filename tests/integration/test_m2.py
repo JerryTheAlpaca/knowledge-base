@@ -211,6 +211,7 @@ def test_profile_tenant_isolation(client, user_a, user_b):
     # 未知对象与他人对象统一 404（docs/02 §10.2）
     assert client.patch(f"/v1/provider-profiles/{out['id']}", json={"model": "x"}, headers=b).status_code == 404
     assert client.delete(f"/v1/provider-profiles/{out['id']}/credential", headers=b).status_code == 404
+    assert client.delete(f"/v1/provider-profiles/{out['id']}", headers=b).status_code == 404
     assert client.post(f"/v1/provider-profiles/{out['id']}/test", headers=b).status_code == 404
 
 

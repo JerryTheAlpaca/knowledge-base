@@ -335,6 +335,50 @@ def update_profile(profile_id: str, body: ProfileUpdate, principal=Depends(requi
     return _profile_out(db, profile)
 
 
+@router.delete("/v1/provider-profiles/{profile_id}")
+def delete_profile(profile_id: str, principal=Depends(require_scope("profiles:manage")), db: Session = Depends(get_db)):
+    """删除整份模型配置：托管凭据与本机绑定记录随之删除。
+
+    已下发到电脑的 Key 副本无法远程收回（docs/08 §8.3）；模型调用历史保留，
+    只解除对已删配置的外键引用。
+    """
+    user = principal.user
+    profile = _require_profile(db, user.id, profile_id)
+
+    deleted_credentials = db.query(Credential).filter(
+        Credential.profile_id == profile.id
+    ).delete(synchronize_session=False)
+    db.query(LocalKeyBinding).filter(LocalKeyBinding.profile_id == profile.id).delete(
+        synchronize_session=False
+    )
+    db.query(ProviderOperation).filter(ProviderOperation.profile_id == profile.id).update(
+        {ProviderOperation.profile_id: None}, synchronize_session=False
+    )
+
+    s = dict(user.settings_json or {})
+    settings_cleared = False
+    for field in ("default_profile_id", "optimize_profile_id"):
+        if s.get(field) == profile.id:
+            s[field] = None
+            settings_cleared = True
+    if settings_cleared:
+        user.settings_json = s
+
+    # 等待凭据的条目改用剩余配置继续；没有可用配置时 worker 会重新落回 waiting_key
+    requeued = _requeue_waiting(db, user.id, "waiting_key", "enrich")
+    if requeued:
+        pipeline.emit_event(db, user.id, item_id=None, bundle_revision=None,
+                            event_type="credentials_updated",
+                            payload={"profile_id": profile.id, "requeued": requeued, "deleted": True})
+    db.delete(profile)
+    db.commit()
+    return {
+        "profile_id": profile_id, "deleted": True,
+        "deleted_credentials": deleted_credentials, "requeued_items": requeued,
+        "note": "配置与托管密钥已删除；曾下发到本机的 Key 副本需在插件中解绑或在供应商处作废。",
+    }
+
+
 @router.delete("/v1/provider-profiles/{profile_id}/credential")
 def revoke_credential(profile_id: str, principal=Depends(require_scope("profiles:manage")), db: Session = Depends(get_db)):
     user = principal.user

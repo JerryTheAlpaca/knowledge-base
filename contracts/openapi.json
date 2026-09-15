@@ -1667,6 +1667,45 @@
             }
           }
         }
+      },
+      "delete": {
+        "tags": [
+          "profiles"
+        ],
+        "summary": "Delete Profile",
+        "description": "删除整份模型配置：托管凭据与本机绑定记录随之删除。\n\n已下发到电脑的 Key 副本无法远程收回（docs/08 §8.3）；模型调用历史保留，\n只解除对已删配置的外键引用。",
+        "operationId": "delete_profile_v1_provider_profiles__profile_id__delete",
+        "parameters": [
+          {
+            "name": "profile_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Profile Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/v1/provider-profiles/{profile_id}/credential": {

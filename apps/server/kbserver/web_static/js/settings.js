@@ -74,7 +74,7 @@ function profileCard(p) {
     '<button class="menu-item" data-act="edit" data-id="' + esc(p.id) + '">编辑配置</button>' +
     '<button class="menu-item" data-act="test" data-id="' + esc(p.id) + '">测试连接</button>' +
     '<button class="menu-item" data-act="rotate" data-id="' + esc(p.id) + '">更换密钥</button>' +
-    (p.configured ? '<button class="menu-item danger" data-act="revoke" data-id="' + esc(p.id) + '">撤销密钥</button>' : "");
+    '<button class="menu-item danger" data-act="delete" data-id="' + esc(p.id) + '">删除配置</button>';
   return '<div class="pcard" data-id="' + esc(p.id) + '">' +
     '<div class="pcard-main">' +
       '<div class="pcard-top"><span class="pcard-model">' + esc(p.model) + "</span>" + stateBadgeHtml + usageBadge + "</div>" +
@@ -180,14 +180,15 @@ async function rotateKey(id) {
   } catch (e) { showErr(e); }
 }
 
-async function revokeKey(id) {
-  const ok = await confirmModal({ title: "撤销密钥",
-    body: "撤销后，等待该模型的条目会暂停，重新配置后自动继续。",
-    confirmLabel: "撤销", danger: true });
+async function deleteProfile(id) {
+  const p = loadedProfiles.find((x) => x.id === id);
+  const ok = await confirmModal({ title: "删除模型配置",
+    body: "将删除这份模型配置及其托管密钥，正在使用它的整理/优化任务会转去用其他配置。",
+    confirmLabel: "删除", danger: true });
   if (!ok) return;
   try {
-    await api("/v1/provider-profiles/" + id + "/credential", { method: "DELETE" });
-    toast("已撤销密钥", { type: "ok" });
+    await api("/v1/provider-profiles/" + encodeURIComponent(id), { method: "DELETE" });
+    toast("已删除配置" + (p ? "：" + p.model : ""), { type: "ok" });
     loadSettingsData();
   } catch (e) { showErr(e); }
 }
@@ -352,7 +353,7 @@ export function initSettings() {
     }
     else if (act === "test") testProfile(id);
     else if (act === "rotate") rotateKey(id);
-    else if (act === "revoke") revokeKey(id);
+    else if (act === "delete") deleteProfile(id);
   };
   $("profileList").addEventListener("click", onProfileCardClick);
 }

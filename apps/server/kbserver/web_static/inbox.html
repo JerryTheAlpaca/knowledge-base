@@ -155,8 +155,30 @@
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
         </button>
       </div>
-      <p class="help" style="margin:0 0 4px">先在这里添加模型配置（服务地址、模型名、密钥），密钥加密托管在服务器，任何界面都不显示明文，可随时更换或撤销；添加后在下面为整理与优化分别选择使用哪个，思考挡位也按用途各自调整——同一份配置可以整理开思考、优化关思考。</p>
+      <p class="help" style="margin:0 0 4px">先在这里添加模型配置（服务地址、模型名、密钥），密钥加密托管在服务器，任何界面都不显示明文，可随时更换密钥或删除配置；添加后在下面为优化与整理分别选择使用哪个，思考挡位也按用途各自调整——同一份配置可以整理开思考、优化关思考。</p>
       <div id="profileList" style="margin-top:12px"></div>
+
+      <div class="list-head" style="margin-top:28px">
+        <h3>优化文本模型</h3>
+      </div>
+      <p class="help" style="margin:0 0 4px">负责修错别字、语义分段等原文优化，调用更轻量；不选时使用整理文本的模型，思考挡位仍独立生效。</p>
+      <div class="defrow">
+        <label for="optimizeProfile">使用配置</label>
+        <select id="optimizeProfile"><option value="">跟随整理模型</option></select>
+        <label for="optimizeThinking">思考挡位</label>
+        <select id="optimizeThinking" style="flex:0 0 auto">
+          <option value="off">关闭</option>
+          <option value="low">低</option>
+          <option value="high">高</option>
+          <option value="max">最高</option>
+        </select>
+      </div>
+      <label class="asrtoggle" id="aiParagraphingRow" for="aiParagraphing">
+        <input type="checkbox" id="aiParagraphing">
+        <span class="asrtoggle-text"><b>AI 语义分段与纠错</b>
+        <span class="muted">开启时，AI 整理会按话题划分阅读段落并修正语音识别的听错字词，每次加工多一次模型调用；关闭则用本地规则分段，不再产生这部分调用。</span></span>
+        <span class="switch" aria-hidden="true"><i></i></span>
+      </label>
 
       <div class="list-head" style="margin-top:28px">
         <h3>整理文本模型</h3>
@@ -179,23 +201,6 @@
         <span class="muted">开启时，条目提取完成后自动整理成知识笔记；关闭则只提取原文，之后可在条目里手动「开始整理」。</span></span>
         <span class="switch" aria-hidden="true"><i></i></span>
       </label>
-
-      <div class="list-head" style="margin-top:28px">
-        <h3>优化文本模型</h3>
-      </div>
-      <p class="help" style="margin:0 0 4px">负责修错别字、语义分段等原文优化，调用更轻量；不选时使用整理文本的模型，思考挡位仍独立生效。</p>
-      <div class="defrow">
-        <label for="optimizeProfile">使用配置</label>
-        <select id="optimizeProfile"><option value="">跟随整理模型</option></select>
-        <label for="optimizeThinking">思考挡位</label>
-        <select id="optimizeThinking" style="flex:0 0 auto">
-          <option value="off">关闭</option>
-          <option value="low">低</option>
-          <option value="high">高</option>
-          <option value="max">最高</option>
-        </select>
-      </div>
-      <label class="asrtoggle" id="aiParagraphingRow" for="aiParagraphing">
     </div>
 
     <div class="card" id="secObsidian">

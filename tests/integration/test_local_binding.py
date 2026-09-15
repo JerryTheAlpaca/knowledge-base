@@ -176,6 +176,39 @@ def test_bind_requires_usable_credential(client, db, user_a):
     assert "凭据" in out.json()["error"]["message"]
 
 
+def test_delete_profile_removes_credential_binding_and_reference(client, db, user_a):
+    """删除配置：凭据与本机绑定行一并清理，设置里的引用归空，明文不外泄。"""
+    from kbserver.models import Credential, LocalKeyBinding, ProviderProfile, User
+
+    token = user_a["desktop"]["token"]
+    profile = _create_profile(client, token).json()
+    bindable = _device_with_scopes(db, user_a["user_id"], "a-del",
+                                   DESKTOP_SCOPES + [BIND_LOCAL_SCOPE])
+    assert client.post(f"/v1/provider-profiles/{profile['id']}/local-binding",
+                       headers=auth(bindable["token"])).status_code == 200
+    assert client.patch("/v1/settings", json={"default_profile_id": profile["id"]},
+                        headers=auth(token)).status_code == 200
+
+    out = client.delete(f"/v1/provider-profiles/{profile['id']}", headers=auth(token))
+    assert out.status_code == 200, out.text
+    assert out.json()["deleted"] is True
+    assert out.json()["deleted_credentials"] == 1
+    assert SECRET not in out.text
+
+    db.expire_all()
+    assert db.get(ProviderProfile, profile["id"]) is None
+    assert db.query(Credential).filter_by(profile_id=profile["id"]).count() == 0
+    assert db.query(LocalKeyBinding).filter_by(profile_id=profile["id"]).count() == 0
+    user = db.get(User, user_a["user_id"])
+    assert user.settings_json.get("default_profile_id") is None
+
+    listed = client.get("/v1/provider-profiles", headers=auth(token)).json()
+    assert profile["id"] not in {p["id"] for p in listed}
+    # 已不存在的对象：重复删除 404
+    assert client.delete(f"/v1/provider-profiles/{profile['id']}",
+                         headers=auth(token)).status_code == 404
+
+
 # ---- 设备授权申请权限 ----
 
 def test_device_start_filters_requested_scopes(client):
