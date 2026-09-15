@@ -300,6 +300,33 @@ def test_profile_copy_from_reuses_credential(client, user_a, user_b, session_fac
     assert r4.status_code == 422
 
 
+def test_provider_profile_insert_on_production_like_schema():
+    """生产库仍保留去计费时代的 prices_json JSON NOT NULL（无默认）列（docs/05 §5.3）。
+
+    模型必须带 Python 默认值随 INSERT 写入：否则任何新建配置（含优化配置复用
+    整理配置的 copy_from）在带该列的库上都会 IntegrityError（接口表现为 500）。
+    用真实模型建表后把该列重建为生产同款（NOT NULL 无默认）再插入验证。
+    """
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.orm import Session
+
+    from kbserver.models import Base, ProviderProfile
+
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        db.execute(text("ALTER TABLE provider_profiles DROP COLUMN prices_json"))
+        db.execute(text("ALTER TABLE provider_profiles ADD COLUMN prices_json JSON NOT NULL"))
+        db.add(ProviderProfile(
+            id="p1", user_id="u1", kind="llm", adapter="openai-compatible",
+            role="optimize", endpoint="https://api.example.com/v1", model="m", version=1,
+        ))
+        db.commit()
+        stored = db.execute(text(
+            "SELECT prices_json FROM provider_profiles WHERE id='p1'")).scalar_one()
+        assert stored == "{}"
+
+
 # ---- enrich 成功路径 ----
 
 def test_enrich_success_publishes_ready_bundle(client, user_a, session_factory, fake_llm):

@@ -119,6 +119,9 @@ class ProviderProfile(Base, TimestampMixin):
     endpoint: Mapped[str] = mapped_column(String(512))
     model: Mapped[str] = mapped_column(String(120))
     capabilities_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    # 去计费前的历史列（docs/05 §5.3）：生产库仍保留 NOT NULL 且无默认值，
+    # 模型必须带 Python 默认值随 INSERT 写入，否则任何新建配置都会 IntegrityError
+    prices_json: Mapped[dict] = mapped_column(JSON, default=dict)
     # 适配器自有元数据（如 B 站登录态最近检测结果）；不再存价格（docs/05 §5）
     meta_json: Mapped[dict] = mapped_column(JSON, default=dict)
     version: Mapped[int] = mapped_column(Integer, default=1)
