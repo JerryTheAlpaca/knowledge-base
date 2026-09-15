@@ -12,6 +12,8 @@ export async function maybeShowOnboarding() {
   let ob;
   try { ob = await api("/v1/onboarding"); }
   catch (e) { return; }  // 引导失败不打断首页
+  // 已完成初始化的账号没有可重跑的步骤，菜单项点了也不会出现卡片
+  $("menuOnboarding").hidden = ob.completed;
   if (ob.completed || ob.dismissed) { $("onboardingHost").hidden = true; return; }
   render(ob);
 }
