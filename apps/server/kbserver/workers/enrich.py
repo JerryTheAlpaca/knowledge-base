@@ -479,6 +479,9 @@ def call_provider(session_factory, plan: EnrichPlan) -> dict:
 # max_output_tokens（8K）常在正文输出前耗尽，content 为空（finish_reason=length）。
 # 实测 92 句材料思维链 ~2.5 万 token，放宽到 32K 才能拿到正文。
 _PARAGRAPHING_MAX_OUTPUT_TOKENS = 32768
+# 分段任务再按句数细分：推理模型的思维链长度随任务规模不可控增长，
+# 小任务（≤40 句）单次思维链可控，也更容易在请求超时内完成。
+_PARAGRAPHING_CHUNK_SEGMENTS = 40
 
 
 def _semantic_paragraph_starts(plan: EnrichPlan, call) -> dict | None:
@@ -489,7 +492,14 @@ def _semantic_paragraph_starts(plan: EnrichPlan, call) -> dict | None:
     （逐字保留、仅改错字，长度比例守卫防改写）。
     """
     try:
-        chunks = plan.chunks if plan.chunked else [plan.segments]
+        digest_chunks = plan.chunks if plan.chunked else [plan.segments]
+        # 分段任务按 ≤40 句细分（推理模型思维链随任务规模不可控增长）
+        chunks: list[list[dict]] = []
+        for chunk in digest_chunks:
+            for k in range(0, len(chunk), _PARAGRAPHING_CHUNK_SEGMENTS):
+                chunks.append(chunk[k:k + _PARAGRAPHING_CHUNK_SEGMENTS])
+        if not chunks:
+            return None
         order = [s["segment_id"] for s in plan.segments]
         order_index = {sid: k for k, sid in enumerate(order)}
         seg_by_id = {s["segment_id"]: s for s in plan.segments}
@@ -502,8 +512,8 @@ def _semantic_paragraph_starts(plan: EnrichPlan, call) -> dict | None:
             refs = {k: v for k, v in plan.subtitle_refs.items() if k in chunk_ids}
             prompt = templates.build_paragraphing_prompt(
                 segments=chunk, prev_tail=prev_tail, subtitle_refs=refs or None,
-                chunk_index=idx if plan.chunked else None,
-                chunk_total=len(chunks) if plan.chunked else None,
+                chunk_index=idx if len(chunks) > 1 else None,
+                chunk_total=len(chunks) if len(chunks) > 1 else None,
             )
             doc = call(prompt, max_output_tokens=_PARAGRAPHING_MAX_OUTPUT_TOKENS)
             raw = doc.get("paragraph_starts") if isinstance(doc, dict) else None
