@@ -27,6 +27,7 @@ from ..domain import pipeline
 from ..domain.errors import ApiError
 from ..api.deps import require_scope
 from ..api.rate_limit import SlidingWindowLimiter
+from ..domain import workflow_view
 from ..extractors import paragraphs as parafmt
 from ..extractors import subtitles as subfmt
 from ..models import AsrRun, AudioAsset, BundleRevision, Capture, Item, SourceRevision, Job, StoredFile, new_id, utcnow
@@ -73,6 +74,9 @@ class ItemOut(BaseModel):
     audio_original_download: str | None
     # 当前来源版本已归档的正文图片数（0 = 未提取图片，可点「提取图片」重新提取）
     images_archived: int
+    # 面向 Web 的四阶段状态视图（docs/17 §10.2）：前端只渲染它，
+    # 不再解释 pipeline_state / state_detail（两字段仅为旧客户端兼容保留）
+    workflow: dict | None = None
 
 
 class ItemList(BaseModel):
@@ -190,47 +194,125 @@ def _latest_source(db: Session, item: Item) -> SourceRevision:
     return source
 
 
+def _with_workflow(out: ItemOut, item: Item, wf_map: dict) -> ItemOut:
+    wf = wf_map.get(item.id)
+    if wf is None:
+        return out
+    return out.model_copy(update={"workflow": wf})
+
+
+def _analysis_bundles_map(db: Session, user_id: str, ids: list[str]) -> dict[str, BundleRevision]:
+    """批量取每条目最新提炼 Bundle（审查 C-07：避免逐行查询）。"""
+    bundle_map: dict[str, BundleRevision] = {}
+    if ids:
+        for b in db.query(BundleRevision).filter(
+            BundleRevision.user_id == user_id,
+            BundleRevision.item_id.in_(ids),
+            BundleRevision.processing_state.in_(["ready", "failed"]),
+        ).order_by(BundleRevision.revision.asc()).all():
+            bundle_map[b.item_id] = b  # 升序遍历后覆盖：留下最大 revision
+    return bundle_map
+
+
 @router.get("", response_model=ItemList)
 def list_items(
     state: str | None = None,
+    view: str | None = None,
+    search: str | None = None,
+    source_type: str | None = None,
     limit: int = 50,
     offset: int = 0,
     principal=Depends(require_scope("items:read")),
     db: Session = Depends(get_db),
 ) -> ItemList:
+    """条目列表（docs/17 §10.5）：
+
+    - 无 view/search：稳定分页，行为与旧客户端一致。
+    - view=attention|working|published：首页三分组；SQL 先按候选状态收敛，
+      Python 按推导后的 overall_state 精筛（发布只认当前 Bundle 回执）。
+    - search：服务端全收件箱搜索（标题/URL/来源标签/用户备注），不只搜已加载页。
+    """
     user = principal.user
     limit = max(1, min(limit, 200))
-    items, total = repo.list_items(db, user.id, state=state, limit=limit, offset=max(0, offset))
-    # 批量取来源版本与最新提炼版本，避免每行两条查询（审查 C-07）
+    offset = max(0, offset)
+    filtered_mode = bool(view or search or source_type)
+
+    if not filtered_mode:
+        items, total = repo.list_items(db, user.id, state=state, limit=limit, offset=offset)
+    else:
+        # 过滤模式：拉取候选集（个人收件箱规模一次 200 条足够），Python 精筛后手动分页
+        candidate_states = workflow_view.VIEW_CANDIDATE_STATES.get(view or "")
+        if candidate_states is not None:
+            # view 优先于旧 state 参数：候选集合覆盖它
+            items, _ = _list_items_by_states(db, user.id, candidate_states, limit=200)
+        else:
+            items, _ = repo.list_items(db, user.id, state=state, limit=200, offset=0)
+
     ids = [it.id for it in items]
-    src_map = {}
-    bundle_map = {}
+    src_map: dict[tuple[str, int], SourceRevision] = {}
     if ids:
         revs = sorted({it.source_revision for it in items})
         for r in db.query(SourceRevision).filter(
             SourceRevision.item_id.in_(ids), SourceRevision.revision.in_(revs)
         ).all():
             src_map[(r.item_id, r.revision)] = r
-        # 升序遍历后覆盖：每条目留下最大 revision 的 ready/failed 版本
-        for b in db.query(BundleRevision).filter(
-            BundleRevision.user_id == user.id,
-            BundleRevision.item_id.in_(ids),
-            BundleRevision.processing_state.in_(["ready", "failed"]),
-        ).order_by(BundleRevision.revision.asc()).all():
-            bundle_map[b.item_id] = b
+    bundle_map = _analysis_bundles_map(db, user.id, ids)
+
+    wf_inputs = workflow_view.collect_workflow_inputs(db, user.id, items)
+    wf_map = workflow_view.build_workflow_map(db, user.id, items, wf_inputs)
+
     outs = []
     for it in items:
         src = src_map.get((it.id, it.source_revision))
-        if src:
-            outs.append(_item_out(it, src, db, analysis_bundle=bundle_map.get(it.id)))
+        if src is None:
+            continue
+        out = _item_out(it, src, db, analysis_bundle=bundle_map.get(it.id))
+        if filtered_mode:
+            overall = (wf_map.get(it.id) or {}).get("overall_state")
+            if view and overall not in workflow_view.VIEW_OVERALL.get(view, set()):
+                continue
+            if search:
+                meta = src.metadata_json or {}
+                hay = " ".join(filter(None, [
+                    meta.get("title"), meta.get("original_url"),
+                    meta.get("source_label"), meta.get("user_note"),
+                ])).lower()
+                if search.strip().lower() not in hay:
+                    continue
+            if source_type:
+                from ..domain.source_labels import resolve_platform, source_fields
+                meta = src.metadata_json or {}
+                fields = source_fields(resolve_platform(meta.get("platform"), meta.get("original_url")),
+                                       meta.get("media_kind"))
+                if fields["source_type"] != source_type:
+                    continue
+        outs.append(_with_workflow(out, it, wf_map))
+
+    if filtered_mode:
+        total = len(outs)
+        outs = outs[offset:offset + limit]
     return ItemList(items=outs, total=total, limit=limit, offset=offset)
+
+
+def _list_items_by_states(db: Session, user_id: str, states: tuple[str, ...],
+                          limit: int = 200) -> tuple[list[Item], int]:
+    """按多个 pipeline_state 取候选（view 过滤第一步）；时间倒序。"""
+    from sqlalchemy import func, select
+
+    q = select(Item).where(Item.user_id == user_id, Item.deleted_at.is_(None),
+                           Item.pipeline_state.in_(states))
+    total = db.scalar(select(func.count()).select_from(q.subquery())) or 0
+    rows = db.scalars(q.order_by(Item.created_at.desc(), Item.id).limit(limit)).all()
+    return list(rows), int(total)
 
 
 @router.get("/{item_id}", response_model=ItemOut)
 def get_item(item_id: str, principal=Depends(require_scope("items:read")), db: Session = Depends(get_db)) -> ItemOut:
     user = principal.user
     item = _require_item(db, user.id, item_id)
-    return _item_out(item, _latest_source(db, item), db)
+    out = _item_out(item, _latest_source(db, item), db)
+    wf_map = workflow_view.build_workflow_map(db, user.id, [item])
+    return _with_workflow(out, item, wf_map)
 
 
 # ---- 阅读视图：原始资料与云端提炼（docs/08 §8.4） ----
@@ -433,8 +515,8 @@ def _cloud_digest(db: Session, item: Item) -> CloudDigestOut:
     segments = _segments_texts(db, item, bundle.revision)
     stale_note = None
     if bundle.source_revision != item.source_revision:
-        stale_note = (f"现有提炼基于 r{bundle.source_revision}，"
-                      f"当前来源为 r{item.source_revision}；点击证据打开 r{bundle.source_revision} 的原文。")
+        # 用户语言契约（docs/17 §2.4）：不出现 r2/r3 一类修订号
+        stale_note = "原始内容已经更新，这份整理基于更新前的内容；点击证据打开对应版本的原文。"
     state = "ready"
     detail = ""
     if expired:
@@ -472,6 +554,8 @@ def get_reading(item_id: str, principal=Depends(require_scope("items:read")),
     user = principal.user
     item = _require_item(db, user.id, item_id)
     out = _item_out(item, _latest_source(db, item), db)
+    wf_map = workflow_view.build_workflow_map(db, user.id, [item])
+    out = _with_workflow(out, item, wf_map)
     digest = _cloud_digest(db, item)
     note = ""
     if out.expired:
@@ -484,6 +568,17 @@ def get_reading(item_id: str, principal=Depends(require_scope("items:read")),
         expired=out.expired,
         note=note,
     )
+
+
+# ---- 处理记录（docs/17 §10.3）：用户主动打开时才请求的按需诊断 ----
+
+@router.get("/{item_id}/diagnostics")
+def get_diagnostics(item_id: str, principal=Depends(require_scope("items:read")),
+                    db: Session = Depends(get_db)) -> dict:
+    """白话摘要 → 用途解释 → 折叠的脱敏技术信息；不进入主页面与 Toast。"""
+    user = principal.user
+    item = _require_item(db, user.id, item_id)
+    return workflow_view.build_diagnostics(db, user.id, item, _latest_source(db, item))
 
 
 @router.post("/{item_id}/supplements", response_model=ItemOut, status_code=202)

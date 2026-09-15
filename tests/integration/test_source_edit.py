@@ -70,7 +70,8 @@ def test_source_edit_creates_new_revision_and_reruns_digest(
     g = body["cloud_digest"]
     assert g["state"] == "ready"
     assert g["source_revision"] == old_revision
-    assert g["stale_note"] and f"r{old_revision}" in g["stale_note"]
+    # 过期提示用用户语言，不出现内部修订号（docs/17 §14.4）
+    assert g["stale_note"] and "更新" in g["stale_note"] and f"r{old_revision}" not in g["stale_note"]
     assert all("原始的" in t for t in g["segments"].values())
     # 新 Bundle 警告注明编辑
     assert any("编辑" in w for w in sm["warnings"])

@@ -40,6 +40,24 @@ def list_devices(principal=Depends(require_scope("devices:manage")), db: Session
     ]
 
 
+@router.get("/summary")
+def devices_summary(principal=Depends(require_scope("items:read")), db: Session = Depends(get_db)) -> dict:
+    """Obsidian 连接摘要（docs/17 §10.7）：Web 只展示连接状态，
+    不读取 Vault 路径、Knowledge 内容或本地整理结果。"""
+    user = principal.user
+    devices = [d for d in repo.list_devices(db, user.id)
+               if d.kind == "desktop" and d.revoked_at is None]
+    active = max(devices, key=lambda d: (d.consumer_epoch, d.created_at), default=None)
+    return {
+        "connected": active is not None,
+        "active_device": ({
+            "device_id": active.id,
+            "name": active.name,
+            "last_seen_at": active.last_seen_at.isoformat() if active.last_seen_at else None,
+        } if active else None),
+    }
+
+
 @router.post("/{device_id}/activate-consumer", response_model=DeviceOut)
 def activate_consumer(
     device_id: str,

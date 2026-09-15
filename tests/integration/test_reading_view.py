@@ -118,9 +118,9 @@ def test_reading_view_old_digest_points_to_old_source_revision(
     r = client.get(f"/v1/items/{item_id}/reading", headers=auth(token)).json()
     g = r["cloud_digest"]
     assert r["item"]["source_revision"] == 2
-    # 旧提炼对应旧来源：显式提示，且片段来自 r1
+    # 旧提炼对应旧来源：显式提示且不出现内部修订号（docs/17 §14.4 用户语言契约）
     assert g["source_revision"] == 1
-    assert g["stale_note"] and "r1" in g["stale_note"]
+    assert g["stale_note"] and "更新" in g["stale_note"] and "r1" not in g["stale_note"]
     assert all("旧的第一段原文" in t for t in g["segments"].values())
 
 

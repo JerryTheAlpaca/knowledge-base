@@ -6,7 +6,8 @@ from fastapi.responses import JSONResponse
 
 from .api import (routes_admin, routes_asr, routes_audio_uploads, routes_auth,
                   routes_bilibili, routes_captures, routes_devices, routes_health,
-                  routes_items, routes_profiles, routes_sync, routes_uploads, routes_web)
+                  routes_items, routes_onboarding, routes_profiles, routes_sync,
+                  routes_uploads, routes_web)
 from .api.deps import CSRF_COOKIE
 from .config import get_settings
 from .domain.errors import ApiError, status_for
@@ -24,13 +25,18 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(ApiError)
     async def api_error_handler(request: Request, exc: ApiError) -> JSONResponse:
+        # 用户语言契约（docs/17 §10.3）：user_message 受控生成，不透传异常原文；
+        # code 供程序分支，前端降级文案兜底非协议错误
         return JSONResponse(
             status_code=exc.status_code or status_for(exc.code),
             content={
                 "error": {
                     "code": exc.code,
                     "message": exc.message,
+                    "user_message": exc.message,
+                    "action": exc.action,
                     "retryable": exc.retryable,
+                    "trace_id": getattr(request.state, "request_id", None) or new_id(),
                     "request_id": getattr(request.state, "request_id", None) or new_id(),
                     "details": exc.details,
                 }
@@ -71,8 +77,17 @@ def create_app() -> FastAPI:
     app.include_router(routes_profiles.router)
     app.include_router(routes_bilibili.router)
     app.include_router(routes_asr.router)
+    app.include_router(routes_onboarding.router)
     app.include_router(routes_admin.router)
     app.include_router(routes_web.router)
+
+    # Web 前端模块（docs/17 §11 ES modules）：/webstatic/js/app.js 等；
+    # 路由在前、挂载在后，/inbox、/tokens.css 等显式路由优先
+    from fastapi.staticfiles import StaticFiles
+
+    from .api.routes_web import WEB_STATIC_DIR
+
+    app.mount("/webstatic", StaticFiles(directory=WEB_STATIC_DIR), name="webstatic")
     return app
 
 

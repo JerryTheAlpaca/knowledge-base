@@ -1,0 +1,124 @@
+// workflow.js — 只渲染服务端 WorkflowView，不重新推断业务状态（docs/17 §11）
+//
+// 状态语义全部来自 /v1/items 返回的 workflow 字段：
+// - steps：四阶段（提取/加工/整理/发布），状态集合见 docs/17 §5.2
+// - delivery.status：not_ready | waiting_obsidian | connect_obsidian | published
+// - reason_code 是机器码，本模块绝不显示它，只显示 message。
+
+import { esc } from "./api.js";
+
+export const STAGE_LABELS = { extract: "提取", process: "加工", organize: "整理", publish: "发布" };
+
+// 主按钮文案：前端按稳定 action code 本地化（§10.2）
+export function actionLabel(code) {
+  const MAP = {
+    supplement: "补充内容",
+    choose_model: "选择整理模型",
+    connect_obsidian: "连接 Obsidian",
+    connect_bilibili: "连接 B 站",
+    retry: "重试",
+    start_organize: "开始整理",
+    choose_audio: "选择音频",
+    refresh: "刷新",
+  };
+  return MAP[code] || null;
+}
+
+// 可用操作 → 更多菜单项文案（§7.5：不存在对应能力时不显示菜单项）
+export function availableActionLabels() {
+  return {
+    view_source: "查看原始内容",
+    refetch: "重新提取",
+    cancel_process: "取消转写",
+    retry_process: "重新转写",
+    supplement: "补充材料",
+    choose_model: "选择整理模型",
+    start_organize: "重新整理",
+    connect_obsidian: "连接 Obsidian",
+    connect_bilibili: "连接 B 站",
+  };
+}
+
+// 首页分组：overall_state → 组名（§5.2）
+export function groupOf(wf) {
+  if (!wf) return "published";
+  if (wf.overall_state === "attention" || wf.overall_state === "failed") return "attention";
+  if (wf.overall_state === "published") return "published";
+  return "working";
+}
+
+const STEP_MARKS = { done: "✓", skipped: "—", attention: "!", failed: "!" };
+
+// 四阶段状态图（§6.1/§6.2）：圆点连线；发布节点只在 receipt 到达后点亮
+export function stepperHTML(wf) {
+  const steps = (wf && wf.steps) || [];
+  let html = '<div class="stepper">';
+  steps.forEach((s) => {
+    let cls = s.status;
+    if (s.status === "completed") cls = "done";
+    const mark = STEP_MARKS[cls] || (cls === "done" ? "✓" : "");
+    html += '<div class="step ' + cls + '">' +
+      '<span class="sball">' + mark + "</span>" +
+      '<span class="slabel">' + esc(STAGE_LABELS[s.id] || s.id) + "</span>" +
+      '<span class="sline" aria-hidden="true"></span></div>';
+  });
+  // 已发布：最后一个节点完成时一次缩放淡入（§6.2，不做持续庆祝动画）
+  if (wf && wf.delivery && wf.delivery.status === "published") {
+    html = html.replace(/class="step done"(?!.*class="step done")/, 'class="step done published-flash"');
+  }
+  html += "</div>";
+  return html;
+}
+
+function barHTML(progress, indeterminate) {
+  if (indeterminate) return '<div class="panelbar indeterminate"><i></i></div>';
+  if (progress == null) return "";
+  return '<div class="panelbar"><i style="width:' + Math.min(100, progress) + '%"></i></div>';
+}
+
+// 当前阶段面板（§6.3）：一个面板、至多一个主按钮
+// extraHTML 由详情页传入（如音频候选选择），保持「面板内不拼业务状态」
+export function stagePanelHTML(wf, { primaryHandler = "data-stage-action" } = {}) {
+  if (!wf) return "";
+  const running = wf.overall_state === "working";
+  const indeterminate = running && wf.progress_percent == null && wf.current_stage !== "publish";
+  const showBar = running || (wf.progress_percent != null);
+  let html = '<div class="stagepanel tone-' + esc(wf.overall_state) + '">';
+  html += '<div class="panelhead"><span class="paneltitle">' + esc(wf.message || "") + "</span>";
+  if (wf.progress_percent != null) html += '<span class="panelpct num">' + wf.progress_percent + "%</span>";
+  html += "</div>";
+  if (showBar) html += barHTML(wf.progress_percent, indeterminate);
+  if (wf.overall_state === "working") {
+    html += '<div class="panelnote">你可以离开此页面，服务器会继续处理。</div>';
+  }
+  const label = wf.primary_action ? actionLabel(wf.primary_action) : null;
+  if (label) {
+    html += '<div class="panelaction"><button class="primary" ' + primaryHandler + '="' +
+      esc(wf.primary_action) + '">' + esc(label) + "</button></div>";
+  }
+  html += "</div>";
+  return html;
+}
+
+// 列表行的状态行（§4.5）：只显示用户文案 + 来源标签 + 真实进度
+export function listRowAux(wf, it) {
+  const src = esc((it && it.source_label) || "");
+  if (!wf) return '<span class="msg"></span><span class="grow"></span><span class="src">' + src + "</span>";
+  let msg = '<span class="msg' +
+    (wf.overall_state === "failed" ? " bad" : (wf.overall_state === "attention" ? " warn" : "")) +
+    '">' + esc(wf.message || "") + "</span>";
+  let bar = "";
+  if (wf.overall_state === "working" && wf.current_stage === "process") {
+    const pct = wf.progress_percent;
+    if (pct != null) {
+      bar = '<div class="itembar"><i style="width:' + Math.min(100, pct) + '%"></i></div>';
+    } else {
+      bar = '<div class="itembar indeterminate"><i></i></div>';
+    }
+  }
+  return msg + '<span class="grow"></span><span class="src">' + src + "</span>" + bar;
+}
+
+export function isWorkflowActive(wf) {
+  return !!wf && wf.overall_state === "working";
+}

@@ -709,6 +709,7 @@
           "items"
         ],
         "summary": "List Items",
+        "description": "条目列表（docs/17 §10.5）：\n\n- 无 view/search：稳定分页，行为与旧客户端一致。\n- view=attention|working|published：首页三分组；SQL 先按候选状态收敛，\n  Python 按推导后的 overall_state 精筛（发布只认当前 Bundle 回执）。\n- search：服务端全收件箱搜索（标题/URL/来源标签/用户备注），不只搜已加载页。",
         "operationId": "list_items_v1_items_get",
         "parameters": [
           {
@@ -725,6 +726,54 @@
                 }
               ],
               "title": "State"
+            }
+          },
+          {
+            "name": "view",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "View"
+            }
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Search"
+            }
+          },
+          {
+            "name": "source_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Source Type"
             }
           },
           {
@@ -883,6 +932,51 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ReadingOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/items/{item_id}/diagnostics": {
+      "get": {
+        "tags": [
+          "items"
+        ],
+        "summary": "Get Diagnostics",
+        "description": "白话摘要 → 用途解释 → 折叠的脱敏技术信息；不进入主页面与 Toast。",
+        "operationId": "get_diagnostics_v1_items__item_id__diagnostics_get",
+        "parameters": [
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Item Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Get Diagnostics V1 Items  Item Id  Diagnostics Get"
                 }
               }
             }
@@ -1340,6 +1434,30 @@
                   },
                   "type": "array",
                   "title": "Response List Devices V1 Devices Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/devices/summary": {
+      "get": {
+        "tags": [
+          "devices"
+        ],
+        "summary": "Devices Summary",
+        "description": "Obsidian 连接摘要（docs/17 §10.7）：Web 只展示连接状态，\n不读取 Vault 路径、Knowledge 内容或本地整理结果。",
+        "operationId": "devices_summary_v1_devices_summary_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Devices Summary V1 Devices Summary Get"
                 }
               }
             }
@@ -2170,6 +2288,70 @@
             "content": {
               "application/json": {
                 "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/onboarding": {
+      "get": {
+        "tags": [
+          "onboarding"
+        ],
+        "summary": "Get Onboarding",
+        "operationId": "get_onboarding_v1_onboarding_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Get Onboarding V1 Onboarding Get"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "onboarding"
+        ],
+        "summary": "Patch Onboarding",
+        "operationId": "patch_onboarding_v1_onboarding_patch",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OnboardingPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Patch Onboarding V1 Onboarding Patch"
+                }
               }
             }
           },
@@ -3606,6 +3788,18 @@
           "images_archived": {
             "type": "integer",
             "title": "Images Archived"
+          },
+          "workflow": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workflow"
           }
         },
         "additionalProperties": false,
@@ -3776,6 +3970,35 @@
           "bound_at"
         ],
         "title": "LocalBindingStatus"
+      },
+      "OnboardingPatch": {
+        "properties": {
+          "dismiss": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dismiss"
+          },
+          "reopen": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reopen"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "OnboardingPatch"
       },
       "ProfileCreate": {
         "properties": {
