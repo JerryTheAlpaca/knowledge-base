@@ -665,3 +665,18 @@ def test_remerge_cli_skips_unchanged_then_republishes(client, user_a, asr_env, f
     assert "无变化 1 条" in capsys.readouterr().out
     with _session_factory()() as db:
         assert db.get(worker.Item, item_id).source_revision == rev0 + 1
+
+    # 4) 用户编辑原文后的版本带 edited_by_user：remerge 必须跳过不覆盖
+    with _session_factory()() as db:
+        cur_rev = db.get(worker.Item, item_id).source_revision
+    r = client.post(f"/v1/items/{item_id}/source-text",
+                    json={"expected_source_revision": cur_rev,
+                          "text": "我自己整理过的正文，一行一块。"},
+                    headers=auth(user_a["desktop"]["token"]))
+    assert r.status_code == 202
+    cli.cmd_remerge(args)
+    out = capsys.readouterr().out
+    assert "重算 0 条" in out and "无变化 0 条" in out
+    with _session_factory()() as db:
+        it = db.get(worker.Item, item_id)
+        assert it.source_revision == cur_rev + 1  # 编辑产生的新版本未被 remerge 动过

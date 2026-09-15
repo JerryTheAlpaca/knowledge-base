@@ -270,6 +270,10 @@ def cmd_remerge(args) -> None:
             if source is None or not (source.metadata_json or {}).get("asr"):
                 skipped += 1
                 continue
+            if (source.metadata_json or {}).get("edited_by_user"):
+                # 用户在原文编辑过当前版本：机器重算不得覆盖人工内容
+                skipped += 1
+                continue
             bundle = repo.get_bundle(db, it.user_id, it.id, it.bundle_revision) if it.bundle_revision else None
             if bundle is None:
                 skipped += 1
