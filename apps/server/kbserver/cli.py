@@ -137,7 +137,8 @@ def cmd_reparagraph(args) -> None:
 
     按现有 segments 计算 paragraphs，补发 `readable.md` 与带段落映射的
     `segments.json`，发布一个新的 Bundle 版本（来源版本不变）。已经算过或
-    没有片段索引的条目跳过；`--dry-run` 只列出。
+    没有片段索引的条目跳过；`--refresh` 对已有段落版的条目也按当前规则
+    重算（阈值调整后刷历史用）；`--dry-run` 只列出。
     """
     import json
 
@@ -161,7 +162,8 @@ def cmd_reparagraph(args) -> None:
                 continue
             manifest = json.loads(store.read_object(bundle.manifest_key).decode("utf-8"))
             entries = manifest.get("files") or []
-            if any(f.get("relative_path") == "readable.md" for f in entries):
+            has_readable = any(f.get("relative_path") == "readable.md" for f in entries)
+            if has_readable and not args.refresh:
                 skipped += 1  # 已有段落版
                 continue
             seg_entry = next((f for f in entries if f.get("relative_path") == "segments.json"), None)
@@ -417,6 +419,8 @@ def main() -> None:
 
     p = sub.add_parser("reparagraph", help="给已有来源版本补算阅读层段落（不重新提取）")
     p.add_argument("--user", default=None, help="只处理该 KB user_id；默认全部用户")
+    p.add_argument("--refresh", action="store_true",
+                   help="已有段落版的条目也按当前规则重算（阈值调整后刷历史）")
     p.add_argument("--dry-run", action="store_true", help="只列出将要补算的条目")
     p.set_defaults(func=cmd_reparagraph)
 
