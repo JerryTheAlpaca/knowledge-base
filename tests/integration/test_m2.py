@@ -314,6 +314,38 @@ def test_enrich_paragraphing_failure_falls_back(client, user_a, session_factory,
     assert "paragraph_source" not in seg_doc
 
 
+def test_enrich_paragraphing_disabled_skips_llm_call(client, user_a, session_factory, fake_llm):
+    """关闭「AI 语义分段」：加工不发出分段调用，阅读层保持本地规则分段。"""
+    calls = {"n": 0}
+
+    def behavior(request):
+        if '"task": "这份文本是语音识别的原始输出' in request.user:
+            calls["n"] += 1
+            return llm_result({"paragraph_starts": ["s0001"]})
+        return llm_result(doc_from_prompt(request.user))
+
+    fake_llm.behavior = behavior
+    token = user_a["desktop"]["token"]
+    _create_profile(client, token)
+    client.patch("/v1/settings", json={"ai_paragraphing": False},
+                 headers=auth(token))
+    c = _capture_text(client, user_a["phone"]["token"], "m2paraoff",
+                      "第一段：可靠保存材料。\n第二段：加工不丢原文。\n第三段：都属同一话题。")
+    item_id = c.json()["item_id"]
+    _drain(session_factory)
+
+    it = _get_item(client, token, item_id)
+    assert it["pipeline_state"] == "ready"
+    assert calls["n"] == 0  # 分段调用一次都没有发
+    m = client.get(f"/v1/items/{item_id}/bundles/{it['bundle_revision']}/manifest",
+                   headers=auth(token)).json()
+    seg_file = next(f for f in m["files"] if f["relative_path"] == "segments.json")
+    seg_doc = json.loads(client.get(
+        f"/v1/items/{item_id}/bundles/{it['bundle_revision']}/files/{seg_file['file_id']}",
+        headers=auth(token)).content)
+    assert "paragraph_source" not in seg_doc
+
+
 def test_paragraphing_prompt_includes_subtitle_refs():
     """有平台字幕参考时，分段提示词携带按句对齐的字幕文本；无参考则不带。"""
     from kbserver.domain import templates

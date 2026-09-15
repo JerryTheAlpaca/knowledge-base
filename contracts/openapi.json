@@ -4371,6 +4371,11 @@
             "title": "Auto Enrich",
             "default": true
           },
+          "ai_paragraphing": {
+            "type": "boolean",
+            "title": "Ai Paragraphing",
+            "default": true
+          },
           "note": {
             "type": "string",
             "title": "Note",
@@ -4407,6 +4412,17 @@
               }
             ],
             "title": "Auto Enrich"
+          },
+          "ai_paragraphing": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ai Paragraphing"
           }
         },
         "additionalProperties": false,

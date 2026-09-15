@@ -158,6 +158,12 @@
         <span class="muted">开启时，条目提取完成后自动整理成知识笔记；关闭则只提取原文，之后可在条目里手动「开始整理」。</span></span>
         <span class="switch" aria-hidden="true"><i></i></span>
       </label>
+      <label class="asrtoggle" id="aiParagraphingRow" for="aiParagraphing">
+        <input type="checkbox" id="aiParagraphing">
+        <span class="asrtoggle-text"><b>AI 语义分段与纠错</b>
+        <span class="muted">开启时，AI 整理会按话题划分阅读段落并修正语音识别的听错字词，每次加工多一次模型调用（约几分钱）；关闭则用本地规则分段，不产生额外费用。</span></span>
+        <span class="switch" aria-hidden="true"><i></i></span>
+      </label>
       <div id="profileList" style="margin-top:16px"></div>
     </div>
 

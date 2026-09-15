@@ -598,6 +598,7 @@ class SettingsOut(BaseModel):
     model_config = ConfigDict(extra="forbid")
     default_profile_id: str | None
     auto_enrich: bool = True
+    ai_paragraphing: bool = True
     note: str = ""
 
 
@@ -605,6 +606,7 @@ class SettingsUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     default_profile_id: str | None = None
     auto_enrich: bool | None = None
+    ai_paragraphing: bool | None = None
 
 
 def _settings_out(user: User) -> SettingsOut:
@@ -613,6 +615,7 @@ def _settings_out(user: User) -> SettingsOut:
     return SettingsOut(
         default_profile_id=s.get("default_profile_id"),
         auto_enrich=bool(ai.get("auto_enrich", True)),
+        ai_paragraphing=bool(ai.get("ai_paragraphing", True)),
         note="模型账单请在供应商平台查看；本系统不统计用量与费用。",
     )
 
@@ -634,6 +637,10 @@ def update_settings(body: SettingsUpdate, principal=Depends(require_scope("profi
     if body.auto_enrich is not None:
         ai = dict(s.get("ai") or {}) if isinstance(s.get("ai"), dict) else {}
         ai["auto_enrich"] = body.auto_enrich
+        s["ai"] = ai
+    if body.ai_paragraphing is not None:
+        ai = dict(s.get("ai") or {}) if isinstance(s.get("ai"), dict) else {}
+        ai["ai_paragraphing"] = body.ai_paragraphing
         s["ai"] = ai
     user.settings_json = s
     db.commit()

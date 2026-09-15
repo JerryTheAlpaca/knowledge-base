@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session
 from ..config import get_settings
 from ..domain import analysis, pipeline, provider_ops, templates
 from ..extractors import paragraphs as parafmt
+from .publish import ai_paragraphing_enabled
 from ..models import (
     Capture,
     Credential,
@@ -82,6 +83,7 @@ class EnrichPlan:
     chunks: list[list[dict]] = field(default_factory=list)
     max_output_tokens: int = 2000
     subtitle_refs: dict[str, str] = field(default_factory=dict)
+    paragraphing_enabled: bool = True
 
 
 # ---- 公共小工具 ----
@@ -224,6 +226,7 @@ def prepare(session_factory, job_id: str, lease_token: str) -> EnrichPlan | None
             return None
 
         subtitle_refs = _align_subtitle_refs(segments, _load_subtitle_ref(db, item))
+        paragraphing_enabled = ai_paragraphing_enabled(db, item.user_id)
 
         meta = source.metadata_json
         conversation_mode = input_kind in {"conversation", "workflow"} or meta.get("platform") in {
@@ -273,6 +276,7 @@ def prepare(session_factory, job_id: str, lease_token: str) -> EnrichPlan | None
             chunks=chunks,
             max_output_tokens=max_output,
             subtitle_refs=subtitle_refs,
+            paragraphing_enabled=paragraphing_enabled,
         )
 
 
@@ -407,7 +411,10 @@ def call_provider(session_factory, plan: EnrichPlan) -> dict:
         return parse_model_json(result.output_text)
 
     # 语义分段 + 听错词修正先于提炼：修正后的文本让提炼摘录与正文一致
-    text_plan = _semantic_paragraph_starts(plan, _call)
+    # （用户关闭「AI 语义分段」时跳过，阅读层保持本地规则分段）
+    text_plan = (
+        _semantic_paragraph_starts(plan, _call) if plan.paragraphing_enabled else None
+    )
     if text_plan:
         corrected = {c["segment_id"]: c["corrected"] for c in text_plan["corrections"]}
         for s in plan.segments:

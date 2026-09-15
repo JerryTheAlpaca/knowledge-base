@@ -257,6 +257,16 @@ def test_settings_auto_enrich_roundtrip(client, user_a):
     assert r.json()["auto_enrich"] is False
 
 
+def test_settings_ai_paragraphing_roundtrip(client, user_a):
+    r = client.get("/v1/settings", headers=auth(user_a["desktop"]["token"]))
+    assert r.status_code == 200 and r.json()["ai_paragraphing"] is True  # 默认开
+    r = client.patch("/v1/settings", json={"ai_paragraphing": False},
+                     headers=auth(user_a["desktop"]["token"]))
+    assert r.status_code == 200 and r.json()["ai_paragraphing"] is False
+    r = client.get("/v1/settings", headers=auth(user_a["desktop"]["token"]))
+    assert r.json()["ai_paragraphing"] is False
+
+
 def test_auto_enrich_off_stops_after_extract(client, user_a, fresh_queue):
     client.patch("/v1/settings", json={"auto_enrich": False},
                  headers=auth(user_a["desktop"]["token"]))

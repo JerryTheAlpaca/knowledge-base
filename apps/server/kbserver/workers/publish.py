@@ -32,6 +32,18 @@ def auto_enrich_enabled(db: Session, user_id: str) -> bool:
     return bool(ai.get("auto_enrich", True))
 
 
+def ai_paragraphing_enabled(db: Session, user_id: str) -> bool:
+    """用户级「AI 语义分段」开关（默认开）：关闭时加工不做 LLM 分段与
+    听错词修正，阅读层保持本地规则分段（零模型开销）。"""
+    from ..models import User
+
+    user = db.get(User, user_id)
+    ai = (user.settings_json or {}).get("ai") if user else None
+    if not isinstance(ai, dict):
+        return True
+    return bool(ai.get("ai_paragraphing", True))
+
+
 def publish_segments_revision(db: Session, store: ObjectStore, job: Job | None, item: Item,
                               source: SourceRevision, *, segments: list[dict],
                               warnings: list[str], extra_files: list,

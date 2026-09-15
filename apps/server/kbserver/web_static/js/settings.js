@@ -94,6 +94,7 @@ async function loadSettingsData() {
     renderBili(bili);
     renderAsrSettings(asrSettings);
     renderAutoEnrich(settings);
+    renderAiParagraphing(settings);
     loadDevices();
   } catch (e) { showErr(e); }
 }
@@ -105,6 +106,18 @@ function renderAutoEnrich(settings) {
     try {
       await api("/v1/settings", { method: "PATCH", body: { auto_enrich: cb.checked } });
       toast(cb.checked ? "已开启 AI 自动整理" : "已关闭：条目只提取原文，不做 AI 整理", { type: "ok" });
+    } catch (e) { showErr(e); cb.checked = !cb.checked; }
+  };
+}
+
+function renderAiParagraphing(settings) {
+  const cb = $("aiParagraphing");
+  cb.checked = !(settings && settings.ai_paragraphing === false);
+  cb.onchange = async () => {
+    try {
+      await api("/v1/settings", { method: "PATCH", body: { ai_paragraphing: cb.checked } });
+      toast(cb.checked ? "已开启：AI 整理将按话题分段并修正听错字词"
+                       : "已关闭：分段与纠错改用本地规则，不再产生这部分模型开销", { type: "ok" });
     } catch (e) { showErr(e); cb.checked = !cb.checked; }
   };
 }
