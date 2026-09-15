@@ -36,6 +36,17 @@ CSRF_COOKIE = "kb_csrf"
 CSRF_HEADER = "X-CSRF-Token"
 UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
+# 设备心跳节流：Bearer 鉴权成功即更新 last_seen_at，但至少间隔这么久才写库，
+# 避免插件高频轮询造成写放大（设置页「最近连接」的数据源）。
+LAST_SEEN_THROTTLE_SECONDS = 60
+
+
+def _touch_device_last_seen(device: Device) -> None:
+    now = utcnow()
+    last = device.last_seen_at
+    if last is None or (now - last).total_seconds() >= LAST_SEEN_THROTTLE_SECONDS:
+        device.last_seen_at = now
+
 
 @dataclass
 class Principal:
@@ -102,6 +113,7 @@ def _load_device_principal(db: Session, raw: str) -> Principal:
     device = repo.get_device(db, token.user_id, token.device_id)
     if device is None or device.revoked_at is not None:
         raise ApiError("AUTH_EXPIRED", "设备已撤销", status_code=401)
+    _touch_device_last_seen(device)
     return Principal(
         user=user, scopes=list(token.scopes_json or []),
         auth_method="device_token", device=device, token=token,
