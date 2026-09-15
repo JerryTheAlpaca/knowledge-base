@@ -270,8 +270,9 @@ def cmd_remerge(args) -> None:
             if source is None or not (source.metadata_json or {}).get("asr"):
                 skipped += 1
                 continue
-            if (source.metadata_json or {}).get("edited_by_user"):
-                # 用户在原文编辑过当前版本：机器重算不得覆盖人工内容
+            if (source.metadata_json or {}).get("edited_by_user") and not args.force:
+                # 用户在原文编辑过当前版本：机器重算不得覆盖人工内容；
+                # 确认要重算时用 --force 显式覆盖（编辑版仍在历史中）
                 skipped += 1
                 continue
             bundle = repo.get_bundle(db, it.user_id, it.id, it.bundle_revision) if it.bundle_revision else None
@@ -416,6 +417,7 @@ def main() -> None:
     p = sub.add_parser("remerge", help="按当前合并逻辑重算 ASR 条目句段（不重新识别音频）")
     p.add_argument("--user", default=None, help="只处理该 KB user_id；默认全部用户")
     p.add_argument("--item", default=None, help="只处理该条目")
+    p.add_argument("--force", action="store_true", help="覆盖人工编辑过的版本（默认跳过）")
     p.add_argument("--dry-run", action="store_true", help="只列出将要重算的条目")
     p.set_defaults(func=cmd_remerge)
 

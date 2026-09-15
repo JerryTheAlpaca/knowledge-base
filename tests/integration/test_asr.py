@@ -679,7 +679,8 @@ def test_remerge_cli_skips_unchanged_then_republishes(client, user_a, asr_env, f
     with _session_factory()() as db:
         rev0 = db.get(worker.Item, item_id).source_revision
 
-    args = argparse.Namespace(command="remerge", user=None, item=item_id, dry_run=False)
+    args = argparse.Namespace(command="remerge", user=None, item=item_id,
+                              force=False, dry_run=False)
 
     # 1) 合并结果与已发布一致：无变化，不新增版本
     cli.cmd_remerge(args)
@@ -718,3 +719,11 @@ def test_remerge_cli_skips_unchanged_then_republishes(client, user_a, asr_env, f
     with _session_factory()() as db:
         it = db.get(worker.Item, item_id)
         assert it.source_revision == cur_rev + 1  # 编辑产生的新版本未被 remerge 动过
+
+    # 5) --force 显式覆盖人工编辑：重算发布更新版本
+    force_args = argparse.Namespace(command="remerge", user=None, item=item_id,
+                                    force=True, dry_run=False)
+    cli.cmd_remerge(force_args)
+    assert "重算 1 条" in capsys.readouterr().out
+    with _session_factory()() as db:
+        assert db.get(worker.Item, item_id).source_revision == cur_rev + 2
