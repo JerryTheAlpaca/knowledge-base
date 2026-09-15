@@ -525,7 +525,14 @@ def purge_user_local_data(db: Session, user_id: str) -> int:
     ).all():
         store.discard_staging(staging)
 
-    # 2) 行：先子后父
+    # 2) 行：先子后父。usage_ledger 是去计费前的历史遗留表（模型已移除但
+    #    生产库仍保留），FK 引用 provider_operations.id，必须先删。
+    from sqlalchemy import text
+
+    if db.execute(
+        text("SELECT name FROM sqlite_master WHERE type='table' AND name='usage_ledger'")
+    ).fetchone():
+        db.execute(text("DELETE FROM usage_ledger WHERE user_id = :uid"), {"uid": user_id})
     deleted = 0
     for model in (
         ProviderOperation, Job, AsrRun, Receipt, SuppressedItem, AudioAsset,

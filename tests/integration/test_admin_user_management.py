@@ -130,6 +130,37 @@ def test_admin_delete_user_cannot_delete_self(engine, monkeypatch, db):
     assert r.status_code == 403
 
 
+def test_admin_delete_user_purges_legacy_usage_ledger(engine, monkeypatch, session_factory, db, user_b):
+    """生产库仍有去计费前的 usage_ledger 遗留表（FK 引用 provider_operations），
+    purge 必须先清它，否则删除账户时 FK 约束失败。"""
+    from sqlalchemy import text
+
+    _central(monkeypatch)
+    wc = _wc(engine)
+    _login(wc)
+
+    # 模拟生产遗留表（测试库默认没有）
+    db.execute(text(
+        "CREATE TABLE IF NOT EXISTS usage_ledger ("
+        " seq INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " user_id VARCHAR(36) NOT NULL REFERENCES users(id),"
+        " operation_id VARCHAR(36) REFERENCES provider_operations(id),"
+        " kind VARCHAR(40) NOT NULL, quantity INTEGER NOT NULL)"
+    ))
+    uid = user_b["user_id"]
+    db.execute(text(
+        "INSERT INTO usage_ledger (user_id, operation_id, kind, quantity)"
+        " VALUES (:uid, NULL, 'llm_call', 3)"), {"uid": uid})
+    db.commit()
+
+    r = wc.delete(f"/v1/admin/users/{uid}", headers=_csrf_headers(wc))
+    assert r.status_code == 200, r.text
+    with session_factory() as check:
+        assert check.execute(
+            text("SELECT COUNT(*) FROM usage_ledger WHERE user_id = :uid"), {"uid": uid}
+        ).fetchone()[0] == 0
+
+
 def test_admin_delete_invitation_proxies_delete(engine, monkeypatch, db):
     _central(monkeypatch)
     wc = _wc(engine)
