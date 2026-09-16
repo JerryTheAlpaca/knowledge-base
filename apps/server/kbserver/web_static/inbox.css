@@ -188,17 +188,17 @@ label { display: block; font-size: var(--fs-small); color: var(--text-2); margin
 .smartbox:focus-within { border-color: #b8862f;
                          box-shadow: 0 0 0 3px rgba(226, 176, 74, .12),
                                      0 8px 30px rgba(226, 176, 74, .10); }
-.capline { display: flex; align-items: flex-end; gap: 6px; min-height: 50px; }
+.capline { display: flex; align-items: flex-end; gap: 6px; min-height: 44px; }
 .smartbox textarea { flex: 1; border: none; box-shadow: none; padding: 10px 4px;
                      min-height: 44px; max-height: 220px; resize: none; line-height: 24px;
                      background: transparent; color: var(--text); caret-color: var(--accent); }
 .smartbox textarea:focus { box-shadow: none; }
 .smartbox textarea::placeholder { color: #8a7554; }
 .uploadpick { width: 44px; min-width: 44px; min-height: 44px; border: none; background: transparent;
-              border-radius: 50%; color: #d9b56a; flex: none; margin-bottom: 2px; }
+              border-radius: 50%; color: #d9b56a; flex: none; }
 .uploadpick:hover { background: rgba(226, 176, 74, .12); color: var(--accent-hover); border: none; }
 .capsubmit { width: 44px; min-width: 44px; height: 44px; min-height: 44px; padding: 0;
-             border-radius: 50%; border: 1px solid #b8862f; flex: none; margin-bottom: 2px;
+             border-radius: 50%; border: 1px solid #b8862f; flex: none;
              background: linear-gradient(180deg, #f4ca72 0%, #dfab4e 60%, #c9973a 100%);
              color: #241703; position: relative;
              box-shadow: 0 2px 12px rgba(226, 176, 74, .35), inset 0 1px 0 rgba(255, 240, 200, .55); }
