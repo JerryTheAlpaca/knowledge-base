@@ -210,7 +210,9 @@ export async function submitCapture() {
           schema_version: "1.0", client_capture_id: crypto.randomUUID(),
           capture_channel: "web_inbox", source_hint: "unknown",
           include_images: !!$("capImages").checked,
-          include_asr: false,
+          // 「提取音轨」开关（§4.3）：网页/公众号条目提取完成后自动排队转写；
+          // 后端只在网页适配分支消费该值，B 站沿用「无字幕自动转写」设置不受影响
+          include_asr: !!$("capAsr").checked,
           text: null, share_text: null, original_url: null,
           user_note: null, upload_ids: [],
           processing_intent: "default", primary_audio_upload_id: null,
