@@ -4,8 +4,8 @@
 // 设置走浏览器路由（?view=settings）进入，不与首页争夺导航层级。
 
 import { $, api, setUnauthorizedHandler, closeModal } from "./api.js";
-import { initCapture, submitCapture, restoreDraft, saveDrafts, clearDraft, setSubmittedHandler } from "./capture.js";
-import { initItemList, refreshItems, scheduleRefresh } from "./item-list.js";
+import { initCapture, submitCapture, restoreDraft, saveDrafts, clearDraft } from "./capture.js";
+import { initItemList, refreshItems, scheduleRefresh, openDrawer } from "./item-list.js";
 import { initDetail, openDetail, closeDetail, currentDetailId, isDetailBusy } from "./item-detail.js";
 import { initOnboarding, maybeShowOnboarding, reopenOnboarding } from "./onboarding.js";
 import { initSettings, showSettings, hideSettings } from "./settings.js";
@@ -119,17 +119,14 @@ setUnauthorizedHandler(() => {
   showLogin();
 });
 
-setSubmittedHandler(() => {
-  refreshItems();
-});
-
 scheduleRefresh(() => isDetailBusy());
 
 window.addEventListener("popstate", route);
 
 (async function boot() {
   wireTopbar();
-  initCapture({ onSubmit: refreshItems });
+  // 提交成功后：刷新条目并拉开抽屉，看到新条目进入处理队列
+  initCapture({ onSubmit: () => { refreshItems(); openDrawer(); } });
   initItemList();
   initDetail();
   initOnboarding();

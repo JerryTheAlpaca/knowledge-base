@@ -90,7 +90,7 @@ header { background: rgba(14, 10, 5, .78);
 .menu-item:hover { background: var(--surface-2); }
 .menu-item.danger { color: var(--bad); }
 
-main { max-width: 960px; margin: 0 auto; padding: 24px 24px calc(96px + env(safe-area-inset-bottom)); }
+main { max-width: 960px; margin: 0 auto; padding: 24px 24px calc(16px + env(safe-area-inset-bottom)); }
 .spacer { flex: 1; }
 .muted { color: var(--text-2); }
 .small { font-size: var(--fs-small); line-height: 1.5; color: var(--text-2); }
@@ -114,11 +114,64 @@ label { display: block; font-size: var(--fs-small); color: var(--text-2); margin
 .login-sub { color: var(--text-2); max-width: 440px; margin: 0 0 26px; line-height: 1.8; }
 #loginBtn { min-width: 220px; }
 
+/* ============ 首页三层：顶部条目抽屉 / 中间金蔷薇 / 底部胶囊采集框 ============ */
+#homeView { display: flex; flex-direction: column; min-height: calc(100dvh - 96px - env(safe-area-inset-bottom)); }
+.home-main { display: flex; flex-direction: column; flex: 1; min-height: 0; position: relative; }
+
+/* —— 顶部：条目抽屉。收起时只剩一个从顶边垂下来的半圆拉手 —— */
+.drawer { position: relative; z-index: 30; display: flex; justify-content: center; }
+.drawer-handle { position: relative; width: 132px; min-height: 34px; padding: 3px 0 9px;
+                 margin-top: -24px;  /* 抵消 main 顶边距，让半圆贴住顶栏下沿 */
+                 border: 1px solid var(--border-strong); border-top: none;
+                 border-radius: 0 0 66px 66px;
+                 background: linear-gradient(180deg, rgba(56, 39, 17, .92) 0%, rgba(24, 16, 8, .96) 100%);
+                 color: var(--text-2); font-size: 0;
+                 display: flex; align-items: center; justify-content: center; gap: 5px;
+                 box-shadow: 0 6px 18px rgba(0, 0, 0, .5), inset 0 1px 0 rgba(226, 176, 74, .12);
+                 transition: color var(--t-fast), box-shadow var(--t-fast); }
+.drawer-handle::after { content: ""; position: absolute; inset: -6px 0 -4px; }  /* 半圆视觉小，命中区扩到 ≥44px */
+.drawer-handle:hover { color: var(--accent);
+                       box-shadow: 0 6px 22px rgba(226, 176, 74, .18), inset 0 1px 0 rgba(226, 176, 74, .25); }
+.drawer-handle svg { flex: none; transition: transform var(--t-slow) var(--ease); }
+.drawer.open .drawer-handle svg { transform: rotate(180deg); }
+.drawer-badge { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px;
+                background: var(--accent); color: var(--on-accent);
+                font-size: 11px; font-weight: 600; line-height: 1;
+                display: inline-flex; align-items: center; justify-content: center; }
+.drawer-badge.hot { background: var(--warn); }
+.drawer-panel { position: absolute; top: calc(100% + 6px); left: 0; right: 0;
+                max-height: min(64dvh, 560px); display: flex; flex-direction: column;
+                background: linear-gradient(170deg, rgba(30, 21, 10, .97) 0%, rgba(18, 12, 6, .99) 100%);
+                border: 1px solid var(--border-strong); border-radius: var(--radius-card);
+                box-shadow: var(--shadow-pop); padding: 6px 14px 14px;
+                backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+                opacity: 0; transform: translateY(-8px); visibility: hidden;
+                transition: opacity var(--t-slow) var(--ease), transform var(--t-slow) var(--ease),
+                            visibility 0s linear var(--t-slow); }
+.drawer.open .drawer-panel { opacity: 1; transform: none; visibility: visible;
+                transition: opacity var(--t-slow) var(--ease), transform var(--t-slow) var(--ease); }
+.drawer-scroll { overflow-y: auto; min-height: 0; overscroll-behavior: contain; }
+
+/* —— 中间：金蔷薇（视觉中心，平时完全静止，提交时播一次回馈动画） —— */
+.rose-stage { flex: 1; min-height: 200px; display: flex; flex-direction: column;
+              align-items: center; justify-content: center; user-select: none; }
+.rose-caption { font-family: var(--font-display); font-size: var(--fs-h1); font-weight: 600;
+                margin-top: 14px; letter-spacing: 3px;
+                background: linear-gradient(180deg, #ffedaa 0%, #e2b04a 58%, #b8862f 100%);
+                -webkit-background-clip: text; background-clip: text; color: transparent; }
+.rose-sub { font-size: var(--fs-caption); color: var(--text-2); margin-top: 4px; letter-spacing: 1px; }
+
+/* —— 底部：胶囊采集框吸底常驻；向上渐隐遮住滚动穿过的内容 —— */
+.dock { position: sticky; bottom: 0; margin-top: 12px; z-index: 20; }
+.dock::before { content: ""; position: absolute; inset: -22px -24px -16px; z-index: -1;
+                background: linear-gradient(to top, #0a0705 58%, rgba(10, 7, 5, 0));
+                pointer-events: none; }
+
 /* ============ 采集卡：金蔷薇 + 胶囊输入 ============ */
 #captureCard { background: transparent; border: none; box-shadow: none;
-               padding: 0; margin: clamp(4px, 3vh, 26px) 0 26px; }
+               padding: 0; margin: 0; }
 .rose-wrap { display: flex; justify-content: center; }
-.rose { display: block; width: clamp(230px, 36vh, 380px); height: auto;
+.rose { display: block; width: clamp(260px, 40vh, 420px); height: auto;
         filter: drop-shadow(0 0 30px rgba(232, 169, 60, .13)); }
 
 /* 胶囊采集框：初始胶囊型，聚焦或有内容后舒展为圆角容器 */
@@ -180,8 +233,7 @@ label { display: block; font-size: var(--fs-small); color: var(--text-2); margin
 .opttoggle input:checked ~ .switch i { transform: translateX(16px); }
 .opttoggle input:focus-visible ~ .switch { outline: 2px solid var(--accent); outline-offset: 2px; }
 
-/* ============ 条目流：三组；独立小卡片 + 滚动显现 ============ */
-.listsection { margin-top: 8px; }
+/* ============ 条目流：三组；独立小卡片 + 滚动显现（在抽屉面板内滚动） ============ */
 .listtoolbar { display: flex; align-items: center; min-height: 36px; }
 .searchrow { margin: 4px 0 12px; }
 .itemgroup { margin-bottom: 20px; }
@@ -438,13 +490,15 @@ details.disclosure.slim .disclosure-body { padding: 0 8px 8px; }
   main, .topbar-inner { padding-left: 16px; padding-right: 16px; }
   .card { padding: 18px; }
   .back { margin-left: -10px; }
-  .rose { width: clamp(210px, 32vh, 300px); }
+  .rose { width: clamp(220px, 34vh, 320px); }
+  .dock::before { inset: -22px -16px -16px; }
 }
 @media (max-width: 420px) {
   .step .slabel { font-size: 11px; }
   .sball { width: 20px; height: 20px; }
   .sline { top: 9px; left: calc(-50% + 16px); right: calc(50% + 16px); }
   .rose { width: clamp(190px, 30vh, 260px); }
+  .rose-caption { font-size: var(--fs-display); }
   .smartbox:has(.chiprow:not([hidden])),
   .smartbox:has(.capmeta span:not(:empty)) { border-radius: 24px; }
 }

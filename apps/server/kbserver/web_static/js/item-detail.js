@@ -7,7 +7,7 @@
 import { $, api, esc, toast, showErr, confirmModal, fmtTime, uploadFiles,
          sanitizeFilename, openModalHTML, closeModal } from "./api.js";
 import { stepperHTML, stagePanelHTML, actionLabel, availableActionLabels, STAGE_LABELS } from "./workflow.js";
-import { refreshItems as refreshList } from "./item-list.js";
+import { refreshItems as refreshList, closeDrawer } from "./item-list.js";
 
 let detailId = null;
 let detailData = null;
@@ -55,11 +55,11 @@ export async function openDetail(itemId, opts = {}) {
   segShown = 0;
   sourceEditing = false;
   supFilesState = [];
-  // 详情是二级视图：采集框/条目流/引导卡都让位（docs/17 §3）
+  // 详情是二级视图：抽屉/金蔷薇/采集框整体让位（docs/17 §3）
   onboardingWasVisible = !$("onboardingHost").hidden;
   $("onboardingHost").hidden = true;
-  $("captureCard").hidden = true;
-  $("listWrap").hidden = true;
+  $("homeMain").hidden = true;
+  closeDrawer();
   $("detailView").hidden = false;
   $("detailBody").innerHTML = "";
   $("stepperHost").innerHTML = "";
@@ -78,8 +78,7 @@ export async function openDetail(itemId, opts = {}) {
 export function closeDetail() {
   detailId = null; detailData = null; asrStatus = null;
   $("detailView").hidden = true;
-  $("captureCard").hidden = false;
-  $("listWrap").hidden = false;
+  $("homeMain").hidden = false;
   if (onboardingWasVisible) $("onboardingHost").hidden = false;
 }
 
