@@ -47,222 +47,32 @@
 </main>
 
 <main id="appView" hidden>
-  <!-- ============ 首页：顶部条目抽屉 + 金蔷薇 + 底部胶囊采集框 ============ -->
+  <!-- ============ 首页：统一采集框 + 条目流 ============ -->
   <section id="homeView">
     <div id="onboardingHost" hidden></div>
 
-    <div id="homeMain" class="home-main">
-      <!-- 顶部：条目抽屉。收起时只剩一个垂下来的半圆拉手，下拉/点击展开条目流 -->
-      <div class="drawer" id="listWrap">
-        <button class="drawer-handle" id="drawerHandle" aria-expanded="false" aria-controls="drawerPanel" title="收件箱条目">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-               stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="m6 9 6 6 6-6"/>
-          </svg>
-          <span class="drawer-badge num" id="drawerBadge" hidden></span>
-        </button>
-        <div class="drawer-panel" id="drawerPanel">
-          <button class="drawer-close" id="drawerClose" aria-label="收起条目列表" title="收起">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="m18 15-6-6-6 6"/>
-            </svg>
-          </button>
-          <div class="drawer-body">
-          <div class="listtoolbar">
-            <span class="spacer"></span>
-            <button class="icon ghost" id="searchToggle" aria-label="搜索" title="搜索">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                   stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>
-              </svg>
-            </button>
-          </div>
-          <div class="searchrow" id="searchRow" hidden>
-            <input class="search" id="searchBox" placeholder="搜索标题、链接或来源…" aria-label="搜索条目">
-          </div>
-          <div class="drawer-scroll">
-            <div id="groupAttention" class="itemgroup" hidden>
-              <h3 class="grouptitle tone-attention">需要你处理</h3>
-              <ul class="items" data-group="attention"></ul>
-            </div>
-            <div id="groupWorking" class="itemgroup" hidden>
-              <h3 class="grouptitle tone-working">正在处理</h3>
-              <ul class="items" data-group="working"></ul>
-            </div>
-            <div id="groupPublished" class="itemgroup" hidden>
-              <h3 class="grouptitle tone-published">最近完成</h3>
-              <ul class="items" data-group="published"></ul>
-            </div>
-            <div id="groupSearch" class="itemgroup" hidden>
-              <h3 class="grouptitle">搜索结果 <span class="small num" id="searchCount"></span></h3>
-              <ul class="items" data-group="search"></ul>
-            </div>
-            <div class="empty" id="emptyState" hidden>
-              <div class="empty-title">收件箱还是空的</div>
-              <p class="muted" style="margin:0">粘贴一条你刚看到的文章或视频链接。</p>
-            </div>
-          </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- 中间：金蔷薇（视觉中心） -->
-      <div class="rose-stage">
-        <div class="rose-wrap" aria-hidden="true">
-        <svg class="rose" viewBox="30 0 540 460" xmlns="http://www.w3.org/2000/svg">
-          <defs>
-            <radialGradient id="rglow" cx="50%" cy="50%" r="50%">
-              <stop offset="0%" stop-color="#ecc35f" stop-opacity="0.20"/>
-              <stop offset="55%" stop-color="#e8a93c" stop-opacity="0.07"/>
-              <stop offset="100%" stop-color="#e8a93c" stop-opacity="0"/>
-            </radialGradient>
-            <linearGradient id="rgBack" x1="0" y1="1" x2="0" y2="0">
-              <stop offset="0%" stop-color="#432a07"/>
-              <stop offset="100%" stop-color="#7d5715"/>
-            </linearGradient>
-            <linearGradient id="rgOuter" x1="0" y1="1" x2="0" y2="0">
-              <stop offset="0%" stop-color="#6b430a"/>
-              <stop offset="45%" stop-color="#bd821c"/>
-              <stop offset="100%" stop-color="#d9a337"/>
-            </linearGradient>
-            <linearGradient id="rgMid" x1="0" y1="1" x2="0" y2="0">
-              <stop offset="0%" stop-color="#5f3c09"/>
-              <stop offset="55%" stop-color="#c89426"/>
-              <stop offset="100%" stop-color="#e0b242"/>
-            </linearGradient>
-            <linearGradient id="rgInner" x1="0" y1="1" x2="0" y2="0">
-              <stop offset="0%" stop-color="#6b430a"/>
-              <stop offset="55%" stop-color="#d4a437"/>
-              <stop offset="100%" stop-color="#e6bd52"/>
-            </linearGradient>
-            <linearGradient id="rsheen" x1="0" y1="0" x2="1" y2="0">
-              <stop offset="0%" stop-color="#ffffff" stop-opacity="0"/>
-              <stop offset="42%" stop-color="#fff8dc" stop-opacity="0.06"/>
-              <stop offset="50%" stop-color="#fffdf2" stop-opacity="0.42"/>
-              <stop offset="58%" stop-color="#fff8dc" stop-opacity="0.06"/>
-              <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
-            </linearGradient>
-            <radialGradient id="rrim" cx="50%" cy="46%" r="50%">
-              <stop offset="0%" stop-color="#2f1c04" stop-opacity="0"/>
-              <stop offset="76%" stop-color="#2f1c04" stop-opacity="0"/>
-              <stop offset="100%" stop-color="#2f1c04" stop-opacity="0.38"/>
-            </radialGradient>
-            <path id="rpetal" d="M0 0 C -72 -22 -94 -88 -74 -140 C -60 -176 -32 -188 0 -188 C 32 -188 60 -176 74 -140 C 94 -88 72 -22 0 0 Z" vector-effect="non-scaling-stroke"/>
-            <path id="rcup" d="M-26 -5 C -30 -24 -16 -36 0 -36 C 16 -36 30 -24 26 -5 C 17 -20 9 -24 0 -24 C -9 -24 -17 -20 -26 -5 Z" vector-effect="non-scaling-stroke"/>
-            <clipPath id="rbloomClip"><circle cx="300" cy="228" r="186"/></clipPath>
-            <filter id="rsoft" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="2.2"/></filter>
-          </defs>
-          <ellipse class="glowPulse" cx="300" cy="228" rx="268" ry="222" fill="url(#rglow)"/>
-          <g class="plant">
-            <g transform="translate(300 228) scale(1 0.94)">
-              <g fill="url(#rgBack)" stroke="#3a2306" stroke-width="2" stroke-linejoin="round" opacity="0.97">
-                <use href="#rpetal" transform="rotate(15) scale(0.92 1.08)"/>
-                <use href="#rpetal" transform="rotate(75) scale(0.92 1.05)"/>
-                <use href="#rpetal" transform="rotate(135) scale(0.92 1.1)"/>
-                <use href="#rpetal" transform="rotate(195) scale(0.92 1.06)"/>
-                <use href="#rpetal" transform="rotate(255) scale(0.92 1.09)"/>
-                <use href="#rpetal" transform="rotate(315) scale(0.92 1.05)"/>
-              </g>
-              <g fill="url(#rgOuter)" stroke="#4a2d06" stroke-width="2" stroke-linejoin="round">
-                <use href="#rpetal" transform="rotate(4) scale(0.88 1.05)"/>
-                <use href="#rpetal" transform="rotate(62) scale(0.88 0.98)"/>
-                <use href="#rpetal" transform="rotate(124) scale(0.88 1.08)"/>
-                <use href="#rpetal" transform="rotate(181) scale(0.88 0.97)"/>
-                <use href="#rpetal" transform="rotate(243) scale(0.88 1.04)"/>
-                <use href="#rpetal" transform="rotate(304) scale(0.88 1.0)"/>
-              </g>
-              <g fill="#332005" opacity="0.34">
-                <use href="#rpetal" transform="translate(0 7) rotate(33) scale(0.9 0.72)"/>
-                <use href="#rpetal" transform="translate(0 7) rotate(102) scale(0.9 0.74)"/>
-                <use href="#rpetal" transform="translate(0 7) rotate(171) scale(0.9 0.72)"/>
-                <use href="#rpetal" transform="translate(0 7) rotate(240) scale(0.9 0.74)"/>
-                <use href="#rpetal" transform="translate(0 7) rotate(309) scale(0.9 0.72)"/>
-              </g>
-              <g fill="url(#rgMid)" stroke="#5a3709" stroke-width="2" stroke-linejoin="round">
-                <use href="#rpetal" transform="rotate(33) scale(0.9 0.72)"/>
-                <use href="#rpetal" transform="rotate(102) scale(0.9 0.74)"/>
-                <use href="#rpetal" transform="rotate(171) scale(0.9 0.72)"/>
-                <use href="#rpetal" transform="rotate(240) scale(0.9 0.74)"/>
-                <use href="#rpetal" transform="rotate(309) scale(0.9 0.72)"/>
-              </g>
-              <g fill="#2a1a04" opacity="0.36">
-                <use href="#rpetal" transform="translate(0 6) rotate(68) scale(0.92 0.5)"/>
-                <use href="#rpetal" transform="translate(0 6) rotate(148) scale(0.92 0.52)"/>
-                <use href="#rpetal" transform="translate(0 6) rotate(218) scale(0.92 0.5)"/>
-                <use href="#rpetal" transform="translate(0 6) rotate(298) scale(0.92 0.52)"/>
-              </g>
-              <g fill="url(#rgInner)" stroke="#5a3709" stroke-width="2" stroke-linejoin="round">
-                <use href="#rpetal" transform="rotate(68) scale(0.92 0.5)"/>
-                <use href="#rpetal" transform="rotate(148) scale(0.92 0.52)"/>
-                <use href="#rpetal" transform="rotate(218) scale(0.92 0.5)"/>
-                <use href="#rpetal" transform="rotate(298) scale(0.92 0.52)"/>
-              </g>
-              <g transform="translate(0 6)">
-                <g fill="url(#rgMid)" stroke="#4a2d06" stroke-width="2" stroke-linejoin="round">
-                  <use href="#rcup"/>
-                  <use href="#rcup" transform="rotate(120)"/>
-                  <use href="#rcup" transform="rotate(240)"/>
-                </g>
-                <g fill="url(#rgInner)" stroke="#4a2d06" stroke-width="2" stroke-linejoin="round">
-                  <use href="#rcup" transform="rotate(60) scale(0.62)"/>
-                  <use href="#rcup" transform="rotate(180) scale(0.62)"/>
-                  <use href="#rcup" transform="rotate(300) scale(0.62)"/>
-                </g>
-                <circle r="10" fill="url(#rgInner)" stroke="#6b420d" stroke-width="2"/>
-                <path d="M0 0 c -5 0 -8 4 -8 8 c 0 6 5 10 11 10 c 8 0 14 -7 14 -16 c 0 -11 -9 -19 -20 -19" fill="none" stroke="#6b420d" stroke-width="3" stroke-linecap="round" opacity=".9"/>
-                <circle cx="-3" cy="-4" r="3" fill="#fffbe8" opacity=".9" filter="url(#rsoft)"/>
-              </g>
-            </g>
-            <ellipse cx="300" cy="228" rx="195" ry="182" fill="url(#rrim)"/>
-            <g filter="url(#rsoft)" fill="#fffbe8">
-              <ellipse cx="238" cy="126" rx="16" ry="7" opacity="0.55" transform="rotate(-32 238 126)"/>
-              <ellipse cx="358" cy="118" rx="13" ry="6" opacity="0.5" transform="rotate(28 358 118)"/>
-              <ellipse cx="300" cy="72" rx="10" ry="5" opacity="0.45" transform="rotate(-4 300 72)"/>
-            </g>
-            <g clip-path="url(#rbloomClip)">
-              <g transform="rotate(18 300 228)">
-                <rect class="sheenRect" x="244" y="10" width="112" height="440" fill="url(#rsheen)"/>
-              </g>
-            </g>
-          </g>
-        </svg>
-        </div>
-        <div class="rose-caption">金蔷薇</div>
-        <div class="rose-sub">从生活的金粉里，铸出一朵蔷薇</div>
-      </div>
-
-      <!-- 底部：胶囊采集框（吸底常驻） -->
-      <div class="dock" id="captureDock">
-        <div class="card capcard" id="captureCard">
+    <div class="card capcard" id="captureCard">
       <div class="smartbox" id="smartBox">
-        <div class="capline">
-          <button type="button" class="icon uploadpick" id="uploadPick" aria-label="添加文件或录音" title="添加文件或录音">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+        <textarea id="capText" rows="1" placeholder="粘贴链接、文字，或添加文件……" aria-label="采集内容"></textarea>
+        <div class="chiprow" id="urlChips" hidden></div>
+        <div class="chiprow" id="fileChips" hidden></div>
+        <div class="chiprow" id="audioChips" hidden></div>
+        <div class="smartbox-foot">
+          <button type="button" id="uploadPick" aria-label="添加文件或录音" title="添加文件或录音">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                  stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
               <polyline points="17 8 12 3 7 8"/>
               <line x1="12" y1="3" x2="12" y2="15"/>
             </svg>
+            上传文件
           </button>
-          <textarea id="capText" rows="1" placeholder="粘贴链接，或写下想法……" aria-label="采集内容"></textarea>
-          <button class="capsubmit" id="capSubmit" aria-label="提交" title="提交">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                 stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <line x1="12" y1="19" x2="12" y2="5"/>
-              <polyline points="5 12 12 5 19 12"/>
-            </svg>
-          </button>
-        </div>
-        <div class="capmeta">
           <span class="small" id="capAudioState"></span>
           <span class="spacer"></span>
           <span class="small num" id="capProgress"></span>
+          <button class="primary capsubmit" id="capSubmit">提交</button>
+          <input id="capFiles" type="file" multiple hidden>
         </div>
-        <div class="chiprow" id="urlChips" hidden></div>
-        <div class="chiprow" id="fileChips" hidden></div>
-        <div class="chiprow" id="audioChips" hidden></div>
-        <input id="capFiles" type="file" multiple hidden>
       </div>
       <!-- 上下文选项：识别到相关内容才出现（docs/17 §4.3） -->
       <div class="ctxopts" id="ctxOpts" hidden>
@@ -273,11 +83,42 @@
       </div>
       <!-- 歧义说明：只在系统检测到多内容时出现（docs/17 §4.4） -->
       <p class="help multiplenote" id="multipleNote" hidden></p>
-        </div>
-      </div>
     </div>
 
-    <!-- ============ 详情（二级视图） ============ -->
+    <div class="listsection" id="listWrap">
+      <div class="listtoolbar">
+        <span class="spacer"></span>
+        <button class="icon ghost" id="searchToggle" aria-label="搜索" title="搜索">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>
+          </svg>
+        </button>
+      </div>
+      <div class="searchrow" id="searchRow" hidden>
+        <input class="search" id="searchBox" placeholder="搜索标题、链接或来源…" aria-label="搜索条目">
+      </div>
+      <div id="groupAttention" class="itemgroup" hidden>
+        <h3 class="grouptitle tone-attention">需要你处理</h3>
+        <ul class="items" data-group="attention"></ul>
+      </div>
+      <div id="groupWorking" class="itemgroup" hidden>
+        <h3 class="grouptitle tone-working">正在处理</h3>
+        <ul class="items" data-group="working"></ul>
+      </div>
+      <div id="groupPublished" class="itemgroup" hidden>
+        <h3 class="grouptitle tone-published">最近完成</h3>
+        <ul class="items" data-group="published"></ul>
+      </div>
+      <div id="groupSearch" class="itemgroup" hidden>
+        <h3 class="grouptitle">搜索结果 <span class="small num" id="searchCount"></span></h3>
+        <ul class="items" data-group="search"></ul>
+      </div>
+      <div class="empty" id="emptyState" hidden>
+        <div class="empty-title">收件箱还是空的</div>
+        <p class="muted" style="margin:0">粘贴一条你刚看到的文章或视频链接。</p>
+      </div>
+    </div>
 
     <!-- ============ 详情（二级视图） ============ -->
     <div class="detail" id="detailView" hidden>

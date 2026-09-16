@@ -171,46 +171,6 @@ let submitting = false;
 let onSubmitted = null;
 export function setSubmittedHandler(fn) { onSubmitted = fn; }
 
-// —— 金蔷薇回馈：金粒从提交钮飞向花冠，花冠播一次摇曳+流光（平时页面完全静止） ——
-let rosePlayTimer = null;
-function roseCelebrate() {
-  const wrap = document.querySelector(".rose-wrap");
-  const rose = document.querySelector("svg.rose");
-  if (!wrap || !rose || wrap.offsetParent === null) return;
-  const reduce = window.matchMedia
-    && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  if (!reduce) {
-    const tr = rose.getBoundingClientRect();
-    const fr = $("capSubmit").getBoundingClientRect();
-    const fx = fr.left + fr.width / 2, fy = fr.top + fr.height / 2;
-    const tx = tr.left + tr.width / 2, ty = tr.top + tr.height * 0.5;
-    const colors = ["#ffd98e", "#f4ca72", "#e2b04a", "#fff3c9"];
-    for (let i = 0; i < 22; i++) {
-      const p = document.createElement("i");
-      p.className = "gold-spark";
-      const s = (4 + Math.random() * 5).toFixed(1);
-      p.style.cssText = "width:" + s + "px;height:" + s + "px;background:" +
-        colors[i % colors.length] + ";left:" + fx + "px;top:" + fy + "px";
-      document.body.appendChild(p);
-      const dx = (tx - fx) * (0.7 + Math.random() * 0.55) + (Math.random() - 0.5) * tr.width * 0.5;
-      const dy = (ty - fy) * (0.7 + Math.random() * 0.55) + (Math.random() - 0.5) * tr.height * 0.16;
-      p.animate([
-        { transform: "translate(0,0) scale(1)", opacity: 0 },
-        { opacity: 1, offset: 0.16 },
-        { transform: "translate(" + dx * 0.55 + "px," + dy * 0.5 + "px) scale(.95)", opacity: 1, offset: 0.62 },
-        { transform: "translate(" + dx + "px," + dy + "px) scale(.35)", opacity: 0 },
-      ], { duration: 900 + Math.random() * 600, delay: i * 32,
-           easing: "cubic-bezier(.3,.6,.3,1)", fill: "forwards" })
-        .addEventListener("finish", () => p.remove());
-    }
-  }
-  rose.classList.remove("play");
-  void rose.getBoundingClientRect();  // 强制重排，连续提交也能重播
-  rose.classList.add("play");
-  clearTimeout(rosePlayTimer);
-  rosePlayTimer = setTimeout(() => rose.classList.remove("play"), 2200);
-}
-
 export async function submitCapture() {
   if (submitting) return;
   const urls = extractUrls($("capText").value);
@@ -224,9 +184,7 @@ export async function submitCapture() {
   submitting = true;
   const btn = $("capSubmit");
   btn.disabled = true;
-  btn.classList.add("busy");
-  btn.setAttribute("aria-label", "提交中");
-  roseCelebrate();
+  btn.textContent = "提交中…";
   const progress = $("capProgress");
   try {
     // 拆分规则（§4.4）：每个 URL 独立条目；每个录音独立条目；
@@ -301,8 +259,7 @@ export async function submitCapture() {
     showErr(e);
   }
   btn.disabled = false;
-  btn.classList.remove("busy");
-  btn.setAttribute("aria-label", "提交");
+  btn.textContent = "提交";
 }
 
 export function initCapture({ onSubmit }) {

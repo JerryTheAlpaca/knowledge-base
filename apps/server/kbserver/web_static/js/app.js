@@ -4,8 +4,8 @@
 // 设置走浏览器路由（?view=settings）进入，不与首页争夺导航层级。
 
 import { $, api, setUnauthorizedHandler, closeModal } from "./api.js";
-import { initCapture, submitCapture, restoreDraft, saveDrafts, clearDraft } from "./capture.js";
-import { initItemList, refreshItems, scheduleRefresh, openDrawer } from "./item-list.js";
+import { initCapture, submitCapture, restoreDraft, saveDrafts, clearDraft, setSubmittedHandler } from "./capture.js";
+import { initItemList, refreshItems, scheduleRefresh } from "./item-list.js";
 import { initDetail, openDetail, closeDetail, currentDetailId, isDetailBusy } from "./item-detail.js";
 import { initOnboarding, maybeShowOnboarding, reopenOnboarding } from "./onboarding.js";
 import { initSettings, showSettings, hideSettings } from "./settings.js";
@@ -30,9 +30,6 @@ function showApp(me) {
 }
 
 // ---------- 视图路由：/inbox、/inbox?view=settings、/inbox?item=xx ----------
-// 首次加载若来自浏览器会话恢复/历史重开（back_forward），忽略遗留的 ?item=：
-// 重新打开网站应停在金蔷薇主页；刷新/书签深链接仍保持详情。
-let routeFirstLoad = true;
 function route() {
   closeModal(null);  // 换视图时关闭遗留弹窗（确认/记录/补充）
   const params = new URLSearchParams(location.search);
@@ -44,13 +41,6 @@ function route() {
   hideSettings();
   $("homeView").hidden = false;
   const item = params.get("item");
-  const nav = performance.getEntriesByType("navigation")[0];
-  const restored = routeFirstLoad && nav && nav.type === "back_forward";
-  routeFirstLoad = false;
-  if (item && restored) {
-    try { history.replaceState({}, "", "/inbox"); } catch (e) { /* 忽略 */ }
-    return;
-  }
   if (item && item !== currentDetailId()) openDetail(item, { push: false });
   else if (!item && currentDetailId()) closeDetail();
 }
@@ -129,14 +119,17 @@ setUnauthorizedHandler(() => {
   showLogin();
 });
 
+setSubmittedHandler(() => {
+  refreshItems();
+});
+
 scheduleRefresh(() => isDetailBusy());
 
 window.addEventListener("popstate", route);
 
 (async function boot() {
   wireTopbar();
-  // 提交成功后：刷新条目并拉开抽屉，看到新条目进入处理队列
-  initCapture({ onSubmit: () => { refreshItems(); openDrawer(); } });
+  initCapture({ onSubmit: refreshItems });
   initItemList();
   initDetail();
   initOnboarding();
