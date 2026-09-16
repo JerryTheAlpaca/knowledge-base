@@ -30,6 +30,9 @@ function showApp(me) {
 }
 
 // ---------- 视图路由：/inbox、/inbox?view=settings、/inbox?item=xx ----------
+// 首次加载若来自浏览器会话恢复/历史重开（back_forward），忽略遗留的 ?item=：
+// 重新打开网站应停在金蔷薇主页；刷新/书签深链接仍保持详情。
+let routeFirstLoad = true;
 function route() {
   closeModal(null);  // 换视图时关闭遗留弹窗（确认/记录/补充）
   const params = new URLSearchParams(location.search);
@@ -41,6 +44,13 @@ function route() {
   hideSettings();
   $("homeView").hidden = false;
   const item = params.get("item");
+  const nav = performance.getEntriesByType("navigation")[0];
+  const restored = routeFirstLoad && nav && nav.type === "back_forward";
+  routeFirstLoad = false;
+  if (item && restored) {
+    try { history.replaceState({}, "", "/inbox"); } catch (e) { /* 忽略 */ }
+    return;
+  }
   if (item && item !== currentDetailId()) openDetail(item, { push: false });
   else if (!item && currentDetailId()) closeDetail();
 }
