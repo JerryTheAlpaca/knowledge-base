@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>金蔷薇</title>
+<style>
+  :root {
+    --gold: #e0aa3e;
+    --gold-bright: #f6cf62;
+    --ink: #f3e6c4;
+    --ink-dim: rgba(238, 203, 128, .52);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { background: #0a0705; }
+  html, body { height: 100%; }
+  body {
+    font-family: "Songti SC", "Noto Serif SC", Georgia, serif;
+    background:
+      radial-gradient(1100px 760px at 50% 34%, #241a09 0%, #150f07 46%, #0a0705 100%);
+    color: var(--ink);
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+  .stage { position: relative; height: 100vh; height: 100dvh; display: flex; flex-direction: column; align-items: center; }
+
+  .rose-wrap {
+    margin-top: max(11dvh, 76px);
+    width: clamp(300px, 46dvh, 460px);
+    animation: roseIn 1.4s cubic-bezier(.22, .8, .3, 1) both;
+  }
+  .rose-wrap img { display: block; width: 100%; height: auto; filter: drop-shadow(0 22px 44px rgba(0, 0, 0, .5)); }
+  .rose-wrap.pulse { animation: rosePulse .6s ease; }
+  @keyframes roseIn { from { opacity: 0; transform: translateY(26px) scale(.96); } to { opacity: 1; transform: none; } }
+  @keyframes rosePulse { 35% { transform: scale(1.035); } }
+
+  .spacer { flex: 1; }
+
+  .composer {
+    margin-bottom: max(6dvh, 44px);
+    width: min(640px, calc(100vw - 44px));
+    height: 58px;
+    display: flex; align-items: center; gap: 6px;
+    padding: 0 10px 0 18px;
+    border-radius: 999px;
+    background: linear-gradient(180deg, rgba(44, 33, 15, .66), rgba(18, 13, 7, .72));
+    -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px);
+    border: 1px solid rgba(214, 166, 70, .35);
+    box-shadow: 0 14px 44px rgba(0, 0, 0, .5), 0 0 30px rgba(224, 170, 62, .08), inset 0 1px 0 rgba(255, 232, 170, .09);
+    transition: height .28s cubic-bezier(.3, .9, .3, 1), border-color .28s, box-shadow .28s;
+    animation: riseIn 1s .25s cubic-bezier(.22, .8, .3, 1) both;
+  }
+  @keyframes riseIn { from { opacity: 0; transform: translateY(18px); } to { opacity: 1; transform: none; } }
+  .composer:focus-within {
+    height: 68px; border-radius: 34px;
+    border-color: rgba(244, 199, 102, .8);
+    box-shadow: 0 18px 54px rgba(0, 0, 0, .55), 0 0 44px rgba(236, 182, 74, .22), inset 0 1px 0 rgba(255, 232, 170, .12);
+  }
+  .composer input {
+    flex: 1; min-width: 0;
+    background: none; border: none; outline: none;
+    color: var(--ink); caret-color: var(--gold);
+    font: inherit; font-size: 16px; letter-spacing: .02em;
+  }
+  .composer input::placeholder { color: var(--ink-dim); }
+
+  .icon-btn {
+    flex: 0 0 auto; width: 40px; height: 40px; border-radius: 999px;
+    display: grid; place-items: center; cursor: pointer;
+    background: none; border: none; color: var(--gold-bright);
+    transition: background .2s, color .2s, transform .2s, border-color .2s;
+  }
+  .icon-btn:hover { color: #ffe49a; transform: translateY(-1px); }
+  .icon-btn.send { border: 1px solid rgba(230, 180, 80, .5); }
+  .icon-btn.send:hover { background: linear-gradient(180deg, #f6cf62, #dda032); color: #241703; border-color: transparent; }
+
+  .composer.shake { animation: shake .4s; }
+  @keyframes shake { 20%, 60% { transform: translateX(-7px); } 40%, 80% { transform: translateX(7px); } }
+
+  .dust {
+    position: fixed; width: 5px; height: 5px; border-radius: 50%; pointer-events: none;
+    background: radial-gradient(circle, #ffe9a8, #e0aa3e 60%, transparent 70%);
+    animation: dustUp 1s ease-out forwards;
+  }
+  @keyframes dustUp { to { transform: translateY(-140px) scale(.4); opacity: 0; } }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: .01s !important; animation-iteration-count: 1 !important; transition-duration: .01s !important; }
+  }
+</style>
+</head>
+<body>
+  <main class="stage">
+    <div class="rose-wrap" id="rose"><img src="./golden-rose.svg" alt="金蔷薇"></div>
+    <div class="spacer"></div>
+    <form class="composer" id="composer">
+      <button type="button" class="icon-btn" aria-label="上传文件" title="上传文件">
+        <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+      </button>
+      <input id="input" type="text" placeholder="粘贴链接，或写下此刻的想法" autocomplete="off" spellcheck="false">
+      <button type="submit" class="icon-btn send" aria-label="发送" title="发送">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
+      </button>
+    </form>
+  </main>
+<script>
+  const composer = document.getElementById('composer');
+  const input = document.getElementById('input');
+  const rose = document.getElementById('rose');
+
+  composer.addEventListener('submit', e => {
+    e.preventDefault();
+    if (!input.value.trim()) {
+      composer.classList.remove('shake'); void composer.offsetWidth; composer.classList.add('shake');
+      input.focus();
+      return;
+    }
+    // 金尘升腾 + 玫瑰回应
+    const rect = composer.getBoundingClientRect();
+    for (let i = 0; i < 10; i++) {
+      const d = document.createElement('span');
+      d.className = 'dust';
+      d.style.left = (rect.left + 34 + Math.random() * (rect.width - 68)) + 'px';
+      d.style.top = (rect.top - 4) + 'px';
+      d.style.animationDelay = (Math.random() * .18) + 's';
+      document.body.appendChild(d);
+      setTimeout(() => d.remove(), 1300);
+    }
+    rose.classList.remove('pulse'); void rose.offsetWidth; rose.classList.add('pulse');
+    input.value = '';
+  });
+</script>
+</body>
+</html>

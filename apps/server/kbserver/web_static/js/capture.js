@@ -184,7 +184,8 @@ export async function submitCapture() {
   submitting = true;
   const btn = $("capSubmit");
   btn.disabled = true;
-  btn.textContent = "提交中…";
+  btn.classList.add("busy");
+  btn.setAttribute("aria-label", "提交中");
   const progress = $("capProgress");
   try {
     // 拆分规则（§4.4）：每个 URL 独立条目；每个录音独立条目；
@@ -259,7 +260,8 @@ export async function submitCapture() {
     showErr(e);
   }
   btn.disabled = false;
-  btn.textContent = "提交";
+  btn.classList.remove("busy");
+  btn.setAttribute("aria-label", "提交");
 }
 
 export function initCapture({ onSubmit }) {

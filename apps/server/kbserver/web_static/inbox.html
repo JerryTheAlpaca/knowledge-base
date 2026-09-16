@@ -52,27 +52,164 @@
     <div id="onboardingHost" hidden></div>
 
     <div class="card capcard" id="captureCard">
+      <div class="rose-wrap" aria-hidden="true">
+        <svg class="rose" viewBox="30 0 540 460" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <radialGradient id="rglow" cx="50%" cy="50%" r="50%">
+              <stop offset="0%" stop-color="#ffd873" stop-opacity="0.34"/>
+              <stop offset="55%" stop-color="#e8a93c" stop-opacity="0.10"/>
+              <stop offset="100%" stop-color="#e8a93c" stop-opacity="0"/>
+            </radialGradient>
+            <linearGradient id="rgBack" x1="0" y1="1" x2="0" y2="0">
+              <stop offset="0%" stop-color="#4a2c07"/>
+              <stop offset="100%" stop-color="#8a5c12"/>
+            </linearGradient>
+            <linearGradient id="rgOuter" x1="0" y1="1" x2="0" y2="0">
+              <stop offset="0%" stop-color="#7a4a0c"/>
+              <stop offset="45%" stop-color="#c8891b"/>
+              <stop offset="100%" stop-color="#edb940"/>
+            </linearGradient>
+            <linearGradient id="rgMid" x1="0" y1="1" x2="0" y2="0">
+              <stop offset="0%" stop-color="#8f5c12"/>
+              <stop offset="50%" stop-color="#d9a337"/>
+              <stop offset="100%" stop-color="#ffd976"/>
+            </linearGradient>
+            <linearGradient id="rgInner" x1="0" y1="1" x2="0" y2="0">
+              <stop offset="0%" stop-color="#a06a15"/>
+              <stop offset="55%" stop-color="#f0c253"/>
+              <stop offset="100%" stop-color="#ffedaa"/>
+            </linearGradient>
+            <linearGradient id="rsheen" x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0%" stop-color="#ffffff" stop-opacity="0"/>
+              <stop offset="42%" stop-color="#fff8dc" stop-opacity="0.06"/>
+              <stop offset="50%" stop-color="#fffdf2" stop-opacity="0.42"/>
+              <stop offset="58%" stop-color="#fff8dc" stop-opacity="0.06"/>
+              <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
+            </linearGradient>
+            <radialGradient id="rrim" cx="50%" cy="46%" r="50%">
+              <stop offset="0%" stop-color="#2f1c04" stop-opacity="0"/>
+              <stop offset="76%" stop-color="#2f1c04" stop-opacity="0"/>
+              <stop offset="100%" stop-color="#2f1c04" stop-opacity="0.38"/>
+            </radialGradient>
+            <path id="rpetal" d="M0 0 C -68 -26 -90 -96 -62 -144 C -50 -170 -30 -184 -13 -182 Q 0 -174 13 -182 C 30 -184 50 -170 62 -144 C 90 -96 68 -26 0 0 Z" vector-effect="non-scaling-stroke"/>
+            <path id="rcup" d="M-24 -6 C -28 -22 -16 -34 0 -34 C 16 -34 28 -22 24 -6 C 16 -18 8 -23 0 -23 C -8 -23 -16 -18 -24 -6 Z" vector-effect="non-scaling-stroke"/>
+            <path id="rstar" d="M0 -7 L1.6 -1.6 L7 0 L1.6 1.6 L0 7 L-1.6 1.6 L-7 0 L-1.6 -1.6 Z"/>
+            <path id="rstar2" d="M0 -4.6 L1.1 -1.1 L4.6 0 L1.1 1.1 L0 4.6 L-1.1 1.1 L-4.6 0 L-1.1 -1.1 Z"/>
+            <clipPath id="rbloomClip"><circle cx="300" cy="228" r="186"/></clipPath>
+            <filter id="rsoft" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="2.2"/></filter>
+          </defs>
+          <ellipse class="glowPulse" cx="300" cy="228" rx="268" ry="222" fill="url(#rglow)"/>
+          <g class="plant">
+            <g transform="translate(300 228) scale(1 0.94)">
+              <g fill="url(#rgBack)" stroke="#3a2306" stroke-width="2" stroke-linejoin="round" opacity="0.97">
+                <use href="#rpetal" transform="rotate(15) scale(0.92 1.08)"/>
+                <use href="#rpetal" transform="rotate(75) scale(0.92 1.05)"/>
+                <use href="#rpetal" transform="rotate(135) scale(0.92 1.1)"/>
+                <use href="#rpetal" transform="rotate(195) scale(0.92 1.06)"/>
+                <use href="#rpetal" transform="rotate(255) scale(0.92 1.09)"/>
+                <use href="#rpetal" transform="rotate(315) scale(0.92 1.05)"/>
+              </g>
+              <g fill="url(#rgOuter)" stroke="#4a2d06" stroke-width="2" stroke-linejoin="round">
+                <use href="#rpetal" transform="rotate(4) scale(0.88 1.05)"/>
+                <use href="#rpetal" transform="rotate(62) scale(0.88 0.98)"/>
+                <use href="#rpetal" transform="rotate(124) scale(0.88 1.08)"/>
+                <use href="#rpetal" transform="rotate(181) scale(0.88 0.97)"/>
+                <use href="#rpetal" transform="rotate(243) scale(0.88 1.04)"/>
+                <use href="#rpetal" transform="rotate(304) scale(0.88 1.0)"/>
+              </g>
+              <g fill="#332005" opacity="0.34">
+                <use href="#rpetal" transform="translate(0 7) rotate(33) scale(0.9 0.72)"/>
+                <use href="#rpetal" transform="translate(0 7) rotate(102) scale(0.9 0.74)"/>
+                <use href="#rpetal" transform="translate(0 7) rotate(171) scale(0.9 0.72)"/>
+                <use href="#rpetal" transform="translate(0 7) rotate(240) scale(0.9 0.74)"/>
+                <use href="#rpetal" transform="translate(0 7) rotate(309) scale(0.9 0.72)"/>
+              </g>
+              <g fill="url(#rgMid)" stroke="#5a3709" stroke-width="2" stroke-linejoin="round">
+                <use href="#rpetal" transform="rotate(33) scale(0.9 0.72)"/>
+                <use href="#rpetal" transform="rotate(102) scale(0.9 0.74)"/>
+                <use href="#rpetal" transform="rotate(171) scale(0.9 0.72)"/>
+                <use href="#rpetal" transform="rotate(240) scale(0.9 0.74)"/>
+                <use href="#rpetal" transform="rotate(309) scale(0.9 0.72)"/>
+              </g>
+              <g fill="#2a1a04" opacity="0.36">
+                <use href="#rpetal" transform="translate(0 6) rotate(68) scale(0.92 0.5)"/>
+                <use href="#rpetal" transform="translate(0 6) rotate(148) scale(0.92 0.52)"/>
+                <use href="#rpetal" transform="translate(0 6) rotate(218) scale(0.92 0.5)"/>
+                <use href="#rpetal" transform="translate(0 6) rotate(298) scale(0.92 0.52)"/>
+              </g>
+              <g fill="url(#rgInner)" stroke="#5a3709" stroke-width="2" stroke-linejoin="round">
+                <use href="#rpetal" transform="rotate(68) scale(0.92 0.5)"/>
+                <use href="#rpetal" transform="rotate(148) scale(0.92 0.52)"/>
+                <use href="#rpetal" transform="rotate(218) scale(0.92 0.5)"/>
+                <use href="#rpetal" transform="rotate(298) scale(0.92 0.52)"/>
+              </g>
+              <g transform="translate(0 6)">
+                <g fill="url(#rgMid)" stroke="#4a2d06" stroke-width="2" stroke-linejoin="round">
+                  <use href="#rcup"/>
+                  <use href="#rcup" transform="rotate(120)"/>
+                  <use href="#rcup" transform="rotate(240)"/>
+                </g>
+                <g fill="url(#rgInner)" stroke="#4a2d06" stroke-width="2" stroke-linejoin="round">
+                  <use href="#rcup" transform="rotate(60) scale(0.62)"/>
+                  <use href="#rcup" transform="rotate(180) scale(0.62)"/>
+                  <use href="#rcup" transform="rotate(300) scale(0.62)"/>
+                </g>
+                <circle r="10" fill="url(#rgInner)" stroke="#6b420d" stroke-width="2"/>
+                <path d="M0 0 c -5 0 -8 4 -8 8 c 0 6 5 10 11 10 c 8 0 14 -7 14 -16 c 0 -11 -9 -19 -20 -19" fill="none" stroke="#6b420d" stroke-width="3" stroke-linecap="round" opacity=".9"/>
+                <circle cx="-3" cy="-4" r="3" fill="#fffbe8" opacity=".9" filter="url(#rsoft)"/>
+              </g>
+            </g>
+            <ellipse cx="300" cy="228" rx="195" ry="182" fill="url(#rrim)"/>
+            <g filter="url(#rsoft)" fill="#fffbe8">
+              <ellipse cx="238" cy="126" rx="16" ry="7" opacity="0.55" transform="rotate(-32 238 126)"/>
+              <ellipse cx="358" cy="118" rx="13" ry="6" opacity="0.5" transform="rotate(28 358 118)"/>
+              <ellipse cx="300" cy="72" rx="10" ry="5" opacity="0.45" transform="rotate(-4 300 72)"/>
+            </g>
+            <g clip-path="url(#rbloomClip)">
+              <g transform="rotate(18 300 228)">
+                <rect class="sheenRect" x="244" y="10" width="112" height="440" fill="url(#rsheen)"/>
+              </g>
+            </g>
+          </g>
+          <g fill="#ffedb0">
+            <use class="spark" href="#rstar" x="146" y="94"/>
+            <use class="spark" href="#rstar2" x="456" y="124"/>
+            <use class="spark" href="#rstar" x="108" y="262"/>
+            <use class="spark" href="#rstar2" x="480" y="298"/>
+            <use class="spark" href="#rstar2" x="216" y="40"/>
+            <use class="spark" href="#rstar" x="400" y="44"/>
+          </g>
+        </svg>
+      </div>
+
       <div class="smartbox" id="smartBox">
-        <textarea id="capText" rows="1" placeholder="粘贴链接、文字，或添加文件……" aria-label="采集内容"></textarea>
-        <div class="chiprow" id="urlChips" hidden></div>
-        <div class="chiprow" id="fileChips" hidden></div>
-        <div class="chiprow" id="audioChips" hidden></div>
-        <div class="smartbox-foot">
-          <button type="button" id="uploadPick" aria-label="添加文件或录音" title="添加文件或录音">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+        <div class="capline">
+          <button type="button" class="icon uploadpick" id="uploadPick" aria-label="添加文件或录音" title="添加文件或录音">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                  stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
               <polyline points="17 8 12 3 7 8"/>
               <line x1="12" y1="3" x2="12" y2="15"/>
             </svg>
-            上传文件
           </button>
+          <textarea id="capText" rows="1" placeholder="粘贴链接，或写下想法……" aria-label="采集内容"></textarea>
+          <button class="capsubmit" id="capSubmit" aria-label="提交" title="提交">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <line x1="12" y1="19" x2="12" y2="5"/>
+              <polyline points="5 12 12 5 19 12"/>
+            </svg>
+          </button>
+        </div>
+        <div class="capmeta">
           <span class="small" id="capAudioState"></span>
           <span class="spacer"></span>
           <span class="small num" id="capProgress"></span>
-          <button class="primary capsubmit" id="capSubmit">提交</button>
-          <input id="capFiles" type="file" multiple hidden>
         </div>
+        <div class="chiprow" id="urlChips" hidden></div>
+        <div class="chiprow" id="fileChips" hidden></div>
+        <div class="chiprow" id="audioChips" hidden></div>
+        <input id="capFiles" type="file" multiple hidden>
       </div>
       <!-- 上下文选项：识别到相关内容才出现（docs/17 §4.3） -->
       <div class="ctxopts" id="ctxOpts" hidden>
