@@ -3,6 +3,10 @@
 - 邀请码：以当前管理员的中心会话 Cookie 代理中心认证站点（Ledger）的
   /api/invitations*；权限由本端 is_admin 与中心端双重校验，完整码只在
   创建响应中出现一次。
+- 用户列表：账号由 jerrythealpaca.cn 各子域名共用，先代理中心
+  GET /api/admin/users 把全部注册账号（含尚未登录过本站的）幂等映射进本地
+  users，再叠加本库的条目与凭据统计；中心不可达时退回只列本地用户，
+  响应以 central_available=false 标记。
 - ASR 总览：聚合本库 asr_runs，只输出计数、进度与累计分钟（不含文件名）。
 - 服务器状态：直读 /proc/stat、/proc/meminfo 与数据盘 statvfs（与
   workers/idle.py 同一方式，容器内读到的即宿主机整机指标），不加依赖。
@@ -16,6 +20,7 @@ from __future__ import annotations
 
 import os
 import time
+from datetime import datetime, timezone
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
@@ -25,7 +30,7 @@ from sqlalchemy.orm import Session
 
 from ..config import get_settings
 from ..db import get_db
-from ..api.deps import current_principal
+from ..api.deps import current_principal, ensure_local_user
 from ..domain import pipeline
 from ..domain.errors import ApiError
 from ..models import (
@@ -313,10 +318,44 @@ def _mask_subject(subject: str | None) -> str:
     return subject[:4] + "…" + subject[-2:]
 
 
+def _central_time(raw: object) -> datetime | None:
+    """中心返回的 ISO 注册时间 -> UTC aware datetime（本地 created_at 同为 aware）。"""
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    moment = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    return moment.astimezone(timezone.utc) if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
+
+
+def _sync_central_accounts(request: Request, db: Session) -> dict[str, datetime]:
+    """把中心站点全部注册账号映射进本地 users，返回 {中心 user.id: 注册时间}。
+
+    账号由所有子域名共用：只在中心注册、还没进过 KB 的账号也要在管理页出现，
+    否则管理员看不到他们，也无法提前代配模型 Key。
+    """
+    accounts = _proxy_central(request, "GET", "/api/admin/users").get("users") or []
+    registered_at: dict[str, datetime] = {}
+    for account in accounts:
+        subject = str(account.get("id") or "")
+        if not subject:
+            continue
+        ensure_local_user(db, subject, str(account.get("username") or ""))
+        moment = _central_time(account.get("createdAt"))
+        if moment is not None:
+            registered_at[subject] = moment
+    db.flush()
+    return registered_at
+
+
 @router.get("/users")
-def list_users(_admin=Depends(require_admin), db: Session = Depends(get_db)):
-    """本地用户列表：配置状态摘要与条目统计，不含任何密钥。"""
-    users = db.query(User).order_by(User.created_at).all()
+def list_users(request: Request, _admin=Depends(require_admin), db: Session = Depends(get_db)):
+    """全部注册账号（含只在中心注册、未登录过本站的）：配置状态摘要与条目统计，不含密钥。"""
+    try:
+        registered_at = _sync_central_accounts(request, db)
+        central_available = True
+    except ApiError:
+        # 中心不可达只影响「新注册还没进过 KB」的账号是否出现，不阻塞本地列表
+        registered_at, central_available = {}, False
     # 条目统计：一次分组查询带出每人的有效条目数与最近一条时间
     from sqlalchemy import func
 
@@ -327,7 +366,8 @@ def list_users(_admin=Depends(require_admin), db: Session = Depends(get_db)):
         .group_by(Item.user_id)
         .all()
     }
-    out = []
+    users = db.query(User).order_by(User.created_at).all()
+    rows: list[tuple[datetime, dict]] = []
     for u in users:
         llm = _primary_llm_profile(db, u.id)
         llm_cred = _active_cred(db, llm.id) if llm else None
@@ -340,12 +380,13 @@ def list_users(_admin=Depends(require_admin), db: Session = Depends(get_db)):
         bili_cred = _active_cred(db, bili.id) if bili else None
         bili_check = ((bili.meta_json or {}) if bili else {}).get("bilibili_last_check")
         item_count, last_item_at = item_stats.get(u.id, (0, None))
-        out.append({
+        created_at = registered_at.get(u.auth_subject or "") or u.created_at
+        rows.append((created_at, {
             "user_id": u.id,
             "name": u.name,
             "status": u.status,
             "auth_subject": _mask_subject(u.auth_subject),
-            "created_at": u.created_at.isoformat(),
+            "created_at": created_at.isoformat(),
             "item_count": item_count,
             "last_item_at": last_item_at.isoformat() if last_item_at else None,
             "llm": {
@@ -362,8 +403,11 @@ def list_users(_admin=Depends(require_admin), db: Session = Depends(get_db)):
                 "verification": (bili_check or {}).get("status") if bili_cred else None,
                 "updated_at": bili_cred.created_at.isoformat() if bili_cred else None,
             },
-        })
-    return {"users": out}
+        }))
+    return {
+        "users": [row for _, row in sorted(rows, key=lambda item: item[0])],
+        "central_available": central_available,
+    }
 
 
 @router.get("/users/{user_id}/credentials")

@@ -2573,7 +2573,7 @@
           "admin"
         ],
         "summary": "List Users",
-        "description": "本地用户列表：配置状态摘要与条目统计，不含任何密钥。",
+        "description": "全部注册账号（含只在中心注册、未登录过本站的）：配置状态摘要与条目统计，不含密钥。",
         "operationId": "list_users_v1_admin_users_get",
         "responses": {
           "200": {

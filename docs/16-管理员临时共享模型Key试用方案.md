@@ -70,7 +70,7 @@ v1 坚持「Key 永不离开服务器」，因此否决了「写入试用用户�
 
 | 方法与路径 | 作用 | 要点 |
 | --- | --- | --- |
-| `GET /v1/admin/users` | 用户列表 | 本地 user.id、name、auth_subject、status、是否已有 llm/bilibili 凭据、最近更新时间。**无密钥、无掩码。** |
+| `GET /v1/admin/users` | 用户列表 | 先代理中心 `GET /api/admin/users` 同步全部注册账号（含只注册、未登录过 KB 的），再叠加本库统计：user.id、name、auth_subject、status、是否已有 llm/bilibili 凭据、最近更新时间；`central_available` 标记本次中心列表是否可用。**无密钥、无掩码。** |
 | `GET /v1/admin/users/{user_id}/credentials` | 该用户凭据状态 | llm：configured、credential_version、endpoint 主机、model、updated_at；bilibili：configured、verification、last_check（脱敏）。复用用户侧 `_profile_out` / `_out` 的展示逻辑。 |
 | `PUT /v1/admin/users/{user_id}/llm-credential` | 新建或更新 LLM Key | body：`endpoint`、`model`、`capabilities?`、`secret`。见 §3.3.1。 |
 | `DELETE /v1/admin/users/{user_id}/llm-credential` | 撤销该用户 llm 凭据 | 撤销未 revoked 的 Credential；后续任务 `waiting_key`。 |

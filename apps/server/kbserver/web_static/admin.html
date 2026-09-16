@@ -345,8 +345,12 @@ async function loadUserList() {
   try {
     const r = await api("/v1/admin/users");
     const users = r.users || [];
-    if (!users.length) { host.innerHTML = '<div class="muted" style="padding:8px 0">还没有用户。</div>'; return; }
-    host.innerHTML = users.map((u) =>
+    // 中心不可达时，只注册还没进过本站的账号不会出现；说清楚而不是静默少人
+    const notice = r.central_available === false
+      ? '<div class="muted small" style="padding:0 0 6px">中心账号列表暂不可达，以下仅显示此前已同步的账户。</div>'
+      : "";
+    if (!users.length) { host.innerHTML = notice + '<div class="muted" style="padding:8px 0">还没有用户。</div>'; return; }
+    host.innerHTML = notice + users.map((u) =>
       '<div class="asruser">' +
       '<span style="font-weight:600">' + esc(u.name) + "</span>" +
       (u.status === "active"

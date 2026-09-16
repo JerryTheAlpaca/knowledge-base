@@ -1,6 +1,8 @@
 """管理员用户列表与删除账户。
 
-- 用户列表：带条目统计（item_count / last_item_at）。
+- 用户列表：带条目统计（item_count / last_item_at）；账号为各子域名共用，
+  只在中心注册、还没登录过 KB 的账号也要出现在列表里；中心不可达时退回
+  只列本地用户（central_available=false），不再静默少人。
 - 删除账户：先删中心账号（404 视为已删），再硬删本地全部数据；
   不能删当前登录账号。
 - 邀请码删除：以 DELETE 方法代理中心端点。
@@ -9,7 +11,7 @@ from __future__ import annotations
 
 from tests.conftest import auth
 
-from kbserver.models import Capture, Item
+from kbserver.models import Capture, Item, User
 
 AUTH_COOKIE = "test_session"
 
@@ -32,6 +34,11 @@ def _central(monkeypatch, role="admin"):
         return {"user": dict(state["user"]), "expiresAt": "2026-09-09T00:00:00Z"}, None
 
     monkeypatch.setattr("kbserver.security.central_auth.validate_central_session", fake_validate)
+    # 默认打桩中心代理，避免用例真的访问 auth.example.com；需要断言调用的用例再覆盖
+    monkeypatch.setattr(
+        "kbserver.api.routes_admin._proxy_central",
+        lambda request, method, path, json_body=None: {"users": [], "invitations": []},
+    )
     return state
 
 
@@ -80,6 +87,61 @@ def test_admin_users_list_item_stats(engine, monkeypatch, db, user_a, user_b):
     assert users["用户A"]["last_item_at"]
     assert users["用户B"]["item_count"] == 0
     assert users["用户B"]["last_item_at"] is None
+
+
+def test_admin_users_list_includes_central_only_accounts(engine, monkeypatch, db, user_a):
+    """只在中心注册、从未打开过 KB 的账号也要可见（账号由各子域名共用）。"""
+    _central(monkeypatch)
+    calls = []
+    central_accounts = [
+        {"id": "central-admin-1", "username": "管理员", "role": "admin", "createdAt": "2026-09-01T02:00:00.000Z"},
+        {"id": "central-test", "username": "test", "role": "user", "createdAt": "2026-09-15T16:30:00.000Z"},
+    ]
+
+    def fake_proxy(request, method, path, json_body=None):
+        calls.append((method, path))
+        return {"users": list(central_accounts)}
+
+    monkeypatch.setattr("kbserver.api.routes_admin._proxy_central", fake_proxy)
+    wc = _wc(engine)
+    _login(wc)
+
+    r = wc.get("/v1/admin/users")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["central_available"] is True
+    assert ("GET", "/api/admin/users") in calls
+    users = {u["name"]: u for u in body["users"]}
+    assert {"test", "用户A"} <= set(users)
+    assert users["test"]["item_count"] == 0
+    assert users["test"]["llm"]["configured"] is False
+    # 注册时间以中心为准（本地行是这次同步才建的），列表按注册时间升序
+    assert users["test"]["created_at"].startswith("2026-09-15T16:30:00")
+    assert [u["created_at"] for u in body["users"]] == sorted(u["created_at"] for u in body["users"])
+
+    # 再次打开列表复用同一 auth_subject 映射，不重复建号
+    assert wc.get("/v1/admin/users").status_code == 200
+    db.expire_all()
+    assert db.query(User).filter(User.auth_subject == "central-test").count() == 1
+
+
+def test_admin_users_list_survives_central_outage(engine, monkeypatch, db, user_a):
+    """中心不可达时列表不能整页失败，但要标记新账号可能缺失。"""
+    _central(monkeypatch)
+
+    def unreachable(request, method, path, json_body=None):
+        from kbserver.domain.errors import ApiError
+
+        raise ApiError("ADMIN_UNAVAILABLE", "中心服务不可达：ConnectError", status_code=503)
+
+    monkeypatch.setattr("kbserver.api.routes_admin._proxy_central", unreachable)
+    wc = _wc(engine)
+    _login(wc)
+
+    r = wc.get("/v1/admin/users")
+    assert r.status_code == 200, r.text
+    assert r.json()["central_available"] is False
+    assert {"用户A", "管理员"} <= {u["name"] for u in r.json()["users"]}
 
 
 def test_admin_delete_user_purges_local_and_central(engine, monkeypatch, session_factory, db, user_a):

@@ -37,6 +37,11 @@ def _central(monkeypatch, role="admin"):
         return {"user": dict(state["user"]), "expiresAt": "2026-09-09T00:00:00Z"}, None
 
     monkeypatch.setattr("kbserver.security.central_auth.validate_central_session", fake_validate)
+    # 用户列表会先代理中心同步账号：打桩成空列表，测试不依赖网络
+    monkeypatch.setattr(
+        "kbserver.api.routes_admin._proxy_central",
+        lambda request, method, path, json_body=None: {"users": [], "invitations": []},
+    )
     return state
 
 
