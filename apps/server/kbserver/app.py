@@ -6,8 +6,8 @@ from fastapi.responses import JSONResponse
 
 from .api import (routes_admin, routes_asr, routes_audio_uploads, routes_auth,
                   routes_bilibili, routes_captures, routes_devices, routes_health,
-                  routes_items, routes_onboarding, routes_profiles, routes_sync,
-                  routes_uploads, routes_web)
+                  routes_items, routes_onboarding, routes_platform_sessions,
+                  routes_profiles, routes_sync, routes_uploads, routes_web)
 from .api.deps import CSRF_COOKIE
 from .config import get_settings
 from .domain.errors import ApiError, status_for
@@ -76,6 +76,7 @@ def create_app() -> FastAPI:
     app.include_router(routes_devices.router)
     app.include_router(routes_profiles.router)
     app.include_router(routes_bilibili.router)
+    app.include_router(routes_platform_sessions.router)
     app.include_router(routes_asr.router)
     app.include_router(routes_onboarding.router)
     app.include_router(routes_admin.router)
@@ -87,7 +88,16 @@ def create_app() -> FastAPI:
 
     from .api.routes_web import WEB_STATIC_DIR
 
-    app.mount("/webstatic", StaticFiles(directory=WEB_STATIC_DIR), name="webstatic")
+    class RevalidateStaticFiles(StaticFiles):
+        """部署后浏览器立刻拿到新前端：强制 revalidate（未变走 304，开销极小）。
+        否则启发式缓存会拿旧 JS 配新 HTML，出现「按钮点了没反应」这类错位。"""
+
+        async def get_response(self, path: str, scope):
+            resp = await super().get_response(path, scope)
+            resp.headers["Cache-Control"] = "no-cache"
+            return resp
+
+    app.mount("/webstatic", RevalidateStaticFiles(directory=WEB_STATIC_DIR), name="webstatic")
     return app
 
 

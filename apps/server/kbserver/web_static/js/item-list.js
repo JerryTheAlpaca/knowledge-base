@@ -202,6 +202,7 @@ export function initItemList() {
   $("drawerHandle").addEventListener("pointerdown", (e) => {
     pressY = e.clientY; drawerDragging = false;
   });
+  $("drawerClose").addEventListener("click", () => closeDrawer());
   document.addEventListener("pointermove", (e) => {
     if (pressY === null || drawerDragging) return;
     if (e.clientY - pressY > 28) { drawerDragging = true; openDrawer(); }
