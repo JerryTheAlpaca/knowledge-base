@@ -137,7 +137,7 @@ label { display: block; font-size: var(--fs-small); color: var(--text-2); margin
                                      0 8px 30px rgba(226, 176, 74, .10); }
 .capline { display: flex; align-items: flex-end; gap: 6px; min-height: 50px; }
 .smartbox textarea { flex: 1; border: none; box-shadow: none; padding: 10px 4px;
-                     min-height: 44px; max-height: 220px; resize: none;
+                     min-height: 44px; max-height: 220px; resize: none; line-height: 24px;
                      background: transparent; color: var(--text); caret-color: var(--accent); }
 .smartbox textarea:focus { box-shadow: none; }
 .smartbox textarea::placeholder { color: #8a7554; }
