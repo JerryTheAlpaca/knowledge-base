@@ -324,34 +324,41 @@ async function biliRevoke() {
 }
 
 // ---------- 其他平台登录态（小红书/微信视频号/知乎，docs/18 §7.2） ----------
-// 枚举（verification）一律转成中文短语再进界面，不直接渲染机器码。
+// 与 B 站区块同构：状态块 + label + 输入框 + 按钮行；verification 枚举
+// 一律转成中文短语再进界面，不直接渲染机器码；明文永不回显。
 const PLAT_SESSIONS = [
   { platform: "xiaohongshu", label: "小红书",
-    hint: "登录小红书网页版后，从浏览器复制完整 Cookie 串粘贴到这里。多数分享链接无需登录也能直接读取；撞到登录墙时才用这份登录态重试。" },
+    usage: "撞到登录墙时用这份登录态重试",
+    hint: "登录小红书网页版后，从浏览器复制完整 Cookie 串粘贴到这里。多数分享链接无需登录也能直接读取。" },
   { platform: "wechat_channels", label: "微信视频号",
-    hint: "多数视频号分享链接无需登录即可读取说明文字；如遇登录墙，可粘贴电脑版 channels.weixin.qq.com 的 Cookie 作为兜底。" },
+    usage: "多数分享链接无需登录，这份是登录墙兜底",
+    hint: "如遇登录墙，登录电脑版 channels.weixin.qq.com 后从浏览器复制完整 Cookie 粘贴到这里。" },
   { platform: "zhihu", label: "知乎",
-    hint: "粘贴知乎网页版的完整 Cookie。当前知乎风控较严，登录态也可能受限；读取失败时会如实进入补充材料。" },
+    usage: "当前知乎风控较严，登录态也可能受限",
+    hint: "登录知乎网页版后，从浏览器复制完整 Cookie 串粘贴到这里。读取失败时会如实进入补充材料。" },
 ];
 
-function platStateBadge(st) {
+function platStateView(meta, st) {
   const configured = !!(st && st.configured);
   const ver = st ? st.verification : "unconfigured";
-  let ico = "…", cls = "st-info", text = "未配置";
+  let ico = "…", cls = "st-info", title = "未配置", desc = meta.hint;
   if (configured) {
-    text = "已配置" + (st.credential_version ? " · v" + st.credential_version : "");
+    title = "已配置" + (st.credential_version ? " · v" + st.credential_version : "");
+    ico = "✓"; cls = "st-ok";
+    desc = "撞到平台登录墙时会自动用这份登录态重试一次。";
     if (ver === "blocked" || ver === "invalid") {
-      ico = "!"; cls = "st-warn"; text += "（上次检测被平台拒绝）";
+      ico = "!"; cls = "st-warn"; title += "（上次检测被平台拒绝）";
+      desc = "平台拒绝了检测请求，登录态可能已失效——更新 Cookie 或稍后再检测。";
     } else if (ver === "network_error") {
-      ico = "!"; cls = "st-warn"; text += "（上次检测受网络影响）";
-    } else {
-      ico = "✓"; cls = "st-ok"; text += ver === "valid" ? "（检测通过）" : "（未检测）";
+      ico = "!"; cls = "st-warn"; title += "（上次检测受网络影响）";
+      desc = "登录态可能仍有效；稍后可再次检测。";
     }
+    if (st.updated_at) desc += " 更新于 " + fmtTime(st.updated_at) + "。";
   } else if (ver === "revoked") {
-    text = "已撤销，可重新配置";
+    title = "已撤销"; desc = "已回到匿名读取；可重新粘贴 Cookie 配置。";
   }
-  return '<span class="' + cls + '" style="display:inline-flex;padding:2px 10px;' +
-    'border-radius:999px;font-size:var(--fs-caption)">' + ico + " " + esc(text) + "</span>";
+  return '<div class="bili-state"><span class="bili-ico ' + cls + '">' + ico + "</span>" +
+    '<div class="bili-main"><div class="bili-title">' + esc(title) + '</div><div class="bili-desc">' + esc(desc) + "</div></div></div>";
 }
 
 function renderPlatSessions(states) {
@@ -360,24 +367,22 @@ function renderPlatSessions(states) {
   host.innerHTML = PLAT_SESSIONS.map((meta, i) => {
     const st = states[i];
     const configured = !!(st && st.configured);
-    return '<div class="platrow">' +
-      '<div class="platrow-head"><span class="platname">' + esc(meta.label) + "</span>" +
-        platStateBadge(st) + "</div>" +
-      '<div class="hint">' + esc(meta.hint) + "</div>" +
-      (configured && st.updated_at ? '<div class="hint">更新于 ' + fmtTime(st.updated_at) + "</div>" : "") +
-      '<div class="row">' +
-        '<input type="password" autocomplete="off" data-plat-secret="' + esc(meta.platform) + '" placeholder="粘贴完整 Cookie 串">' +
-        '<button class="primary small" data-plat-act="save" data-platform="' + esc(meta.platform) + '">保存</button>' +
+    return '<div class="platblock">' +
+      platStateView(meta, st) +
+      '<label for="platSecret-' + esc(meta.platform) + '">' + esc(meta.label + "登录信息（Cookie）——" + meta.usage) + "</label>" +
+      '<input id="platSecret-' + esc(meta.platform) + '" type="password" autocomplete="off" placeholder="粘贴完整 Cookie 串" data-plat-secret="' + esc(meta.platform) + '">' +
+      '<div class="row" style="margin-top:14px">' +
+        '<button class="primary" data-plat-act="save" data-platform="' + esc(meta.platform) + '">更新登录态</button>' +
         (configured
-          ? '<button class="small" data-plat-act="check" data-platform="' + esc(meta.platform) + '">检测</button>' +
-            '<button class="small danger" data-plat-act="revoke" data-platform="' + esc(meta.platform) + '">撤销</button>'
+          ? '<button data-plat-act="check" data-platform="' + esc(meta.platform) + '">检测登录态</button>' +
+            '<button class="danger" data-plat-act="revoke" data-platform="' + esc(meta.platform) + '">撤销</button>'
           : "") +
       "</div></div>";
   }).join("");
 }
 
 async function platSave(platform, label) {
-  const input = document.querySelector('[data-plat-secret="' + platform + '"]');
+  const input = $("platSecret-" + platform);
   const s = input ? input.value.trim() : "";
   if (!s) { toast("先粘贴 " + label + " 的 Cookie", { type: "error" }); return; }
   try {
