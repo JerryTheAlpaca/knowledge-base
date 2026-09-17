@@ -1,0 +1,152 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="120 80 360 360" class="rose" role="img" aria-labelledby="roseTitle roseDesc">
+  <title id="roseTitle">金蔷薇</title>
+  <desc id="roseDesc">一朵俯视的金色蔷薇，花瓣以低饱和香槟金和柔和棕金层层旋开。</desc>
+  <defs>
+    <radialGradient id="rglow" cx="50%" cy="50%" r="50%">
+      <stop offset="0" stop-color="#e5c289" stop-opacity=".18"/>
+      <stop offset=".55" stop-color="#c99c62" stop-opacity=".07"/>
+      <stop offset="1" stop-color="#a97942" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="goldOuterA" x1=".72" y1=".96" x2=".22" y2=".02">
+      <stop offset="0" stop-color="#765035"/>
+      <stop offset=".22" stop-color="#ad7848"/>
+      <stop offset=".5" stop-color="#d6ae78"/>
+      <stop offset=".77" stop-color="#f1d8aa"/>
+      <stop offset="1" stop-color="#c89559"/>
+    </linearGradient>
+    <linearGradient id="goldOuterB" x1=".18" y1=".94" x2=".78" y2=".04">
+      <stop offset="0" stop-color="#70492f"/>
+      <stop offset=".2" stop-color="#a66e3f"/>
+      <stop offset=".48" stop-color="#dfbc86"/>
+      <stop offset=".72" stop-color="#f5dfb8"/>
+      <stop offset="1" stop-color="#bd8650"/>
+    </linearGradient>
+    <linearGradient id="goldMidA" x1=".76" y1=".98" x2=".18" y2="0">
+      <stop offset="0" stop-color="#69432b"/>
+      <stop offset=".23" stop-color="#9e663a"/>
+      <stop offset=".52" stop-color="#d9b27c"/>
+      <stop offset=".78" stop-color="#f7e2ba"/>
+      <stop offset="1" stop-color="#bf8950"/>
+    </linearGradient>
+    <linearGradient id="goldMidB" x1=".16" y1=".95" x2=".84" y2=".08">
+      <stop offset="0" stop-color="#6d472e"/>
+      <stop offset=".25" stop-color="#a97242"/>
+      <stop offset=".5" stop-color="#e1bf8a"/>
+      <stop offset=".75" stop-color="#f3dbad"/>
+      <stop offset="1" stop-color="#b87f49"/>
+    </linearGradient>
+    <radialGradient id="goldInner" cx="36%" cy="22%" r="82%">
+      <stop offset="0" stop-color="#f8e4bd"/>
+      <stop offset=".27" stop-color="#d8ad73"/>
+      <stop offset=".58" stop-color="#9d6338"/>
+      <stop offset=".82" stop-color="#c79158"/>
+      <stop offset="1" stop-color="#66412b"/>
+    </radialGradient>
+    <linearGradient id="goldCenter" x1=".28" y1="0" x2=".7" y2="1">
+      <stop offset="0" stop-color="#f1d7aa"/>
+      <stop offset=".48" stop-color="#c59661"/>
+      <stop offset="1" stop-color="#825336"/>
+    </linearGradient>
+    <linearGradient id="rimLight" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#fff2d4" stop-opacity=".18"/>
+      <stop offset=".32" stop-color="#fff0cf" stop-opacity=".84"/>
+      <stop offset=".68" stop-color="#e9c995" stop-opacity=".62"/>
+      <stop offset="1" stop-color="#a06e40" stop-opacity=".12"/>
+    </linearGradient>
+    <linearGradient id="rsheen" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#fff" stop-opacity="0"/>
+      <stop offset=".42" stop-color="#fff4dd" stop-opacity=".02"/>
+      <stop offset=".5" stop-color="#fff8e8" stop-opacity=".3"/>
+      <stop offset=".58" stop-color="#fff4dd" stop-opacity=".02"/>
+      <stop offset="1" stop-color="#fff" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="rshadow" x="-30%" y="-30%" width="160%" height="170%">
+      <feDropShadow dx="0" dy="8" stdDeviation="8" flood-color="#2b190e" flood-opacity=".28"/>
+    </filter>
+    <clipPath id="rbloomClip"><circle cx="300" cy="260" r="232"/></clipPath>
+
+    <g id="outerPetalA">
+      <path d="M0 29 C-42 29-79 10-94-22 C-106-49-98-78-79-101 C-66-117-48-127-31-122 C-24-139-8-149 8-145 C20-142 28-132 31-120 C47-130 67-123 79-107 C96-84 96-51 82-23 C66 8 38 28 0 29Z" fill="url(#goldOuterA)" stroke="#8d6039" stroke-opacity=".62" stroke-width="1.5"/>
+      <path d="M-80-101 C-65-117-48-127-31-122 C-23-140-8-149 8-145 C20-142 28-132 31-120 C47-130 67-123 79-107" fill="none" stroke="url(#rimLight)" stroke-width="3" stroke-linecap="round"/>
+    </g>
+    <g id="outerPetalB">
+      <path d="M2 30 C-36 31-72 16-91-12 C-109-39-106-72-89-98 C-77-116-60-126-43-124 C-36-137-22-145-7-141 C4-138 11-130 15-119 C29-134 51-135 67-123 C88-107 97-76 88-47 C78-14 44 25 2 30Z" fill="url(#goldOuterB)" stroke="#8a5c37" stroke-opacity=".6" stroke-width="1.5"/>
+      <path d="M-89-98 C-77-116-60-126-43-124 C-35-138-22-145-7-141 C4-138 11-130 15-119 C29-134 51-135 67-123" fill="none" stroke="url(#rimLight)" stroke-width="3" stroke-linecap="round"/>
+    </g>
+    <g id="midPetalA">
+      <path d="M0 24 C-34 25-62 9-72-17 C-83-44-73-73-55-92 C-43-105-29-111-16-105 C-8-119 8-123 21-115 C30-109 35-100 35-90 C49-97 65-89 72-75 C84-51 77-23 60-3 C45 15 25 24 0 24Z" fill="url(#goldMidA)" stroke="#865735" stroke-opacity=".6" stroke-width="1.4"/>
+      <path d="M-55-92 C-43-105-29-111-16-105 C-8-119 8-123 21-115 C30-109 35-100 35-90 C49-97 65-89 72-75" fill="none" stroke="url(#rimLight)" stroke-width="2.7" stroke-linecap="round"/>
+    </g>
+    <g id="midPetalB">
+      <path d="M1 25 C-30 27-59 15-71-9 C-85-36-79-65-62-86 C-50-101-35-109-21-104 C-12-115 3-118 15-110 C23-105 28-97 29-88 C42-99 60-96 70-84 C85-65 85-38 72-16 C57 10 31 24 1 25Z" fill="url(#goldMidB)" stroke="#875936" stroke-opacity=".58" stroke-width="1.4"/>
+      <path d="M-62-86 C-50-101-35-109-21-104 C-12-115 3-118 15-110 C23-105 28-97 29-88 C42-99 60-96 70-84" fill="none" stroke="url(#rimLight)" stroke-width="2.7" stroke-linecap="round"/>
+    </g>
+    <g id="innerPetalA">
+      <path d="M0 19 C-24 20-45 8-51-13 C-59-36-48-58-31-70 C-20-78-9-80 1-74 C9-84 23-84 32-75 C38-69 40-62 38-54 C49-58 60-50 63-39 C68-20 56-1 40 10 C28 17 14 20 0 19Z" fill="url(#goldInner)" stroke="#7b4d30" stroke-opacity=".58" stroke-width="1.25"/>
+      <path d="M-31-70 C-20-78-9-80 1-74 C9-84 23-84 32-75 C38-69 40-62 38-54 C49-58 60-50 63-39" fill="none" stroke="url(#rimLight)" stroke-width="2.3" stroke-linecap="round"/>
+    </g>
+    <g id="innerPetalB">
+      <path d="M1 18 C-21 21-41 12-49-7 C-58-28-51-51-36-65 C-26-75-14-79-4-73 C4-81 16-82 25-75 C32-70 35-62 34-54 C44-60 57-55 62-45 C71-27 62-7 47 6 C34 17 17 19 1 18Z" fill="url(#goldMidB)" stroke="#7c4f31" stroke-opacity=".56" stroke-width="1.2"/>
+      <path d="M-36-65 C-26-75-14-79-4-73 C4-81 16-82 25-75 C32-70 35-62 34-54 C44-60 57-55 62-45" fill="none" stroke="url(#rimLight)" stroke-width="2.2" stroke-linecap="round"/>
+    </g>
+    <g id="centerPetal">
+      <path d="M0 7 C-9 8-15 2-15-7 C-15-17-9-26 0-30 C7-29 11-23 11-16 C17-20 24-17 25-10 C26-1 14 6 0 7Z" fill="url(#goldCenter)" stroke="#75482d" stroke-opacity=".46" stroke-width="1"/>
+      <path d="M-1-29 C6-29 11-23 11-16 C17-20 23-17 25-10" fill="none" stroke="url(#rimLight)" stroke-width="1.8" stroke-linecap="round"/>
+    </g>
+  </defs>
+
+  <style>
+    .sheenRect { transform: translateX(-700px); }
+    .play .plant { transform-box: view-box; transform-origin: 50% 50%; animation: swayOnce 2s ease-in-out 1 both; }
+    @keyframes swayOnce { 0% { transform: rotate(0); } 32% { transform: rotate(-1.5deg); } 68% { transform: rotate(1deg); } 100% { transform: rotate(0); } }
+    .play .sheenRect { animation: sheenOnce 1.5s ease-in-out .18s 1 both; }
+    @keyframes sheenOnce { from { transform: translateX(-700px); } to { transform: translateX(700px); } }
+    .play .glowPulse { transform-box: fill-box; transform-origin: center; animation: glowOnce 1.8s ease-in-out 1 both; }
+    @keyframes glowOnce { 0%, 100% { transform: scale(1); } 45% { transform: scale(1.045); } }
+    @media (prefers-reduced-motion: reduce) { * { animation: none !important; } }
+  </style>
+
+  <circle class="glowPulse" cx="300" cy="260" r="172" fill="url(#rglow)"/>
+  <g class="plant" filter="url(#rshadow)">
+    <g transform="translate(300 260)">
+      <g transform="scale(.96)">
+        <use href="#outerPetalA" transform="rotate(-5) scale(1.06 1.03)"/>
+        <use href="#outerPetalB" transform="rotate(34) scale(1.03 .96)"/>
+        <use href="#outerPetalA" transform="rotate(75) scale(.96 1.06)"/>
+        <use href="#outerPetalB" transform="rotate(116) scale(1.08 .98)"/>
+        <use href="#outerPetalA" transform="rotate(158) scale(.98 1.04)"/>
+        <use href="#outerPetalB" transform="rotate(199) scale(1.07 .94)"/>
+        <use href="#outerPetalA" transform="rotate(239) scale(.95 1.08)"/>
+        <use href="#outerPetalB" transform="rotate(281) scale(1.05 .97)"/>
+        <use href="#outerPetalA" transform="rotate(322) scale(1.01 1.04)"/>
+      </g>
+      <g transform="rotate(11) scale(.83)">
+        <use href="#midPetalA" transform="rotate(0) scale(1.08 1.04)"/>
+        <use href="#midPetalB" transform="rotate(46) scale(.99 1.09)"/>
+        <use href="#midPetalA" transform="rotate(91) scale(1.07 .96)"/>
+        <use href="#midPetalB" transform="rotate(137) scale(.97 1.08)"/>
+        <use href="#midPetalA" transform="rotate(182) scale(1.05 1)"/>
+        <use href="#midPetalB" transform="rotate(228) scale(1.02 1.06)"/>
+        <use href="#midPetalA" transform="rotate(274) scale(.96 1.08)"/>
+        <use href="#midPetalB" transform="rotate(319) scale(1.08 .98)"/>
+      </g>
+      <g transform="rotate(27) scale(.48)">
+        <use href="#innerPetalA" transform="rotate(0) scale(1.04 1.08)"/>
+        <use href="#innerPetalB" transform="rotate(52) scale(.98 1.06)"/>
+        <use href="#innerPetalA" transform="rotate(104) scale(1.08 .98)"/>
+        <use href="#innerPetalB" transform="rotate(156) scale(.96 1.08)"/>
+        <use href="#innerPetalA" transform="rotate(208) scale(1.05 1.02)"/>
+        <use href="#innerPetalB" transform="rotate(260) scale(1 1.07)"/>
+        <use href="#innerPetalA" transform="rotate(312) scale(1.08 .96)"/>
+      </g>
+      <g transform="rotate(12) scale(.78)">
+        <use href="#centerPetal" transform="rotate(0) scale(1 .95)"/>
+        <use href="#centerPetal" transform="rotate(73) scale(.94 1.04)"/>
+        <use href="#centerPetal" transform="rotate(145) scale(1.03 .96)"/>
+        <use href="#centerPetal" transform="rotate(218) scale(.96 1.02)"/>
+        <use href="#centerPetal" transform="rotate(290) scale(1.02 .94)"/>
+      </g>
+    </g>
+    <g clip-path="url(#rbloomClip)"><g transform="rotate(18 300 260)"><rect class="sheenRect" x="244" y="18" width="112" height="484" fill="url(#rsheen)"/></g></g>
+  </g>
+</svg>

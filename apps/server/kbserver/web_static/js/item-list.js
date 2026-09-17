@@ -12,6 +12,33 @@ const FETCH_LIMIT = 50;
 let refreshing = false;
 let searchTimer = null;
 
+// —— 顶部抽屉（金蔷薇布局）：条目折叠在顶栏下，点击/下拉展开，点外部或 Esc 收起 ——
+export function isDrawerOpen() { return $("listWrap").classList.contains("open"); }
+export function openDrawer() {
+  $("listWrap").classList.add("open");
+  $("drawerHandle").setAttribute("aria-expanded", "true");
+}
+export function closeDrawer() {
+  $("listWrap").classList.remove("open");
+  $("drawerHandle").setAttribute("aria-expanded", "false");
+}
+
+// 拉手徽标：正在处理 + 需要处理的条目数；有待处理条目时换成警示色
+function updateDrawerBadge() {
+  const count = (id) => $(id).querySelectorAll("li.item").length;
+  const attention = $("groupAttention").hidden ? 0 : count("groupAttention");
+  const working = $("groupWorking").hidden ? 0 : count("groupWorking");
+  const total = attention + working;
+  const b = $("drawerBadge");
+  b.hidden = total === 0;
+  b.textContent = total > 99 ? "99+" : String(total);
+  b.classList.toggle("hot", attention > 0);
+}
+
+// 下拉手势状态：收起态按住拉手往下拖 ≥28px 直接展开
+let pressY = null;
+let drawerDragging = false;
+
 // 滚动显现（走查反馈）：卡片进入视口时淡入上移；已显现的行不再重复动画
 const revealIO = ("IntersectionObserver" in window)
   ? new IntersectionObserver((entries) => {
@@ -127,6 +154,7 @@ export async function refreshItems() {
       fillGroup("published", published);
     }
     updateEmptyState();
+    updateDrawerBadge();
   } catch (e) {
     if (!(e && e.net && document.visibilityState === "hidden")) showErr(e);
   }
@@ -165,6 +193,26 @@ export function initItemList() {
       e.preventDefault();
       openDetail(li.dataset.id);
     });
+  });
+  // —— 抽屉：点击拉手切换；收起态往下拖 ≥28px 展开；点面板外/Esc 收起 ——
+  $("drawerHandle").addEventListener("click", () => {
+    if (drawerDragging) { drawerDragging = false; return; }  // 手势展开后吞掉这次 click
+    if (isDrawerOpen()) closeDrawer(); else openDrawer();
+  });
+  $("drawerHandle").addEventListener("pointerdown", (e) => {
+    pressY = e.clientY; drawerDragging = false;
+  });
+  $("drawerClose").addEventListener("click", () => closeDrawer());
+  document.addEventListener("pointermove", (e) => {
+    if (pressY === null || drawerDragging) return;
+    if (e.clientY - pressY > 28) { drawerDragging = true; openDrawer(); }
+  });
+  document.addEventListener("pointerup", () => { pressY = null; });
+  document.addEventListener("click", (e) => {
+    if (isDrawerOpen() && !e.target.closest("#listWrap")) closeDrawer();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && isDrawerOpen()) closeDrawer();
   });
   $("searchToggle").addEventListener("click", () => {
     const row = $("searchRow");
