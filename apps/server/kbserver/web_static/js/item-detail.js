@@ -76,21 +76,35 @@ export async function openDetail(itemId, opts = {}) {
 
 export function closeDetail() {
   detailId = null; detailData = null; asrStatus = null;
+  detailExiting = false;
   $("detailView").hidden = true;
   $("homeMain").hidden = false;
   if (onboardingWasVisible) $("onboardingHost").hidden = false;
   window.scrollTo({ top: 0 });
 }
 
-export function exitDetail() {
-  // 是否能 history.back() 以「当前历史条目是否就是这次详情推入的」为准，
-  // 不再依赖可失同步的布尔标志（走查反馈：有时按返回回不去）
+// 详情退出统一回到进入前的条目列表（走查反馈：返回/删除都应回列表页）
+let detailExiting = false;
+function exitToList() {
+  if (detailExiting) return;
+  detailExiting = true;
   const st = history.state;
-  if (st && st.item && detailId && st.item === detailId) { history.back(); }
-  else {
-    closeDetail();
+  if (st && st.item && detailId && st.item === detailId) {
+    // 当前历史条目就是详情推入的：退回上一条（/inbox），popstate 里 closeDetail
+    history.back();
+    setTimeout(() => { detailExiting = false; }, 600);
+  } else {
+    // 深链/刷新进入：原地替换 URL 并直接关闭
     try { history.replaceState({}, "", "/inbox"); } catch (e) {}
+    closeDetail();
   }
+  // 等「点外部收起抽屉」的 document click 处理完再开抽屉，
+  // 否则本次返回点击冒泡到 document 会把刚打开的抽屉当成点外部秒关
+  setTimeout(() => openDrawer(), 0);
+}
+
+export function exitDetail() {
+  exitToList();
 }
 
 export function isDetailBusy() {
@@ -439,15 +453,9 @@ async function doDelete() {
   try {
     await api("/v1/items/" + encodeURIComponent(detailId), { method: "DELETE" });
     toast("已删除服务器材料", { type: "ok" });
-    exitDetailList();
+    exitToList();
     refreshList();
   } catch (e) { showErr(e); }
-}
-function exitDetailList() {
-  // 删除发生在详情页，返回时应回到进入前的条目列表，而不是金蔷薇主页（走查反馈）
-  closeDetail();
-  try { history.replaceState({}, "", "/inbox"); } catch (e) {}
-  openDrawer();
 }
 
 async function downloadSourceMd() {
