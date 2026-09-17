@@ -9,6 +9,8 @@
 | --- | --- | --- | --- | --- |
 | bilibili | video | bilibili | B 站 | bilibili_video |
 | wechat_mp | text | wechat_mp | 微信公众号 | wechat_mp |
+| wechat_channels | video | wechat_channels | 微信视频号 | wechat_channels_video |
+| zhihu | text | zhihu | 知乎 | zhihu |
 | xiaohongshu | text | xiaohongshu | 小红书 | xiaohongshu |
 | web | text | web | 网页 | web_page |
 | web / wechat_mp / xiaohongshu | audio | web_audio | 网页音频 | web_audio |
@@ -32,6 +34,10 @@ PLATFORM_ALIASES: dict[str, str] = {
 SOURCE_MAP: dict[tuple[str, str], tuple[str, str, str]] = {
     ("bilibili", "video"): ("bilibili", "B 站", "bilibili_video"),
     ("wechat_mp", "text"): ("wechat_mp", "微信公众号", "wechat_mp"),
+    # 视频号内容都是视频（说明文字是首版自动取得对象），不与公众号合并（docs/18 §6）
+    ("wechat_channels", "video"): ("wechat_channels", "微信视频号", "wechat_channels_video"),
+    ("wechat_channels", "text"): ("wechat_channels", "微信视频号", "wechat_channels"),
+    ("zhihu", "text"): ("zhihu", "知乎", "zhihu"),
     ("xiaohongshu", "text"): ("xiaohongshu", "小红书", "xiaohongshu"),
     ("web", "text"): ("web", "网页", "web_page"),
     ("audio_upload", "audio"): ("audio_upload", "上传录音", "audio_upload"),
@@ -46,6 +52,8 @@ PLATFORM_DEFAULT_KIND: dict[str, str] = {
     "audio_upload": "audio",
     "web": "text",
     "wechat_mp": "text",
+    "wechat_channels": "video",
+    "zhihu": "text",
     "xiaohongshu": "text",
 }
 
@@ -53,6 +61,8 @@ PLATFORM_DEFAULT_KIND: dict[str, str] = {
 PLATFORM_LABELS: dict[str, str] = {
     "web": "网页",
     "wechat_mp": "微信公众号",
+    "wechat_channels": "微信视频号",
+    "zhihu": "知乎",
     "xiaohongshu": "小红书",
     "bilibili": "B 站",
     "audio_upload": "上传录音",
@@ -69,7 +79,8 @@ NON_PLATFORM_VALUES = frozenset({"", "unknown", "web_inbox"})
 AUDIO_MEDIA_KINDS = frozenset({"video", "audio"})
 UPLOAD_PLATFORM = "audio_upload"
 WEB_PLATFORM = "web"
-WEB_LIKE_PLATFORMS = frozenset({WEB_PLATFORM, "wechat_mp", "xiaohongshu"})
+WEB_LIKE_PLATFORMS = frozenset({WEB_PLATFORM, "wechat_mp", "xiaohongshu",
+                                "wechat_channels", "zhihu"})
 
 
 def normalize_platform(platform: str | None) -> str:

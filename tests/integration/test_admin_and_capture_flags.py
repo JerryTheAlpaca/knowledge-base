@@ -203,12 +203,12 @@ def test_invitation_upstream_rejection_maps_status(wc, central, monkeypatch):
 
 def test_capture_include_asr_queues_run_for_webpage(client, user_a, fresh_queue, monkeypatch):
     """勾选「提取音轨」：网页/公众号条目提取完成后自动排队转写。"""
-    from kbserver.extractors import webpages
+    from kbserver.extractors import fetch_base
     from tests.integration.test_m4_web import FakeWebNet, GENERIC_HTML, GENERIC_URL
 
     monkeypatch.setenv("ASR_ENABLED", "true")
     net = FakeWebNet(pages={GENERIC_URL: (200, "text/html", GENERIC_HTML)})
-    monkeypatch.setattr(webpages, "safe_fetch", net)
+    monkeypatch.setattr(fetch_base, "safe_fetch", net)
     r = client.post(
         "/v1/captures",
         json={"client_capture_id": "asrflag-1111-2222-3333-444444444444",

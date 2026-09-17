@@ -4,8 +4,10 @@
 - 领取按 stage 过滤：普通任务（extract/enrich）优先；ASR 片段仅在整机空闲时领取。
 - 启动恢复：过期 running 租约回到 queued；主循环周期恢复过期租约。
 - extract：字幕文件上传或 B 站链接走字幕适配器，普通网页/公众号链接走
-  正文适配器（M4）；有正文 → 生成 normalized.md + segments.json 并发布
-  新 Bundle，随后入 enrich；其余只有链接或附件 → needs_input，绝不伪造正文。
+  正文适配器（M4）；知乎/小红书/视频号走专用适配器路径（docs/18，
+  适配器上线前清楚降级进入补充材料）；有正文 → 生成 normalized.md +
+  segments.json 并发布新 Bundle，随后入 enrich；其余只有链接或附件 →
+  needs_input，绝不伪造正文。
   B 站确认无字幕轨且开关开启 → 自动转入本地 ASR 路径（docs/11）。
 - asr_prepare / asr_transcribe：workers/asr.py 执行（空闲准入、检查点、逐段转写）。
 - enrich：由 workers/enrich.py 执行（预算预留、模型调用、校验、发布成品 Bundle）。
@@ -25,32 +27,32 @@ from sqlalchemy.orm import Session
 
 from ..config import get_settings
 from ..db import make_engine, make_session_factory
-from ..domain import pipeline
+from ..domain import pipeline, platform_sessions
 from ..domain.platforms import guess_platform
 from ..extractors import bilibili as bili
 from ..extractors import paragraphs as parafmt
 from ..extractors import subtitles as subfmt
 from ..extractors import webpages as webpage
+from ..extractors import wechat_channels as channels
+from ..extractors import xiaohongshu as xhs
+from ..extractors import zhihu as zhihu_mod
 from ..models import (
     AsrRun,
     AudioAsset,
     AudioUploadSession,
     BundleRevision,
     Capture,
-    Credential,
     DeviceAuthRequest,
     Event,
     IdempotencyRecord,
     Item,
     Job,
-    ProviderProfile,
     Receipt,
     SourceRevision,
     StoredFile,
     Upload,
     utcnow,
 )
-from ..security import credentials as cred_crypto
 from ..security.safe_fetch import SafeFetchError, safe_fetch
 from ..storage.objects import ObjectStore
 from . import asr as asr_stage
@@ -163,10 +165,11 @@ def _run_extract_dispatch(db: Session, store: ObjectStore, job: Job, item: Item,
     # 3) 用户正文优先（docs/02 §5.1）；B 站/网页分享文字只是标题+链接+摘要，
     #    不能当正文（docs/04 §5），交给对应适配器处理
     is_bili = _is_bilibili_capture(payload, meta)
+    special = _special_platform(payload, meta)
     if is_bili:
         _bili_throttle_ok()
     web_target = _webpage_target(payload)
-    body = user_text or ("" if (is_bili or web_target) else share_text)
+    body = user_text or ("" if (is_bili or web_target or special) else share_text)
     # 用户把视频标题粘进了正文框：标题不是正文，交给字幕适配器取真正的正文
     title_note = ""
     if body and is_bili and len(body) <= 60:
@@ -195,6 +198,12 @@ def _run_extract_dispatch(db: Session, store: ObjectStore, job: Job, item: Item,
         _extract_webpage(db, store, job, item, source, payload)
         # 采集勾选「提取音轨」：网页/公众号条目提取后自动排队转写
         _maybe_start_requested_asr(db, item, payload)
+        return
+    # 6.5) 知乎/小红书/视频号：专用适配器路径（docs/18 §7.3-7.5）。
+    #      登录墙/风控/播放壳如实进入补充材料，链接与分享文字已随
+    #      capture.json 留存，不冒充正文。
+    if special:
+        _extract_special_platform(db, store, job, item, source, payload, special)
         return
     # 7) 其余只有分享文字/图片/音频：M4 其他适配器提供前不做伪造提取
     if share_text:
@@ -401,35 +410,14 @@ def _extract_from_subtitle_uploads(db: Session, store: ObjectStore, job: Job,
 
 
 def _user_sessdata(db: Session, user_id: str) -> tuple[str | None, str | None]:
-    """读取用户托管的 B 站登录态最小凭据（docs/04 §5）。
+    """读取用户托管的 B 站登录态最小凭据（docs/04 §5；docs/18 §7.2）。
 
     返回 (sessdata, 错误信息)。没有托管 → (None, None)；
     解密失败 → (None, 错误提示)，由调用方进入 needs_input。
-    明文只在本函数内解密并传给提取器，不写日志、不落库。
+    明文只在通用会话服务内解密并传给提取器，不写日志、不落库
+    （适配器不直接查询 Credential 表）。
     """
-    row = (
-        db.query(ProviderProfile, Credential)
-        .join(Credential, Credential.profile_id == ProviderProfile.id)
-        .filter(
-            ProviderProfile.user_id == user_id,
-            ProviderProfile.kind == "bilibili_session",
-            Credential.revoked_at.is_(None),
-        )
-        .order_by(Credential.created_at.desc())
-        .first()
-    )
-    if row is None:
-        return None, None
-    profile, cred = row
-    try:
-        value = cred_crypto.decrypt_secret(
-            cred.encrypted_secret, cred.encrypted_dek, cred.nonces_json,
-            get_settings().load_master_key(),
-            user_id=user_id, profile_id=profile.id, credential_version=cred.version,
-        )
-    except Exception as exc:
-        return None, f"B 站登录凭据解密失败（{type(exc).__name__}）；请重新提交 SESSDATA。"
-    return value, None
+    return platform_sessions.session_value(db, user_id, platform_sessions.SPECS["bilibili"])
 
 
 def _extract_bilibili(db: Session, store: ObjectStore, job: Job, item: Item,
@@ -530,17 +518,51 @@ def _extract_bilibili(db: Session, store: ObjectStore, job: Job, item: Item,
     )
 
 
-def _webpage_target(payload: dict) -> str | None:
-    """普通网页/公众号适配目标：非 B 站、非小红书的 HTTP(S) 链接。
+def _special_platform(payload: dict, meta: dict) -> str | None:
+    """需要专用适配器的平台：知乎/小红书/视频号（docs/18 §7.1）。
 
-    小红书有登录墙与 OCR 专项路径（docs/02 §5.1、§5.5），在专用适配器
-    提供前不按普通网页处理；B 站由字幕适配器负责。
+    视频号与公众号是两个来源；这三类链接不按普通网页处理，也不把分享
+    文字当正文。B 站另有专用判定（_is_bilibili_capture）。
+    """
+    platform = meta.get("platform")
+    if platform in _SPECIAL_PLATFORMS:
+        return platform
+    candidates = [payload.get("original_url")]
+    m = re.search(r"https?://[^\s，,、）)】\]]+", payload.get("share_text") or "")
+    if m:
+        candidates.append(m.group(0))
+    for url in candidates:
+        if not url:
+            continue
+        guessed = guess_platform(url)
+        if guessed in _SPECIAL_PLATFORMS:
+            return guessed
+    return None
+
+
+_SPECIAL_PLATFORMS = ("zhihu", "xiaohongshu", "wechat_channels")
+
+# 专用适配器注册（docs/18 §7.3-7.5）：模块 + 该模块的错误类型（同为
+# fetch_base.PlatformError）。共享抓取底座在 extractors/fetch_base.py。
+_SPECIAL_ADAPTERS = {
+    "zhihu": (zhihu_mod, zhihu_mod.PlatformError),
+    "xiaohongshu": (xhs, xhs.PlatformError),
+    "wechat_channels": (channels, channels.PlatformError),
+}
+
+
+def _webpage_target(payload: dict) -> str | None:
+    """普通网页/公众号适配目标：非 B 站、非专用平台（知乎/小红书/视频号）的 HTTP(S) 链接。
+
+    小红书有登录墙与 OCR 专项路径（docs/02 §5.1、§5.5），知乎/视频号由
+    专用适配器负责（docs/18），在专用适配器提供前不按普通网页处理；
+    B 站由字幕适配器负责。
     """
     url = (payload.get("original_url") or "").strip() or webpage.extract_first_url(payload.get("share_text"))
     if not url:
         return None
     platform = guess_platform(url)
-    if platform in ("bilibili", "xiaohongshu"):
+    if platform in ("bilibili", "xiaohongshu", "wechat_channels", "zhihu"):
         return None
     return url
 
@@ -600,6 +622,82 @@ def _extract_webpage(db: Session, store: ObjectStore, job: Job, item: Item,
             "source_locator": {"type": "webpage", "final_url": ext.canonical_url},
             "extractor": {"name": "webpage_article", "version": webpage.EXTRACTOR_VERSION,
                           "discovery_status": "available"},
+            "images_archived": len(ext.images),
+        },
+        missing_materials=ext.missing_materials,
+    )
+
+
+def _extract_special_platform(db: Session, store: ObjectStore, job: Job, item: Item,
+                              source: SourceRevision, payload: dict, special: str) -> None:
+    """知乎/小红书/视频号适配器路径（docs/18 §7.3-7.5）。
+
+    先匿名读取，登录墙时由适配器内部使用该用户托管会话重试一次；
+    network_error 上抛走任务级有限退避，登录墙/风控/删除/结构变化/播放壳
+    进入补充材料（needs_input），不伪造正文。成功时发布 originals 归档 +
+    新来源版本（与网页路径同构）。
+    """
+    module, error_cls = _SPECIAL_ADAPTERS[special]
+    cookies = None
+    val, sess_err = platform_sessions.session_value(
+        db, item.user_id, platform_sessions.SPECS[special]
+    )
+    if sess_err:
+        _needs_input(db, job, item, sess_err, "login_required")
+        return
+    # cookie_dict 平台的 session_value 直接返回扁平 Cookie 字典
+    if isinstance(val, dict):
+        cookies = dict(val)
+
+    try:
+        ext = module.extract(
+            payload.get("original_url"),
+            share_text=payload.get("share_text"),
+            cookies=cookies,
+            include_images=bool(payload.get("include_images")),
+        )
+    except error_cls as exc:
+        if exc.status == "network_error":
+            raise  # 有限退避重试，由 run_once 顶层落到任务表
+        _needs_input(db, job, item, exc.message, exc.status)
+        return
+
+    html_file = pipeline.register_file(
+        db, store, user_id=item.user_id, item_id=item.id,
+        data=ext.raw_html, relative_path=ext.original_path,
+        role="source_material", mime=ext.raw_mime or "text/html",
+    )
+    extra_files = [html_file]
+    for i, img in enumerate(ext.images, start=1):
+        extra_files.append(pipeline.register_file(
+            db, store, user_id=item.user_id, item_id=item.id,
+            data=img.data, relative_path=f"{ext.original_path.rsplit('/', 1)[0]}/img-{i:03d}.{img.ext}",
+            role="source_material", mime=img.mime,
+        ))
+
+    warnings = list(ext.warnings) + ["已从平台页面生成规范文字稿；AI 加工待执行。"]
+    from ..domain.source_labels import source_fields
+
+    fields = source_fields(special, ext.media_kind)
+    _publish_segments_revision(
+        db, store, job, item, source,
+        segments=ext.segments, warnings=warnings, extra_files=extra_files,
+        meta_updates={
+            "platform": fields["platform"],
+            "media_kind": fields["media_kind"],
+            "source_type": fields["source_type"],
+            "source_label": fields["source_label"],
+            "icon_key": fields["icon_key"],
+            "title": ext.title,
+            "author": ext.author,
+            "published_at": ext.published_at,
+            "canonical_url": ext.canonical_url,
+            "coverage": ext.coverage,
+            "original_media_retained": True,  # 原始响应已留存（不等于完整镜像/原视频）
+            "source_locator": ext.source_locator,
+            "extractor": {"name": ext.extractor_name, "version": module.EXTRACTOR_VERSION,
+                          "discovery_status": "available",
+                          "login_state_used": ext.login_state_used},
             "images_archived": len(ext.images),
         },
         missing_materials=ext.missing_materials,

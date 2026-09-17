@@ -14,15 +14,16 @@ import pytest
 from tests.conftest import auth
 
 from kbserver.extractors import webpages
+from kbserver.extractors import fetch_base
 from kbserver.security.safe_fetch import FetchResult, SafeFetchError
 
 
 # ---- 假网络 ----
 
 class FakeWebNet:
-    """按 URL 路由的假 safe_fetch；记录调用以便断言。"""
+    """按 URL 路由的假 safe_fetch/fetch_page；记录调用以便断言。"""
 
-    def __init__(self, pages: dict[str, tuple[int, str, bytes]] | None = None,
+    def __init__(self, pages: dict[str, tuple] | None = None,
                  images: dict[str, tuple[bytes, str] | Exception] | None = None,
                  fail_urls: tuple[str, ...] = ()):
         self.pages = pages or {}
@@ -35,7 +36,11 @@ class FakeWebNet:
         if url in self.fail_urls:
             raise SafeFetchError("NETWORK_ERROR", f"下载失败：{url}")
         if url in self.pages:
-            status, mime, content = self.pages[url]
+            page = self.pages[url]
+            if len(page) == 4:  # (status, mime, content, final_url)：模拟重定向落点
+                status, mime, content, final_url = page
+                return FetchResult(url=final_url, status_code=status, mime=mime, content=content)
+            status, mime, content = page
             return FetchResult(url=url, status_code=status, mime=mime, content=content)
         if url in self.images:
             v = self.images[url]
@@ -45,12 +50,17 @@ class FakeWebNet:
             return FetchResult(url=url, status_code=200, mime=mime, content=content)
         raise SafeFetchError("SOURCE_BLOCKED", f"意外请求：{url}")
 
+    def fetch_page(self, url, *, cookies=None, referer=None, max_bytes=None, timeout=20.0):
+        """页面层替身：与 fetch_base.fetch_page 调用形态兼容。"""
+        return self(url, max_bytes=max_bytes, timeout=timeout)
+
 
 @pytest.fixture()
 def web_net(monkeypatch):
     def install(net: FakeWebNet):
-        monkeypatch.setattr(webpages, "safe_fetch", net)
-        # B 站模块也指向假网络，避免个别路径触网；正常用例不会走到它
+        # 页面抓取统一走 fetch_base.fetch_page；图片下载与 B 站仍用 safe_fetch
+        monkeypatch.setattr(webpages, "fetch_page", net.fetch_page)
+        monkeypatch.setattr(fetch_base, "safe_fetch", net)
         from kbserver.extractors import bilibili as bili
         monkeypatch.setattr(bili, "safe_fetch", net)
         return net
@@ -421,8 +431,15 @@ def test_webpage_images_missing_materials(client, user_a, session_factory, web_n
 
 
 def test_xiaohongshu_not_handled_as_webpage(client, user_a, session_factory, web_net):
-    """小红书登录墙专项路径未提供前：不按普通网页抓取，保持等待适配器。"""
-    net = web_net(FakeWebNet())
+    """小红书链接由专属适配器处理：sec 登录墙如实降级，不按普通网页抓取发布。"""
+    xhs_sec = (
+        '<html><body><a href="https://www.xiaohongshu.com/404/sec_fake?'
+        'error_code=300031&amp;error_msg=%E5%BD%93%E5%89%8D%E7%AC%94%E8%AE%B0%E6%9A%82%E6%97%B6%E6%97%A0%E6%B3%95%E6%B5%8F%E8%A7%88">'
+        'Found</a></body></html>'
+    )
+    net = web_net(FakeWebNet(pages={
+        "https://www.xiaohongshu.com/explore/abc123": (200, "text/html", xhs_sec.encode("utf-8")),
+    }))
     c = _capture_url(client, user_a["phone"]["token"], "m4xhs",
                      url="https://www.xiaohongshu.com/explore/abc123")
     item_id = c.json()["item_id"]
@@ -430,8 +447,9 @@ def test_xiaohongshu_not_handled_as_webpage(client, user_a, session_factory, web
 
     it = _get_item(client, user_a["desktop"]["token"], item_id)
     assert it["pipeline_state"] == "needs_input"
-    assert "适配器" in (it.get("state_detail") or "")
-    assert net.calls == []  # 全程未触网
+    assert "小红书" in (it.get("state_detail") or "")
+    assert it.get("source_label") == "小红书"
+    assert net.calls == ["https://www.xiaohongshu.com/explore/abc123"]  # 仅专属适配器抓一次，无会话不重试
 
 
 def test_bilibili_url_untouched_by_web_adapter(client, user_a, session_factory, web_net):

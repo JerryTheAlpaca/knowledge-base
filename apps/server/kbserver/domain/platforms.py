@@ -6,7 +6,12 @@ from urllib.parse import urlparse
 _PATTERNS = [
     ("bilibili", ("bilibili.com", "b23.tv")),
     ("wechat_mp", ("mp.weixin.qq.com",)),
-    ("xiaohongshu", ("xiaohongshu.com", "xhslink.com")),
+    # 视频号与公众号是两个来源（docs/18 §6），不能因为都来自微信而合并；
+    # 短链 weixin.qq.com/sph/{id} 形态由真实样本确认（docs/18 §7.4）。
+    # wechat_mp 在前，mp.weixin.qq.com 不会落到视频号。
+    ("wechat_channels", ("channels.weixin.qq.com", "weixin.qq.com")),
+    ("zhihu", ("zhihu.com",)),
+    ("xiaohongshu", ("xiaohongshu.com", "xhslink.com", "xhslink.cn")),
 ]
 
 

@@ -717,13 +717,13 @@ def test_bilibili_credential_never_sent_to_subtitle_cdn(client, user_a, session_
 
 def test_bilibili_update_does_not_requeue_other_sources(client, user_a, session_factory, bili_net, monkeypatch):
     """更新 B 站登录态只重排 B 站待补充条目；网页/公众号条目不受影响（docs/05 §3.2）。"""
-    from kbserver.extractors import webpages
+    from kbserver.extractors import fetch_base
     from kbserver.security.safe_fetch import SafeFetchError
 
     def _blocked(*args, **kwargs):
         raise SafeFetchError("SOURCE_BLOCKED", "拒绝访问（测试固定行为，无重试残留）")
 
-    monkeypatch.setattr(webpages, "safe_fetch", _blocked)
+    monkeypatch.setattr(fetch_base, "safe_fetch", _blocked)
     bili_net(FakeBiliNet())  # 匿名无轨：B 站条目进入 needs_input
     token = user_a["desktop"]["token"]
     c1 = _capture_url(client, user_a["phone"]["token"], "m4mixbili",

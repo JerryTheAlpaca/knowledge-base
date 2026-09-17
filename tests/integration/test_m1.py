@@ -230,12 +230,12 @@ def test_worker_text_flow(client, user_a, session_factory):
 
 def test_worker_url_only_needs_input(client, user_a, session_factory, monkeypatch):
     """只有链接且页面不可达：不伪造正文，进入待补充（M4 适配器失败降级路径）。"""
-    from kbserver.extractors import webpages
+    from kbserver.extractors import fetch_base
     from kbserver.security.safe_fetch import SafeFetchError
 
     def _blocked(*args, **kwargs):
         raise SafeFetchError("SOURCE_BLOCKED", "页面无法访问")
-    monkeypatch.setattr(webpages, "safe_fetch", _blocked)
+    monkeypatch.setattr(fetch_base, "safe_fetch", _blocked)
 
     token = user_a["phone"]["token"]
     c = client.post(

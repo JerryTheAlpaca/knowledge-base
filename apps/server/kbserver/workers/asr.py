@@ -56,7 +56,6 @@ from ..models import (
     new_id,
     utcnow,
 )
-from ..security import credentials as cred_crypto
 from ..storage.objects import ObjectStore
 from . import idle as idle_mod
 from .publish import publish_segments_revision
@@ -364,32 +363,13 @@ def _fail_run(db: Session, run: AsrRun, job: Job, item: Item, error: str, *,
 
 
 def _user_sessdata(db: Session, user_id: str) -> tuple[str | None, str | None]:
-    """读取用户托管的 B 站登录态（与字幕路径同机制；明文不落日志/库）。"""
-    from ..models import Credential, ProviderProfile
+    """读取用户托管的 B 站登录态（与字幕路径同机制；明文不落日志/库）。
 
-    row = (
-        db.query(ProviderProfile, Credential)
-        .join(Credential, Credential.profile_id == ProviderProfile.id)
-        .filter(
-            ProviderProfile.user_id == user_id,
-            ProviderProfile.kind == "bilibili_session",
-            Credential.revoked_at.is_(None),
-        )
-        .order_by(Credential.created_at.desc())
-        .first()
-    )
-    if row is None:
-        return None, None
-    profile, cred = row
-    try:
-        value = cred_crypto.decrypt_secret(
-            cred.encrypted_secret, cred.encrypted_dek, cred.nonces_json,
-            get_settings().load_master_key(),
-            user_id=user_id, profile_id=profile.id, credential_version=cred.version,
-        )
-    except Exception:
-        return None, "B 站登录凭据解密失败；请重新提交 SESSDATA。"
-    return value, None
+    走通用平台会话服务（docs/18 §7.2），不直接查询 Credential 表。
+    """
+    from ..domain import platform_sessions
+
+    return platform_sessions.session_value(db, user_id, platform_sessions.SPECS["bilibili"])
 
 
 def _make_monitor(session_factory, job_id: str, lease_token: str,

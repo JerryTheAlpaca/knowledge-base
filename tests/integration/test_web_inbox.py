@@ -340,9 +340,9 @@ def test_refetch_unchanged_keeps_revision(client, user_a, session_factory, monke
     from tests.integration.test_m4_web import GENERIC_HTML, GENERIC_URL, make_page_net
 
     net = make_page_net()
-    from kbserver.extractors import bilibili as bili, webpages
+    from kbserver.extractors import bilibili as bili, fetch_base
 
-    monkeypatch.setattr(webpages, "safe_fetch", net)
+    monkeypatch.setattr(fetch_base, "safe_fetch", net)
     monkeypatch.setattr(bili, "safe_fetch", net)
 
     r = _capture_url(client, user_a["desktop"]["token"], "rf-same-1", url=GENERIC_URL)

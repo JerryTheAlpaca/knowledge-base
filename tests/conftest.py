@@ -1,6 +1,7 @@
 """测试环境：在任何 kbserver 导入之前配置隔离环境变量。"""
 from __future__ import annotations
 
+import base64
 import os
 import secrets
 import sys
@@ -16,9 +17,12 @@ os.environ["OBJECTS_DIR"] = str(_TMP / "objects")
 os.environ["TMP_DIR"] = str(_TMP / "tmp")
 os.environ["DELETIONS_DIR"] = str(_TMP / "deletions")
 
-_MASTER_KEY = secrets.token_bytes(32)
+# master key 以 base64 文本写入：直接写随机原始字节时，若首尾恰好是空白字节
+# （0x20/\t/\n/\r，概率约 4.7%），会被 config.load_master_key 的 strip() 剥离导致解码失败。
 os.environ["MASTER_KEY_FILE"] = str(_TMP / "master.key")
-(_TMP / "master.key").write_bytes(_MASTER_KEY)
+(_TMP / "master.key").write_text(
+    base64.urlsafe_b64encode(secrets.token_bytes(32)).decode("ascii"), encoding="ascii"
+)
 os.environ["MASTER_KEY_VERSION"] = "1"
 
 import pytest  # noqa: E402

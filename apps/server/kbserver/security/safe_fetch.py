@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import ipaddress
+import json
 import socket
 from dataclasses import dataclass
 from urllib.parse import urlparse
@@ -146,6 +147,53 @@ class FetchResult:
     mime: str
     content: bytes
     truncated: bool = False
+
+
+def post_json(url: str, *, json_body: dict, max_bytes: int | None = None,
+              timeout: float = 20.0,
+              headers: dict[str, str] | None = None) -> dict:
+    """受限 JSON POST：公开 Web 端点用（如视频号 finder-preview 元数据接口）。
+
+    与 safe_fetch 同规则：每请求做 DNS/IP 校验、有界读取；POST 重定向视为
+    异常信号不跟随；响应必须可解析为 JSON 对象，否则视为失败。
+    """
+    settings = get_settings()
+    limit = max_bytes or settings.html_download_limit
+    _check_url_allowed(url)
+
+    transport = httpx.HTTPTransport(retries=0)
+    with httpx.Client(
+        transport=transport,
+        timeout=httpx.Timeout(timeout, connect=10.0),
+        follow_redirects=False,
+        headers={"User-Agent": "KnowledgeInbox/0.1 (+restricted-fetcher)"},
+    ) as client:
+        try:
+            with client.stream("POST", url, json=json_body, headers=headers or {}) as resp:
+                if resp.is_redirect:
+                    raise SafeFetchError("SOURCE_BLOCKED", "POST 响应为重定向，不跟随")
+                if resp.status_code >= 400:
+                    raise SafeFetchError(
+                        "HTTP_ERROR", f"响应状态码 HTTP {resp.status_code}",
+                        status_code=resp.status_code,
+                    )
+                parts: list[bytes] = []
+                total = 0
+                for chunk in resp.iter_bytes(chunk_size=65536):
+                    total += len(chunk)
+                    if total > limit:
+                        raise SafeFetchError("PAYLOAD_TOO_LARGE", f"响应超过 {limit} 字节上限")
+                    parts.append(chunk)
+        except httpx.HTTPError as exc:
+            raise SafeFetchError("NETWORK_ERROR", f"请求失败：{exc}") from exc
+        raw = b"".join(parts)
+        try:
+            data = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise SafeFetchError("SOURCE_BLOCKED", "响应不是有效 JSON") from exc
+        if not isinstance(data, dict):
+            raise SafeFetchError("SOURCE_BLOCKED", "响应 JSON 不是对象")
+        return data
 
 
 def safe_fetch(url: str, *, max_bytes: int | None = None, timeout: float = 20.0,

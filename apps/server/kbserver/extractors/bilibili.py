@@ -51,6 +51,12 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 from ..security.safe_fetch import SafeFetchError, safe_fetch
 from . import subtitles as subfmt
+from .fetch_base import (
+    BROWSER_UA,
+    PlatformError,
+    URL_IN_TEXT as _URL_IN_TEXT,
+    extract_first_url,
+)
 
 EXTRACTOR_VERSION = "bilibili_subtitles-2.0.0"
 
@@ -81,20 +87,15 @@ _BILI_HOSTS = ("bilibili.com", "b23.tv")
 _CRED_ALLOWED_HOSTS = ("api.bilibili.com",)
 _BV_PATTERN = re.compile(r"/video/(BV[0-9A-Za-z]+)")
 _AV_PATTERN = re.compile(r"/video/av(\d+)", re.IGNORECASE)
-_URL_IN_TEXT = re.compile(r"https?://[^\s，,、）)】\]]+")
 # 风控/限流响应码（平台拒绝访问，不是“无字幕”）
 _BLOCKED_CODES = {-412, -352, -799}
 # 需要登录的响应码
 _LOGIN_CODES = {-101, -111}
 
-
-class BilibiliError(Exception):
-    """提取失败。status 表示失败/发现状态，worker 据此决定重试或进入补充材料。"""
-
-    def __init__(self, status: str, message: str):
-        super().__init__(message)
-        self.status = status
-        self.message = message
+# 统一错误语义（fetch_base.PlatformError）；别名保留历史调用面。
+# status ∈ network_error / blocked / login_required / video_not_found /
+# unsupported / no_track，worker 据此决定重试或进入补充材料。
+BilibiliError = PlatformError
 
 
 @dataclass
@@ -142,10 +143,7 @@ def _browser_headers(url: str, sessdata: str | None = None,
     （2026-09-09 实测），因此登录态探测时必须携带。
     """
     headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/126.0 Safari/537.36"
-        ),
+        "User-Agent": BROWSER_UA,
         "Referer": "https://www.bilibili.com/",
     }
     cookie_parts: list[str] = []
@@ -265,14 +263,6 @@ def _api(doc: dict) -> dict:
 
 
 # ---- 分层实现（docs/04 §3） ----
-
-def extract_first_url(share_text: str | None) -> str | None:
-    """从完整分享文字提取第一条 URL（保留原分享文字由调用方负责）。"""
-    if not share_text:
-        return None
-    m = _URL_IN_TEXT.search(share_text)
-    return m.group(0).rstrip(".,;！!?？") if m else None
-
 
 def resolve_share_url(url: str) -> VideoRef:
     """展开 b23.tv 短链并解析 BV/aid 与显式分 P（docs/04 §4.1）。
