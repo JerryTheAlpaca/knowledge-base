@@ -723,7 +723,7 @@ ALLOWED_THINKING_LEVELS = {"off", "low", "high", "max"}
 class SettingsOut(BaseModel):
     model_config = ConfigDict(extra="forbid")
     default_profile_id: str | None
-    # 优化档使用的配置；空=跟随整理模型（enrich 缺省回退）
+    # 优化档使用的配置；未设置时 enrich 兜底用整理配置（分段是尽力而为的步骤，不阻塞整理）
     optimize_profile_id: str | None = None
     # 思考挡位按用途设置（同一份配置可两处复用）：整理默认 high，优化默认关闭
     digest_thinking: str = "high"
@@ -767,11 +767,13 @@ def get_settings_route(principal=Depends(require_scope("profiles:manage")), db: 
 def update_settings(body: SettingsUpdate, principal=Depends(require_scope("profiles:manage")), db: Session = Depends(get_db)):
     user = principal.user
     s = dict(user.settings_json or {})
-    if body.default_profile_id is not None:
+    # profile_id 用 model_fields_set 判断：显式提交 null = 清除该档选择（下拉选回「未设置」），
+    # 未提交 = 保持不变
+    if "default_profile_id" in body.model_fields_set:
         if body.default_profile_id:
             _require_profile(db, user.id, body.default_profile_id)
         s["default_profile_id"] = body.default_profile_id or None
-    if body.optimize_profile_id is not None:
+    if "optimize_profile_id" in body.model_fields_set:
         if body.optimize_profile_id:
             _require_profile(db, user.id, body.optimize_profile_id)
         s["optimize_profile_id"] = body.optimize_profile_id or None

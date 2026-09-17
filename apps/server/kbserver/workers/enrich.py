@@ -75,8 +75,8 @@ class EnrichPlan:
     model: str
     capabilities: dict
     operation_id: str
-    # 优化文本配置（语义分段与听错词修正）；未单独选择时填充整理配置
-    # （跟随整理模型），思考挡位仍按优化档设置独立生效
+    # 优化文本配置（语义分段与听错词修正）；未设置时兜底填充整理配置，
+    # 思考挡位仍按优化档设置独立生效
     optimize_profile_id: str | None = None
     optimize_endpoint: str | None = None
     optimize_model: str | None = None
@@ -229,7 +229,7 @@ def prepare(session_factory, job_id: str, lease_token: str) -> EnrichPlan | None
             db.commit()
             return None
         # 整理档优先使用用户设置的默认整理配置，否则取最近配置凭据的；
-        # 优化档由用户在设置里显式选择（optimize_profile_id），未选择则复用整理配置
+        # 优化档由用户在设置里显式选择（optimize_profile_id），未设置则兜底用整理配置
         user = db.get(User, item.user_id)
         user_settings = (user.settings_json or {}) if user else {}
         default_id = user_settings.get("default_profile_id")
@@ -312,7 +312,7 @@ def prepare(session_factory, job_id: str, lease_token: str) -> EnrichPlan | None
             model=profile.model,
             capabilities=caps,
             operation_id=op.id,
-            # 优化档：独立选择时用所选配置；未选择时跟随整理模型（同一配置），
+            # 优化档：用设置里显式选择的配置；未设置时兜底用整理配置（同一配置），
             # 但思考挡位仍按优化档设置独立生效
             optimize_profile_id=opt_profile.id if opt_profile else profile.id,
             optimize_endpoint=opt_profile.endpoint if opt_profile else profile.endpoint,
@@ -423,7 +423,7 @@ def call_provider(session_factory, plan: EnrichPlan) -> dict:
         model=plan.model,
         capabilities=plan.capabilities,
     )
-    # 优化 provider：未单独选择优化配置时用整理配置的同一份端点/密钥构造
+    # 优化 provider：优化档未设置时用整理配置的同一份端点/密钥构造
     # （思考挡位仍按优化档设置独立生效）；凭据不可用时回退整理配置——
     # 分段是尽力而为的加工步骤，不应让它阻塞整条整理
     optimize_provider: OpenAICompatibleProvider | None = None
@@ -480,7 +480,7 @@ def call_provider(session_factory, plan: EnrichPlan) -> dict:
 
     # 语义分段 + 听错词修正先于提炼：修正后的文本让提炼摘录与正文一致
     # （用户关闭「AI 语义分段」时跳过，阅读层保持本地规则分段）。
-    # 分段/纠错属于「优化文本」：走优化档 provider（含跟随整理模型的情形，
+    # 分段/纠错属于「优化文本」：走优化档 provider（未设置优化档时兜底用整理配置，
     # 思考挡位独立、通常关闭——更便宜更快）；凭据不可用时回退整理 provider。
     text_plan = (
         _semantic_paragraph_starts(

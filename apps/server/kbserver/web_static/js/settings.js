@@ -106,7 +106,7 @@ async function loadSettingsData() {
       : '<div class="muted" style="padding:8px 0">还没有模型配置——点右上角的 + 添加。</div>';
     $("defaultProfile").innerHTML = '<option value="">（未设置）</option>' +
       loadedProfiles.map((p) => profileOption(p, p.id === settings.default_profile_id)).join("");
-    $("optimizeProfile").innerHTML = '<option value="">跟随整理模型</option>' +
+    $("optimizeProfile").innerHTML = '<option value="">（未设置）</option>' +
       loadedProfiles.map((p) => profileOption(p, p.id === settings.optimize_profile_id)).join("");
     renderThinkingLevels();
     renderBili(bili);

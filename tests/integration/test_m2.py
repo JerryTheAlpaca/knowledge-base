@@ -458,11 +458,16 @@ def test_enrich_routes_paragraphing_to_optimize_profile(client, user_a, session_
     caps_by_model = {i.kwargs["model"]: i.kwargs["capabilities"] for i in fake_llm.instances}
     assert caps_by_model["deepseek-chat"] == {"thinking_mode": True, "thinking_effort": "high"}
     assert caps_by_model["deepseek-flash"] == {"thinking_mode": False}
+    # 显式提交 null = 清除该档选择（下拉选回「未设置」）；只提交一档不影响另一档
+    cleared = client.patch("/v1/settings", json={"optimize_profile_id": None}, headers=auth(token))
+    assert cleared.status_code == 200
+    assert cleared.json()["optimize_profile_id"] is None
+    assert cleared.json()["default_profile_id"] == digest["id"]
 
 
 def test_enrich_without_optimize_profile_uses_digest_for_paragraphing(
         client, user_a, session_factory, fake_llm, monkeypatch):
-    """未单独选择优化配置：分段/纠错跟随整理模型（同一配置），
+    """设置里未选择优化配置：分段/纠错兜底用整理配置（同一模型），
     思考挡位按用途默认独立生效（整理 high、优化关）。"""
     calls: list[tuple[str, str]] = []
 
