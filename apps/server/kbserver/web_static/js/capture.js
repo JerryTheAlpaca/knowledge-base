@@ -76,9 +76,12 @@ function autosizeCap() {
   const cs = getComputedStyle(t);
   const lh = parseFloat(cs.lineHeight) || 24;
   const single = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom) + lh;
-  const multi = t.scrollHeight > single + lh / 2;
+  const hasText = t.value.trim() !== "";
+  // 空内容直接判单行，不信任 scrollHeight 测量：真机上字体加载/布局时序会让
+  // 空态被误判成多行，表现为提交后采集框卡在圆角矩形回不去胶囊（2026-09-17）
+  const multi = hasText && t.scrollHeight > single + lh / 2;
   box.classList.toggle("multi", multi);
-  t.style.height = Math.min(t.scrollHeight, 220) + "px";
+  t.style.height = hasText ? Math.min(t.scrollHeight, 220) + "px" : "";
 }
 
 function renderCapChips() {
