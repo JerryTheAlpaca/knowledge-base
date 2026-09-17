@@ -124,10 +124,10 @@ label { display: block; font-size: var(--fs-small); color: var(--text-2); margin
 
 /* —— 顶部：条目抽屉。收起时只剩一个从顶边垂下来的半圆拉手 —— */
 .drawer { position: relative; z-index: 30; display: flex; justify-content: center; }
-.drawer-handle { position: relative; width: 132px; min-height: 46px; padding: 6px 0 8px;
+.drawer-handle { position: relative; width: 150px; min-height: 46px; padding: 6px 0 8px;
                  margin-top: -24px;  /* 抵消 main 顶边距，让半圆贴住顶栏下沿 */
                  border: 1px solid var(--border-strong); border-top: none;
-                 border-radius: 0 0 66px 66px;
+                 border-radius: 0 0 75px 75px;
                  background: linear-gradient(180deg, rgba(56, 39, 17, .92) 0%, rgba(24, 16, 8, .96) 100%);
                  color: var(--text-2);
                  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
@@ -159,9 +159,9 @@ label { display: block; font-size: var(--fs-small); color: var(--text-2); margin
    pointerup 落到面板上，click 派发不到按钮，抽屉就收不起来 */
 .drawer-close { position: absolute; top: calc(56px + env(safe-area-inset-top));
                 left: 0; right: 0; margin-inline: auto;
-                width: 132px; min-height: 46px; padding: 6px 0 8px;
+                width: 150px; min-height: 46px; padding: 6px 0 8px;
                 border: 1px solid var(--border-strong); border-top: none;
-                border-radius: 0 0 66px 66px;
+                border-radius: 0 0 75px 75px;
                 background: linear-gradient(180deg, rgba(56, 39, 17, .92) 0%, rgba(24, 16, 8, .96) 100%);
                 color: var(--text-2);
                 display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
@@ -216,9 +216,9 @@ label { display: block; font-size: var(--fs-small); color: var(--text-2); margin
 .smartbox .uploadpick { grid-area: 1 / 1; }
 .smartbox .capsubmit { grid-area: 1 / 3; }
 .smartbox .chiprow, .smartbox .capmeta { grid-column: 1 / -1; }
-/* 多行态：文字全宽在上（左缘与上传按钮对齐：框 8px + 文字 0 = 按钮 8px），按钮行在下 */
+/* 多行态：文字全宽在上，左右留足与边框的间隙；按钮行在下 */
 .smartbox.multi { grid-template-columns: 1fr auto; }
-.smartbox.multi textarea { grid-area: 1 / 1 / 2 / 3; padding: 12px 4px 6px 0; }
+.smartbox.multi textarea { grid-area: 1 / 1 / 2 / 3; padding: 12px 14px 6px; }
 .smartbox.multi .uploadpick { grid-area: 2 / 1; }
 .smartbox.multi .capsubmit { grid-area: 2 / 2; }
 .smartbox textarea:focus { box-shadow: none; }
