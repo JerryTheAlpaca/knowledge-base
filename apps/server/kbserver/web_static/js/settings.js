@@ -114,8 +114,8 @@ async function loadSettingsData() {
     renderAutoEnrich(settings);
     renderAiParagraphing(settings);
     loadDevices();
-    // 其他平台登录态（小红书/视频号/知乎）：单个失败不影响其余区块
-    const plats = await Promise.all(PLAT_SESSIONS.map((p) =>
+    // 其他平台登录态：单个失败不影响其余区块
+    const plats = await Promise.all(PLAT_SHOWN.map((p) =>
       api("/v1/platform-sessions/" + p.platform).catch(() => null)));
     renderPlatSessions(plats);
   } catch (e) { showErr(e); }
@@ -323,20 +323,24 @@ async function biliRevoke() {
   catch (e) { showErr(e); }
 }
 
-// ---------- 其他平台登录态（小红书/微信视频号/知乎，docs/18 §7.2） ----------
+// ---------- 其他平台登录态（docs/18 §7.2） ----------
 // 与 B 站区块同构：状态块 + label + 输入框 + 按钮行；verification 枚举
 // 一律转成中文短语再进界面，不直接渲染机器码；明文永不回显。
+// enabled: false = 暂不在界面露出（后端端点保留）：
+// - wechat_channels：登录态路径未经验证，分享链接本身匿名可读
+// - zhihu：zse 风控连复制 Cookie 都拦，等真实登录态验证后再放出
 const PLAT_SESSIONS = [
-  { platform: "xiaohongshu", label: "小红书",
+  { platform: "xiaohongshu", label: "小红书", enabled: true,
     usage: "撞到登录墙时用这份登录态重试",
     hint: "登录小红书网页版后，从浏览器复制完整 Cookie 串粘贴到这里。多数分享链接无需登录也能直接读取。" },
-  { platform: "wechat_channels", label: "微信视频号",
+  { platform: "wechat_channels", label: "微信视频号", enabled: false,
     usage: "多数分享链接无需登录，这份是登录墙兜底",
     hint: "如遇登录墙，登录电脑版 channels.weixin.qq.com 后从浏览器复制完整 Cookie 粘贴到这里。" },
-  { platform: "zhihu", label: "知乎",
+  { platform: "zhihu", label: "知乎", enabled: false,
     usage: "当前知乎风控较严，登录态也可能受限",
     hint: "登录知乎网页版后，从浏览器复制完整 Cookie 串粘贴到这里。读取失败时会如实进入补充材料。" },
 ];
+const PLAT_SHOWN = PLAT_SESSIONS.filter((p) => p.enabled);
 
 function platStateView(meta, st) {
   const configured = !!(st && st.configured);
@@ -364,7 +368,7 @@ function platStateView(meta, st) {
 function renderPlatSessions(states) {
   const host = $("platSessions");
   if (!host) return;
-  host.innerHTML = PLAT_SESSIONS.map((meta, i) => {
+  host.innerHTML = PLAT_SHOWN.map((meta, i) => {
     const st = states[i];
     const configured = !!(st && st.configured);
     return '<div class="platblock">' +
