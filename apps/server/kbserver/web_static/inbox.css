@@ -257,7 +257,7 @@ label { display: block; font-size: var(--fs-small); color: var(--text-2); margin
 .xbtn::after { content: ""; position: absolute; inset: -11px; }
 .xbtn:hover { background: var(--bad-soft); color: var(--bad); }
 /* —— 上下文选项与歧义说明 —— */
-.ctxopts { display: flex; align-items: center; gap: 8px; padding: 8px 10px 0; }
+.ctxopts { display: flex; align-items: center; gap: 8px; padding: 0 10px 8px; }
 .multiplenote { margin: 8px 10px 0; }
 .opttoggle { position: relative; display: inline-flex; align-items: center; gap: 8px;
              min-height: 44px; padding: 4px 10px; cursor: pointer; font-size: var(--fs-body); }
