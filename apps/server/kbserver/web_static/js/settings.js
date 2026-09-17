@@ -114,6 +114,10 @@ async function loadSettingsData() {
     renderAutoEnrich(settings);
     renderAiParagraphing(settings);
     loadDevices();
+    // 其他平台登录态（小红书/视频号/知乎）：单个失败不影响其余区块
+    const plats = await Promise.all(PLAT_SESSIONS.map((p) =>
+      api("/v1/platform-sessions/" + p.platform).catch(() => null)));
+    renderPlatSessions(plats);
   } catch (e) { showErr(e); }
 }
 
@@ -319,6 +323,96 @@ async function biliRevoke() {
   catch (e) { showErr(e); }
 }
 
+// ---------- 其他平台登录态（小红书/微信视频号/知乎，docs/18 §7.2） ----------
+// 枚举（verification）一律转成中文短语再进界面，不直接渲染机器码。
+const PLAT_SESSIONS = [
+  { platform: "xiaohongshu", label: "小红书",
+    hint: "登录小红书网页版后，从浏览器复制完整 Cookie 串粘贴到这里。多数分享链接无需登录也能直接读取；撞到登录墙时才用这份登录态重试。" },
+  { platform: "wechat_channels", label: "微信视频号",
+    hint: "多数视频号分享链接无需登录即可读取说明文字；如遇登录墙，可粘贴电脑版 channels.weixin.qq.com 的 Cookie 作为兜底。" },
+  { platform: "zhihu", label: "知乎",
+    hint: "粘贴知乎网页版的完整 Cookie。当前知乎风控较严，登录态也可能受限；读取失败时会如实进入补充材料。" },
+];
+
+function platStateBadge(st) {
+  const configured = !!(st && st.configured);
+  const ver = st ? st.verification : "unconfigured";
+  let ico = "…", cls = "st-info", text = "未配置";
+  if (configured) {
+    text = "已配置" + (st.credential_version ? " · v" + st.credential_version : "");
+    if (ver === "blocked" || ver === "invalid") {
+      ico = "!"; cls = "st-warn"; text += "（上次检测被平台拒绝）";
+    } else if (ver === "network_error") {
+      ico = "!"; cls = "st-warn"; text += "（上次检测受网络影响）";
+    } else {
+      ico = "✓"; cls = "st-ok"; text += ver === "valid" ? "（检测通过）" : "（未检测）";
+    }
+  } else if (ver === "revoked") {
+    text = "已撤销，可重新配置";
+  }
+  return '<span class="' + cls + '" style="display:inline-flex;padding:2px 10px;' +
+    'border-radius:999px;font-size:var(--fs-caption)">' + ico + " " + esc(text) + "</span>";
+}
+
+function renderPlatSessions(states) {
+  const host = $("platSessions");
+  if (!host) return;
+  host.innerHTML = PLAT_SESSIONS.map((meta, i) => {
+    const st = states[i];
+    const configured = !!(st && st.configured);
+    return '<div class="platrow">' +
+      '<div class="platrow-head"><span class="platname">' + esc(meta.label) + "</span>" +
+        platStateBadge(st) + "</div>" +
+      '<div class="hint">' + esc(meta.hint) + "</div>" +
+      (configured && st.updated_at ? '<div class="hint">更新于 ' + fmtTime(st.updated_at) + "</div>" : "") +
+      '<div class="row">' +
+        '<input type="password" autocomplete="off" data-plat-secret="' + esc(meta.platform) + '" placeholder="粘贴完整 Cookie 串">' +
+        '<button class="primary small" data-plat-act="save" data-platform="' + esc(meta.platform) + '">保存</button>' +
+        (configured
+          ? '<button class="small" data-plat-act="check" data-platform="' + esc(meta.platform) + '">检测</button>' +
+            '<button class="small danger" data-plat-act="revoke" data-platform="' + esc(meta.platform) + '">撤销</button>'
+          : "") +
+      "</div></div>";
+  }).join("");
+}
+
+async function platSave(platform, label) {
+  const input = document.querySelector('[data-plat-secret="' + platform + '"]');
+  const s = input ? input.value.trim() : "";
+  if (!s) { toast("先粘贴 " + label + " 的 Cookie", { type: "error" }); return; }
+  try {
+    const r = await api("/v1/platform-sessions/" + platform, { method: "PUT", body: { secret: s } });
+    input.value = "";
+    toast(label + "登录态已更新" + (r.requeued_items ? "，有 " + r.requeued_items + " 条内容会自动重新提取" : ""), { type: "ok" });
+    loadSettingsData();
+  } catch (e) { showErr(e); }
+}
+
+async function platCheck(platform, label) {
+  try {
+    const r = await api("/v1/platform-sessions/" + platform + "/test", { method: "POST" });
+    if (r.status === "valid") toast(r.detail || label + "登录态有效", { type: "ok" });
+    else if (r.status === "unverified") toast(r.detail || "已能携带会话访问平台；实际效果以真实提取为准", { type: "warn" });
+    else if (r.status === "network_error") toast(r.detail || "检测受网络影响，稍后再试", { type: "warn" });
+    else toast(r.detail || "平台拒绝了访问，登录态可能失效", { type: "error" });
+    loadSettingsData();
+  } catch (e) { showErr(e); }
+}
+
+async function platRevoke(platform, label) {
+  const ok = await confirmModal({
+    title: "撤销" + label + "登录态",
+    body: "撤销后回到匿名读取；需要登录才能读取的内容将进入补充材料。",
+    confirmLabel: "撤销", danger: true,
+  });
+  if (!ok) return;
+  try {
+    await api("/v1/platform-sessions/" + platform, { method: "DELETE" });
+    toast("已撤销" + label + "登录态", { type: "ok" });
+    loadSettingsData();
+  } catch (e) { showErr(e); }
+}
+
 export function initSettings() {
   $("newProfileBtn").addEventListener("click", () => openProfileForm());
   $("defaultProfile").addEventListener("change", (e) => selectProfile("default_profile_id", e.target.value));
@@ -328,6 +422,17 @@ export function initSettings() {
   $("biliSave").addEventListener("click", biliSave);
   $("biliCheck").addEventListener("click", biliCheck);
   $("biliRevoke").addEventListener("click", biliRevoke);
+  $("platSessions").addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-plat-act]");
+    if (!btn) return;
+    const platform = btn.dataset.platform;
+    const meta = PLAT_SESSIONS.find((p) => p.platform === platform);
+    const label = meta ? meta.label : platform;
+    const act = btn.dataset.platAct;
+    if (act === "save") platSave(platform, label);
+    else if (act === "check") platCheck(platform, label);
+    else if (act === "revoke") platRevoke(platform, label);
+  });
   $("deviceList").addEventListener("click", (e) => {
     const act = e.target.closest("[data-device-activate]");
     if (act) { activateDevice(act.dataset.deviceActivate); return; }

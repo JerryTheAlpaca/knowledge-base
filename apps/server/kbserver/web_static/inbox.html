@@ -370,6 +370,11 @@
         <button id="biliCheck">检测登录态</button>
         <button class="danger" id="biliRevoke">撤销</button>
       </div>
+      <div class="list-head" style="margin-top:24px">
+        <h3>其他平台登录态</h3>
+      </div>
+      <p class="help" style="margin:0 0 4px">分享链接能直接读取的就不需要登录态；撞到平台登录墙时才用这里的 Cookie 重试一次。Cookie 只加密保存，任何页面都不会回显明文。</p>
+      <div id="platSessions"></div>
       <label class="asrtoggle" id="asrAutoRow" for="asrAuto" hidden>
         <input type="checkbox" id="asrAuto">
         <span class="asrtoggle-text"><b>无字幕时自动语音转写
