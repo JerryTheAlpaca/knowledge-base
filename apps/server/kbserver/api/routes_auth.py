@@ -82,8 +82,9 @@ def login_redirect(request: Request):
     from urllib.parse import quote
 
     sep = "&" if "?" in settings.auth_login_url else "?"
+    # app=kb：auth 站点据此用与 kb 一致的登录页视觉；登录态仍是同一中心会话，仅换肤
     return RedirectResponse(
-        f"{settings.auth_login_url}{sep}return_to={quote(return_to, safe='')}",
+        f"{settings.auth_login_url}{sep}return_to={quote(return_to, safe='')}&app=kb",
         status_code=307,
     )
 
