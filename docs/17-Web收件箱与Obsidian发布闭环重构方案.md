@@ -280,7 +280,9 @@ Obsidian 上线后自动写入
 | 阶段 | 用户含义 | 典型工作 | 完成判定 |
 |---|---|---|---|
 | 提取 | 从来源取得原始材料 | 抓网页、取标题和正文、取字幕轨、保存上传内容 | 当前来源版本已经可靠落库 |
-| 加工 | 把非文本材料转成可整理文本 | ASR、OCR、媒体预处理、必要的结构化转换 | 需要的加工产物已生成；不需要加工则标记跳过 |
+| 加工 | 把非文本材料转成可整理文本 | ASR、OCR、媒体预处理、必要的结构化转换 | 需要的加工产物已生成；不需要加工则不渲染此节点 |
+
+“加工”是内部阶段名，界面不直接显示这个词：状态图节点按条目的实际处理方式动态出现。会用到 ASR 的条目（录音、网页音轨、B 站无字幕音轨转写）渲染「语音识别」节点（step 的 `label` 字段）；网页正文、B 站字幕在提取时已是文字，不渲染该节点，状态图三节点直达整理。未来 OCR 实装后，图片条目才出现「提取文字」节点。
 | 整理 | 使用大模型生成单篇整理结果 | 摘要、观点、证据、方法和局限 | 当前来源版本对应的整理 Bundle 已生成 |
 | 发布 | 把当前最新 Bundle 写入 Obsidian | 插件下载、校验、写 Source 和 Digest、提交回执 | 服务端收到当前 Bundle 版本的有效 receipt |
 
@@ -293,7 +295,7 @@ Obsidian 上线后自动写入
 - `pending`：尚未开始。
 - `running`：正在执行。
 - `completed`：已经完成。
-- `skipped`：该条目不需要此步骤；状态图按已通过显示，详情写“无需加工”。
+- `skipped`：该条目不需要此步骤；状态图按已通过显示。（当前语音识别节点按条目动态出现或不出现，不使用 skipped。）
 - `waiting`：系统正在等待外部条件，例如等待 Obsidian 上线。
 - `attention`：需要用户操作，例如补充正文、连接 Obsidian、配置模型。
 - `failed`：本阶段执行失败，可以重试或查看原因。
@@ -315,9 +317,8 @@ Obsidian 上线后自动写入
 | 抓取网页 | 正在读取网页内容 |
 | 等待 B 站授权 | 需要连接 B 站才能读取这条内容 |
 | ASR 准备中 | 正在准备音频 |
-| ASR 执行中 | 正在转写 63% |
+| ASR 执行中 | 正在语音识别 63% |
 | ASR 等待资源 | 等待服务器空闲后继续 |
-| 不需要加工 | 无需额外加工 |
 | 大模型调用中 | 正在整理内容 |
 | 没有模型 Key | 需要选择整理模型 |
 | 云端成品已生成 | 等待 Obsidian 下载 |
@@ -606,16 +607,16 @@ AI 自动整理、无字幕自动转写等开关放入对应模块，不单独�
     "overall_state": "working",
     "current_stage": "process",
     "reason_code": "TRANSCRIBING",
-    "message": "正在转写音频",
+    "message": "正在语音识别",
     "progress_percent": 63,
     "requires_user_action": false,
     "primary_action": null,
     "available_actions": ["view_source", "cancel_process"],
     "steps": [
-      {"id": "extract", "status": "completed", "reason_code": "SOURCE_READY", "message": "已取得原始内容", "progress_percent": 100},
-      {"id": "process", "status": "running", "reason_code": "TRANSCRIBING", "message": "正在转写音频", "progress_percent": 63},
-      {"id": "organize", "status": "pending", "reason_code": "WAITING_FOR_PROCESS", "message": "等待加工完成", "progress_percent": null},
-      {"id": "publish", "status": "pending", "reason_code": "WAITING_FOR_ORGANIZE", "message": "等待整理完成", "progress_percent": null}
+      {"id": "extract", "label": "提取", "status": "completed", "reason_code": "SOURCE_READY", "message": "已取得原始内容", "progress_percent": 100},
+      {"id": "process", "label": "语音识别", "status": "running", "reason_code": "TRANSCRIBING", "message": "正在语音识别", "progress_percent": 63},
+      {"id": "organize", "label": "整理", "status": "pending", "reason_code": "WAITING_FOR_PROCESS", "message": "等待语音识别完成", "progress_percent": null},
+      {"id": "publish", "label": "发布", "status": "pending", "reason_code": "WAITING_FOR_ORGANIZE", "message": "等待整理完成", "progress_percent": null}
     ],
     "delivery": {
       "status": "not_ready",
@@ -631,6 +632,7 @@ AI 自动整理、无字幕自动转写等开关放入对应模块，不单独�
 字段原则：
 
 - `reason_code` 是稳定的机器状态，前端不得直接显示。
+- `label` 是阶段显示名，由服务端按条目的实际处理方式生成：「语音识别」节点只在会用到 ASR 的条目出现（否则该节点整体不渲染，而非置灰）；前端直接渲染，仅在缺失时回退到固定阶段名。
 - `message` 是按 `reason_code` 生成、可直接展示的用户文案，不从 `state_detail`、异常字符串或第三方响应中透传，不包含版本号、密钥、内部对象名、异常堆栈或敏感信息。
 - `progress_percent` 只有真实可计算时才返回整数，否则为 `null`。
 - `available_actions` 由服务端按真实状态给出，前端不猜哪些操作可用。

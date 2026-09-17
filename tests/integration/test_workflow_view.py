@@ -79,7 +79,7 @@ def test_ready_bundle_without_receipt_waits_for_obsidian(wc, user_a, db):
     item = _seed_item(db, user_a["user_id"], pipeline_state="ready")
     _add_bundle(db, item, 1, processing_state="ready")
     wf = _workflow(db, wc, user_a["desktop"]["token"], item)
-    pub = wf["steps"][3]
+    pub = wf["steps"][2]
     assert pub["id"] == "publish"
     assert pub["status"] == "waiting"
     assert pub["message"] == "等待 Obsidian 下载"
@@ -95,8 +95,8 @@ def test_receipt_lights_publish(wc, user_a, db):
                    device_id=user_a["desktop"]["device_id"],
                    manifest_sha256=bundle.manifest_sha256))
     wf = _workflow(db, wc, user_a["desktop"]["token"], item)
-    assert wf["steps"][3]["status"] == "completed"
-    assert wf["steps"][3]["message"] == "已发布到 Obsidian"
+    assert wf["steps"][2]["status"] == "completed"
+    assert wf["steps"][2]["message"] == "已发布到 Obsidian"
     assert wf["delivery"]["status"] == "published"
     assert wf["delivery"]["received_at"]
     assert wf["overall_state"] == "published"
@@ -113,7 +113,7 @@ def test_stale_receipt_does_not_publish_new_bundle(wc, user_a, db):
     item.bundle_revision = 2
     wf = _workflow(db, wc, user_a["desktop"]["token"], item)
     assert wf["delivery"]["status"] != "published"
-    assert wf["steps"][3]["status"] == "waiting"
+    assert wf["steps"][2]["status"] == "waiting"
 
 
 def test_receipt_with_wrong_manifest_not_accepted(wc, user_a, db):
@@ -123,7 +123,7 @@ def test_receipt_with_wrong_manifest_not_accepted(wc, user_a, db):
                    device_id=user_a["desktop"]["device_id"],
                    manifest_sha256="f" * 64))
     wf = _workflow(db, wc, user_a["desktop"]["token"], item)
-    assert wf["steps"][3]["status"] == "waiting"
+    assert wf["steps"][2]["status"] == "waiting"
 
 
 def test_receipt_not_shared_across_users(wc, user_a, user_b, db):
@@ -134,7 +134,7 @@ def test_receipt_not_shared_across_users(wc, user_a, user_b, db):
                    device_id=user_a["desktop"]["device_id"],
                    manifest_sha256=bundle.manifest_sha256))
     wf = _workflow(db, wc, user_b["desktop"]["token"], item)
-    assert wf["steps"][3]["status"] == "waiting"
+    assert wf["steps"][2]["status"] == "waiting"
 
 
 def test_no_device_asks_to_connect_obsidian(db):
@@ -159,7 +159,7 @@ def test_no_device_asks_to_connect_obsidian(db):
         item=_Item(), meta={}, run=None, bundle=_Bundle(), receipt=None,
         has_device=False, active_job=None, auto_enrich=True,
     )
-    pub = wf["steps"][3]
+    pub = wf["steps"][2]
     assert pub["status"] == "attention"
     assert pub["message"] == "连接 Obsidian 后自动发布"
     assert wf["primary_action"] == "connect_obsidian"
@@ -171,7 +171,7 @@ def test_no_device_asks_to_connect_obsidian(db):
 def test_waiting_key_maps_to_choose_model(wc, user_a, db):
     item = _seed_item(db, user_a["user_id"], pipeline_state="waiting_key")
     wf = _workflow(db, wc, user_a["desktop"]["token"], item)
-    org = wf["steps"][2]
+    org = wf["steps"][1]
     assert org["status"] == "attention"
     assert org["message"] == "需要选择整理模型"
     assert wf["primary_action"] == "choose_model"
@@ -219,11 +219,12 @@ def test_transcribing_shows_real_percent(wc, user_a, db):
     proc = wf["steps"][1]
     assert proc["status"] == "running"
     assert proc["progress_percent"] == 63
-    assert proc["message"] == "正在转写 63%"
+    assert proc["message"] == "正在语音识别 63%"
+    assert proc["label"] == "语音识别"
     assert wf["overall_state"] == "working"
-    # 提取已完成（来源已定位），整理在等待加工
+    # 提取已完成（来源已定位），整理在等待语音识别
     assert wf["steps"][0]["status"] == "completed"
-    assert wf["steps"][2]["message"] == "等待加工完成"
+    assert wf["steps"][2]["message"] == "等待语音识别完成"
 
 
 def test_transcribing_without_total_shows_no_fake_percent(wc, user_a, db):
@@ -248,13 +249,28 @@ def test_paused_run_freezes_percent_and_says_waiting(wc, user_a, db):
     assert proc["progress_percent"] == 63
 
 
-def test_non_audio_item_marks_process_skipped(wc, user_a, db):
+def test_non_audio_item_omits_process_step(wc, user_a, db):
+    """不用 ASR 的条目（网页正文/字幕已是文字）不渲染语音识别节点：三节点直达整理。"""
     item = _seed_item(db, user_a["user_id"], pipeline_state="ready")
     _add_bundle(db, item, 1, processing_state="ready")
     wf = _workflow(db, wc, user_a["desktop"]["token"], item)
+    assert [s["id"] for s in wf["steps"]] == ["extract", "organize", "publish"]
+    assert wf["steps"][0]["label"] == "提取"
+    assert wf["steps"][1]["label"] == "整理"
+    assert wf["steps"][2]["label"] == "发布"
+
+
+def test_audio_item_without_run_keeps_transcribe_step(wc, user_a, db):
+    """音频条目（含网页音轨/B 站转写请求）保留语音识别节点，等待触发。"""
+    item = _seed_item(db, user_a["user_id"], pipeline_state="queued",
+                      meta={"media_kind": "audio", "missing_materials": ["transcript"]})
+    wf = _workflow(db, wc, user_a["desktop"]["token"], item)
     proc = wf["steps"][1]
-    assert proc["status"] == "skipped"
-    assert proc["message"] == "无需额外加工"
+    assert proc["id"] == "process"
+    assert proc["label"] == "语音识别"
+    assert proc["status"] == "waiting"
+    assert proc["message"] == "等待语音识别"
+    assert [s["id"] for s in wf["steps"]] == ["extract", "process", "organize", "publish"]
 
 
 # ---- 列表视图与搜索（docs/17 §10.5、§4.6）----
@@ -323,8 +339,9 @@ def test_diagnostics_three_layer_structure(wc, user_a, db):
     r = wc.get(f"/v1/items/{item.id}/diagnostics", headers=auth(user_a["desktop"]["token"]))
     assert r.status_code == 200
     body = r.json()
-    assert len(body["summary"]) == 4
-    assert {s["stage"] for s in body["summary"]} == {"extract", "process", "organize", "publish"}
+    assert len(body["summary"]) == 3
+    # 非 ASR 条目不渲染语音识别节点，摘要只有三步
+    assert {s["stage"] for s in body["summary"]} == {"extract", "organize", "publish"}
     assert "内容版本" in body["explanation"]
     tech = body["technical_records"]
     assert tech["content_version"] == 1

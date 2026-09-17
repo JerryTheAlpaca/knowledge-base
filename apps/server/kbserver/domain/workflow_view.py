@@ -1,6 +1,7 @@
-"""WorkflowView：把内部状态转换为面向 Web 的四阶段用户状态（docs/17 §10）。
+"""WorkflowView：把内部状态转换为面向 Web 的用户状态节点（docs/17 §10）。
 
-四阶段：extract（提取）→ process（加工）→ organize（整理）→ publish（发布）。
+节点：extract（提取）→ [process（语音识别，仅会用到 ASR 的条目渲染）] →
+organize（整理）→ publish（发布）。节点数量按条目动态：非 ASR 条目只有三节点。
 - 列表页与详情页共用同一转换；前端只渲染本视图，不再手写状态映射。
 - reason_code 是稳定机器码，前端不得直接显示；message 是按 reason_code
   生成的用户文案，不透传 state_detail、异常字符串或第三方响应。
@@ -28,9 +29,12 @@ _ASR_RESOURCE_PAUSES = {
 
 
 def _step(step_id: str, status: str, reason: str, message: str,
-          progress: int | None = None) -> dict:
+          progress: int | None = None, label: str | None = None) -> dict:
     return {
         "id": step_id,
+        # 阶段显示名由服务端权威生成：语音识别节点（仅 ASR 条目渲染）标注具体
+        # 处理方式；None 时前端回退到固定阶段名
+        "label": label,
         "status": status,  # pending|running|completed|skipped|waiting|attention|failed
         "reason_code": reason,
         "message": message,
@@ -66,84 +70,87 @@ def derive_item_workflow(
     # ---- 提取 ----
     if asr_active:
         # 有转写 run：来源材料已定位落库，提取视为完成
-        extract = _step("extract", "completed", "SOURCE_READY", "已取得原始内容")
+        extract = _step("extract", "completed", "SOURCE_READY", "已取得原始内容", label="提取")
     elif ps == "queued":
-        extract = _step("extract", "pending", "RECEIVED", "已接收，准备提取")
+        extract = _step("extract", "pending", "RECEIVED", "已接收，准备提取", label="提取")
     elif ps == "extracting":
-        extract = _step("extract", "running", "EXTRACTING", "正在读取网页内容")
+        extract = _step("extract", "running", "EXTRACTING", "正在读取网页内容", label="提取")
     elif ps == "needs_input":
         if platform == "bilibili":
             extract = _step("extract", "attention", "WAITING_PLATFORM_AUTH",
-                            "需要连接 B 站才能读取这条内容")
+                            "需要连接 B 站才能读取这条内容", label="提取")
         else:
-            extract = _step("extract", "attention", "NEEDS_CONTENT", "需要补充正文或字幕")
+            extract = _step("extract", "attention", "NEEDS_CONTENT", "需要补充正文或字幕", label="提取")
     elif ps == "failed" and not (run and run.state == "failed"):
-        extract = _step("extract", "failed", "EXTRACT_FAILED", "这次提取没有成功，可以重试")
+        extract = _step("extract", "failed", "EXTRACT_FAILED", "这次提取没有成功，可以重试", label="提取")
     else:
-        extract = _step("extract", "completed", "SOURCE_READY", "已取得原始内容")
+        extract = _step("extract", "completed", "SOURCE_READY", "已取得原始内容", label="提取")
 
-    # ---- 加工 ----
-    if run is not None:
-        if run.state == "succeeded":
-            process = _step("process", "completed", "PROCESS_DONE", "转写完成", 100)
-        elif run.state == "failed":
-            process = _step("process", "failed", "TRANSCRIBE_FAILED", "转写没有完成，可以重新转写")
-        elif run.state == "cancelled":
+    # ---- 语音识别（docs/17 §5.1）：仅会用到 ASR 的条目渲染此节点（录音、网页音轨、
+    # B 站无字幕音轨转写）；网页正文/B 站字幕在提取时已是文字，不渲染该节点。
+    # 未来 OCR 实装后，图片条目才出现「提取文字」节点。
+    process = None
+    if run is not None or meta.get("media_kind") == "audio" or "transcript" in missing:
+        if run is not None and run.state == "succeeded":
+            process = _step("process", "completed", "PROCESS_DONE", "转写完成", 100, label="语音识别")
+        elif run is not None and run.state == "failed":
+            process = _step("process", "failed", "TRANSCRIBE_FAILED",
+                            "语音识别没有完成，可以重新识别", label="语音识别")
+        elif run is not None and run.state == "cancelled":
             process = _step("process", "waiting", "PROCESS_CANCELLED",
-                            "转写已取消，可以重新转写或补充内容")
-        elif run.state == "paused" and run.pause_reason == "selection_required":
-            process = _step("process", "attention", "SELECTION_REQUIRED", "需要选择要转写的音频")
-        elif run.state == "paused":
+                            "语音识别已取消，可以重新识别或补充内容", label="语音识别")
+        elif run is not None and run.state == "paused" and run.pause_reason == "selection_required":
+            process = _step("process", "attention", "SELECTION_REQUIRED",
+                            "需要选择要识别的音频", label="语音识别")
+        elif run is not None and run.state == "paused":
             # 资源等待：百分比冻结，只说等待对象
             process = _step("process", "waiting", "TRANSCRIBE_PAUSED",
-                            "等待服务器空闲后继续", _asr_progress(run))
-        elif run.state == "preparing":
-            process = _step("process", "running", "PREPARING_AUDIO", "正在准备音频")
-        elif run.state == "transcribing":
+                            "等待服务器空闲后继续", _asr_progress(run), label="语音识别")
+        elif run is not None and run.state == "preparing":
+            process = _step("process", "running", "PREPARING_AUDIO", "正在准备音频", label="语音识别")
+        elif run is not None and run.state == "transcribing":
             progress = _asr_progress(run)
-            message = "正在转写音频" if progress is None else f"正在转写 {progress}%"
-            process = _step("process", "running", "TRANSCRIBING", message, progress)
-        else:  # queued：排队等待执行
-            process = _step("process", "running", "TRANSCRIBE_QUEUED", "转写排队中")
-    elif meta.get("media_kind") == "audio" or "transcript" in missing:
-        # 音频条目但还没有转写 run：等待用户触发或补充
-        process = _step("process", "waiting", "TRANSCRIBE_PENDING", "等待音频转写")
-    else:
-        process = _step("process", "skipped", "PROCESS_SKIPPED", "无需额外加工")
+            message = "正在语音识别" if progress is None else f"正在语音识别 {progress}%"
+            process = _step("process", "running", "TRANSCRIBING", message, progress, label="语音识别")
+        elif run is not None:  # queued：排队等待执行
+            process = _step("process", "running", "TRANSCRIBE_QUEUED", "语音识别排队中", label="语音识别")
+        else:
+            # 音频条目但还没有转写 run：等待用户触发或补充
+            process = _step("process", "waiting", "TRANSCRIBE_PENDING", "等待语音识别", label="语音识别")
 
     # ---- 整理 ----
     bundle_ready = bool(bundle and bundle.processing_state == "ready")
     bundle_stale = bool(bundle_ready and bundle.source_revision != item.source_revision)
     if bundle_ready and not bundle_stale:
-        organize = _step("organize", "completed", "ORGANIZE_DONE", "已生成整理结果")
+        organize = _step("organize", "completed", "ORGANIZE_DONE", "已生成整理结果", label="整理")
     elif bundle and bundle.processing_state == "failed" and bundle.source_revision == item.source_revision:
-        organize = _step("organize", "failed", "ORGANIZE_FAILED", "这次整理没有成功，可以重新整理")
+        organize = _step("organize", "failed", "ORGANIZE_FAILED", "这次整理没有成功，可以重新整理", label="整理")
     elif ps == "waiting_key":
-        organize = _step("organize", "attention", "WAITING_MODEL", "需要选择整理模型")
+        organize = _step("organize", "attention", "WAITING_MODEL", "需要选择整理模型", label="整理")
     elif ps == "unknown_outcome":
         organize = _step("organize", "waiting", "ORGANIZE_UNKNOWN",
-                         "暂时无法确认整理是否完成，系统正在核对结果")
+                         "暂时无法确认整理是否完成，系统正在核对结果", label="整理")
     elif ps == "enriching":
-        organize = _step("organize", "running", "ORGANIZING", "正在整理内容")
+        organize = _step("organize", "running", "ORGANIZING", "正在整理内容", label="整理")
     elif ps == "extracted" and not auto_enrich:
         organize = _step("organize", "attention", "AUTO_ORGANIZE_OFF",
-                         "原文已就绪，自动整理已关闭")
+                         "原文已就绪，自动整理已关闭", label="整理")
     elif ps == "extracted":
-        organize = _step("organize", "pending", "WAITING_FOR_ORGANIZE", "等待整理开始")
+        organize = _step("organize", "pending", "WAITING_FOR_ORGANIZE", "等待整理开始", label="整理")
     elif bundle_stale:
-        organize = _step("organize", "attention", "STALE_ORGANIZE", "原始内容已经更新，需要重新整理")
+        organize = _step("organize", "attention", "STALE_ORGANIZE", "原始内容已经更新，需要重新整理", label="整理")
     elif ps == "failed" and run is not None and run.state == "failed":
-        organize = _step("organize", "pending", "WAITING_FOR_PROCESS", "等待转写完成后整理")
+        organize = _step("organize", "pending", "WAITING_FOR_PROCESS", "等待语音识别完成后整理", label="整理")
     elif ps == "failed":
-        organize = _step("organize", "pending", "WAITING_FOR_EXTRACT", "等待提取完成后整理")
+        organize = _step("organize", "pending", "WAITING_FOR_EXTRACT", "等待提取完成后整理", label="整理")
     elif ps in ("needs_input",):
-        organize = _step("organize", "pending", "WAITING_FOR_CONTENT", "等待补充内容后整理")
+        organize = _step("organize", "pending", "WAITING_FOR_CONTENT", "等待补充内容后整理", label="整理")
     elif asr_active:
-        organize = _step("organize", "pending", "WAITING_FOR_PROCESS", "等待加工完成")
+        organize = _step("organize", "pending", "WAITING_FOR_PROCESS", "等待语音识别完成", label="整理")
     elif ps in ("queued", "extracting"):
-        organize = _step("organize", "pending", "WAITING_FOR_EXTRACT", "等待提取完成")
+        organize = _step("organize", "pending", "WAITING_FOR_EXTRACT", "等待提取完成", label="整理")
     else:
-        organize = _step("organize", "pending", "WAITING_FOR_ORGANIZE", "等待整理开始")
+        organize = _step("organize", "pending", "WAITING_FOR_ORGANIZE", "等待整理开始", label="整理")
 
     # ---- 发布（只认当前最新 Bundle 的有效回执）----
     receipt_valid = bool(
@@ -152,24 +159,24 @@ def derive_item_workflow(
         and receipt.bundle_revision == bundle.revision
     )
     if bundle is None:
-        publish = _step("publish", "pending", "WAITING_FOR_ORGANIZE", "等待整理完成")
+        publish = _step("publish", "pending", "WAITING_FOR_ORGANIZE", "等待整理完成", label="发布")
         delivery = {"status": "not_ready", "bundle_revision": None,
                     "received_at": None, "device_id": None, "device_name": None}
     elif receipt_valid:
-        publish = _step("publish", "completed", "PUBLISHED", "已发布到 Obsidian", 100)
+        publish = _step("publish", "completed", "PUBLISHED", "已发布到 Obsidian", 100, label="发布")
         delivery = {"status": "published", "bundle_revision": bundle.revision,
                     "received_at": receipt.received_at.isoformat(),
                     "device_id": receipt.device_id, "device_name": None}
     elif has_device:
-        publish = _step("publish", "waiting", "WAITING_OBSIDIAN", "等待 Obsidian 下载")
+        publish = _step("publish", "waiting", "WAITING_OBSIDIAN", "等待 Obsidian 下载", label="发布")
         delivery = {"status": "waiting_obsidian", "bundle_revision": bundle.revision,
                     "received_at": None, "device_id": None, "device_name": None}
     else:
-        publish = _step("publish", "attention", "CONNECT_OBSIDIAN", "连接 Obsidian 后自动发布")
+        publish = _step("publish", "attention", "CONNECT_OBSIDIAN", "连接 Obsidian 后自动发布", label="发布")
         delivery = {"status": "connect_obsidian", "bundle_revision": bundle.revision,
                     "received_at": None, "device_id": None, "device_name": None}
 
-    steps = [extract, process, organize, publish]
+    steps = [extract] + ([process] if process is not None else []) + [organize, publish]
 
     # ---- 聚合状态（docs/17 §5.2）----
     order = {"pending": 0, "skipped": 0, "completed": 0, "waiting": 1,
@@ -234,7 +241,6 @@ def _available_actions(item: Item, meta: dict, steps: dict[str, dict] | list,
     """服务端按真实状态给出可用操作；前端不猜（docs/17 §10.2）。"""
     steps_by_id = {s["id"]: s for s in steps}
     extract = steps_by_id["extract"]
-    process = steps_by_id["process"]
     organize = steps_by_id["organize"]
     acts = ["view_source"]
     if meta.get("original_url") and extract["status"] in ("completed", "attention", "failed"):
@@ -360,7 +366,7 @@ def build_diagnostics(db: Session, user_id: str, item: Item,
         "waiting": "等待中", "attention": "需要你处理", "failed": "失败",
     }
     summary = [
-        {"stage": s["id"], "stage_label": stage_labels[s["id"]],
+        {"stage": s["id"], "stage_label": s.get("label") or stage_labels[s["id"]],
          "status": s["status"], "status_label": status_labels.get(s["status"], s["status"]),
          "message": s["message"]}
         for s in wf["steps"]

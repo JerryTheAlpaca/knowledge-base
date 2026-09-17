@@ -1,7 +1,9 @@
 // workflow.js — 只渲染服务端 WorkflowView，不重新推断业务状态（docs/17 §11）
 //
 // 状态语义全部来自 /v1/items 返回的 workflow 字段：
-// - steps：四阶段（提取/加工/整理/发布），状态集合见 docs/17 §5.2
+// - steps：节点集合按条目动态（提取/语音识别/整理/发布）；「语音识别」节点只在
+//   会用到 ASR 的条目出现（录音、网页音轨、B 站无字幕转写），其余条目三节点直达整理
+//   每步的 label 由服务端生成，前端直接渲染
 // - delivery.status：not_ready | waiting_obsidian | connect_obsidian | published
 // - reason_code 是机器码，本模块绝不显示它，只显示 message。
 
@@ -59,7 +61,7 @@ export function stepperHTML(wf) {
     const mark = STEP_MARKS[cls] || (cls === "done" ? "✓" : "");
     html += '<div class="step ' + cls + '">' +
       '<span class="sball">' + mark + "</span>" +
-      '<span class="slabel">' + esc(STAGE_LABELS[s.id] || s.id) + "</span>" +
+      '<span class="slabel">' + esc(s.label || STAGE_LABELS[s.id] || s.id) + "</span>" +
       '<span class="sline" aria-hidden="true"></span></div>';
   });
   // 已发布：最后一个节点完成时一次缩放淡入（§6.2，不做持续庆祝动画）
