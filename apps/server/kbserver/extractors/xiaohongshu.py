@@ -35,7 +35,7 @@ from .fetch_base import (
     page_slug,
 )
 
-EXTRACTOR_VERSION = "xiaohongshu_note-1.1.0"
+EXTRACTOR_VERSION = "xiaohongshu_note-1.1.1"
 
 _NOTE_ID_RE = re.compile(r"/(?:explore|discovery/item|user/profile)/([0-9a-f]{16,32})(?:[/?#]|$)")
 _USER_NOTE_RE = re.compile(r"/user/profile/([0-9a-f]{16,32})/([0-9a-f]{16,32})")
@@ -275,11 +275,77 @@ def _load_initial_state(body: str) -> dict | None:
     raw = m.group(1)
     # __INITIAL_STATE__ 常含 undefined 字面量，JSON 不认
     raw = raw.replace("undefined", "null")
+    # 2026-09-17 生产实测：字段值还可能是 JS 构造调用（noteDetailMap 等
+    # 以 new Map([...]) 输出），不转换则整个 state 解析失败、笔记提取不到
+    raw = _replace_js_literals(raw)
     try:
         data = json.loads(raw)
     except json.JSONDecodeError:
         return None
     return data if isinstance(data, dict) else None
+
+
+def _balanced_span_end(raw: str, start: int) -> int:
+    """start 是开括号后的第一个字符；返回配对闭括号的下一位（字符串感知）。"""
+    depth, i, n = 1, start, len(raw)
+    in_str = esc = False
+    while i < n and depth:
+        c = raw[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif c == "\\":
+                esc = True
+            elif c == '"':
+                in_str = False
+        else:
+            if c == '"':
+                in_str = True
+            elif c in "([{":
+                depth += 1
+            elif c in ")]}":
+                depth -= 1
+        i += 1
+    return i
+
+
+def _replace_js_literals(raw: str) -> str:
+    """把 new Map([[k, v], ...]) / new Set([...]) 字面量转成 JSON 等价形式。
+
+    Map → 对象（键一律 JSON 字符串化），Set → 数组；括号内不是纯 JSON
+    数组时该段替换为 null，不影响其余字段解析。
+    """
+    out: list[str] = []
+    i, n = 0, len(raw)
+    while i < n:
+        j = raw.find("new ", i)
+        if j < 0:
+            out.append(raw[i:])
+            break
+        is_map = raw.startswith("new Map(", j)
+        is_set = raw.startswith("new Set(", j)
+        if not (is_map or is_set):
+            out.append(raw[i:j + 4])
+            i = j + 4
+            continue
+        out.append(raw[i:j])
+        end = _balanced_span_end(raw, j + 8)
+        try:
+            arr = json.loads(raw[j + 8:end - 1])
+            items: list[str] = []
+            if is_map and isinstance(arr, list):
+                for pair in arr:
+                    if isinstance(pair, list) and pair:
+                        items.append(
+                            f"{json.dumps(pair[0], ensure_ascii=False)}:"
+                            f"{json.dumps(pair[1], ensure_ascii=False)}")
+                out.append("{" + ",".join(items) + "}")
+            else:
+                out.append(json.dumps(arr, ensure_ascii=False))
+        except json.JSONDecodeError:
+            out.append("null")
+        i = end
+    return "".join(out)
 
 
 def _dig_note(state: dict | None, note_id: str) -> dict | None:

@@ -259,6 +259,36 @@ def test_xhs_note_url_from_login():
     assert _note_url_from_login("https://www.xiaohongshu.com/explore/1") is None
 
 
+def test_load_initial_state_handles_js_map_literals():
+    """2026-09-17 生产实锤：state 字段值含 new Map([...])（如空的
+    noteDetailMap / AiNoteDetailStore），不转换则整个 state 解析失败、
+    笔记明明可访问却报 structure_changed。"""
+    from kbserver.extractors.xiaohongshu import _load_initial_state
+    body = (
+        '<script>window.__INITIAL_STATE__={"note":{"firstNoteId":"abc",'
+        '"noteDetailMap":{"abc":{"note":{"title":"标题","desc":"正文内容"}}}},'
+        '"AiNoteDetailStore":{"noteDetailMap":new Map([])},'
+        '"kv":new Map([["k1","v1"],["k2",{"n":1}]]),'
+        '"tags":new Set(["a","b"])}</script>'
+    )
+    state = _load_initial_state(body)
+    assert state is not None
+    assert state["note"]["noteDetailMap"]["abc"]["note"]["desc"] == "正文内容"
+    # 空栈形式（生产真实样本）→ 空 Map 转空对象
+    assert state["AiNoteDetailStore"]["noteDetailMap"] == {}
+    # 非空 Map → 键值对转对象（键 JSON 字符串化）
+    assert state["kv"] == {"k1": "v1", "k2": {"n": 1}}
+    assert state["tags"] == ["a", "b"]
+    # undefined 与 new 混用仍然各自处理
+    body2 = ('<script>window.__INITIAL_STATE__={"a":undefined,'
+             '"m":new Map([])}</script>')
+    assert _load_initial_state(body2) == {"a": None, "m": {}}
+    # 正文里出现 "new " 普通文本不受影响
+    body3 = ('<script>window.__INITIAL_STATE__={"desc":"buy new year gifts",'
+             '"x":new Map([])}</script>')
+    assert _load_initial_state(body3)["desc"] == "buy new year gifts"
+
+
 def _xhs_note_state_html(note_id: str) -> bytes:
     state = {
         "note": {"noteDetailMap": {note_id: {"note": {
