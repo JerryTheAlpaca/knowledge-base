@@ -66,9 +66,18 @@ export function restoreDraft() {
 }
 
 // ---------- 渲染 ----------
+// 形态判定固定以「胶囊态（按钮同排）宽度」为基准量行数：
+// 超过一行才加 .multi（文字全宽移到按钮上方）；两种形态不互为测量基准，不会来回抖动
 function autosizeCap() {
   const t = $("capText");
+  const box = $("smartBox");
   t.style.height = "auto";
+  box.classList.remove("multi");
+  const cs = getComputedStyle(t);
+  const lh = parseFloat(cs.lineHeight) || 24;
+  const single = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom) + lh;
+  const multi = t.scrollHeight > single + lh / 2;
+  box.classList.toggle("multi", multi);
   t.style.height = Math.min(t.scrollHeight, 220) + "px";
 }
 
@@ -311,6 +320,7 @@ export function initCapture({ onSubmit }) {
   setSubmittedHandler(onSubmit);
   $("capSubmit").addEventListener("click", submitCapture);
   $("capText").addEventListener("input", () => { autosizeCap(); renderCapChips(); });
+  window.addEventListener("resize", autosizeCap);
   $("uploadPick").addEventListener("click", () => $("capFiles").click());
   $("capFiles").addEventListener("change", (e) => {
     const audios = [];

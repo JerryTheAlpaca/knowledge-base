@@ -3,6 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0a0705">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="知识收件箱">
 <title>知识收件箱</title>
 <link rel="stylesheet" href="/tokens.css">
 <link rel="stylesheet" href="/webstatic/inbox.css">
@@ -55,14 +60,15 @@
       <!-- 顶部：条目抽屉。收起时只剩一个垂下来的半圆拉手，下拉/点击展开条目流 -->
       <div class="drawer" id="listWrap">
         <button class="drawer-handle" id="drawerHandle" aria-expanded="false" aria-controls="drawerPanel" title="收件箱条目">
+          <span class="handle-label">已收集</span>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="m6 9 6 6 6-6"/>
           </svg>
-          <span class="drawer-badge num" id="drawerBadge" hidden></span>
         </button>
         <div class="drawer-panel" id="drawerPanel">
           <button class="drawer-close" id="drawerClose" aria-label="收起条目列表" title="收起">
+            <span class="handle-label">收起</span>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                  stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="m18 15-6-6-6 6"/>
@@ -214,32 +220,30 @@
       <div class="dock" id="captureDock">
         <div class="card capcard" id="captureCard">
       <div class="smartbox" id="smartBox">
-        <div class="capline">
-          <button type="button" class="icon uploadpick" id="uploadPick" aria-label="添加文件或录音" title="添加文件或录音">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-              <polyline points="17 8 12 3 7 8"/>
-              <line x1="12" y1="3" x2="12" y2="15"/>
-            </svg>
-          </button>
-          <textarea id="capText" rows="1" placeholder="粘贴链接，或写下想法……" aria-label="采集内容"></textarea>
-          <button class="capsubmit" id="capSubmit" aria-label="提交" title="提交">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                 stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <line x1="12" y1="19" x2="12" y2="5"/>
-              <polyline points="5 12 12 5 19 12"/>
-            </svg>
-          </button>
-        </div>
+        <textarea id="capText" rows="1" placeholder="粘贴链接，或写下想法……" aria-label="采集内容"></textarea>
+        <button type="button" class="icon uploadpick" id="uploadPick" aria-label="添加文件或录音" title="添加文件或录音">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="17 8 12 3 7 8"/>
+            <line x1="12" y1="3" x2="12" y2="15"/>
+          </svg>
+        </button>
+        <button class="capsubmit" id="capSubmit" aria-label="提交" title="提交">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <line x1="12" y1="19" x2="12" y2="5"/>
+            <polyline points="5 12 12 5 19 12"/>
+          </svg>
+        </button>
+        <div class="chiprow" id="urlChips" hidden></div>
+        <div class="chiprow" id="fileChips" hidden></div>
+        <div class="chiprow" id="audioChips" hidden></div>
         <div class="capmeta">
           <span class="small" id="capAudioState"></span>
           <span class="spacer"></span>
           <span class="small num" id="capProgress"></span>
         </div>
-        <div class="chiprow" id="urlChips" hidden></div>
-        <div class="chiprow" id="fileChips" hidden></div>
-        <div class="chiprow" id="audioChips" hidden></div>
         <input id="capFiles" type="file" multiple hidden>
       </div>
       <!-- 上下文选项：识别到相关内容才出现（docs/17 §4.3） -->

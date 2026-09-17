@@ -7,13 +7,12 @@
 import { $, api, esc, toast, showErr, confirmModal, fmtTime, uploadFiles,
          sanitizeFilename, openModalHTML, closeModal } from "./api.js";
 import { stepperHTML, stagePanelHTML, actionLabel, availableActionLabels, STAGE_LABELS } from "./workflow.js";
-import { refreshItems as refreshList, closeDrawer } from "./item-list.js";
+import { refreshItems as refreshList, closeDrawer, openDrawer } from "./item-list.js";
 
 let detailId = null;
 let detailData = null;
 let detailTab = "auto";
 let detailLoading = false;
-let detailPushed = false;
 let detailSeq = 0;
 let asrStatus = null;
 let sourceEditing = false;
@@ -69,8 +68,8 @@ export async function openDetail(itemId, opts = {}) {
   $("moreMenu").hidden = true;
   window.scrollTo({ top: 0, behavior: "smooth" });
   if (opts.push !== false) {
-    try { history.pushState({ item: itemId }, "", "/inbox?item=" + encodeURIComponent(itemId)); detailPushed = true; }
-    catch (e) { detailPushed = false; }
+    try { history.pushState({ item: itemId }, "", "/inbox?item=" + encodeURIComponent(itemId)); }
+    catch (e) { /* 忽略 */ }
   }
   await refreshDetail();
 }
@@ -80,10 +79,14 @@ export function closeDetail() {
   $("detailView").hidden = true;
   $("homeMain").hidden = false;
   if (onboardingWasVisible) $("onboardingHost").hidden = false;
+  window.scrollTo({ top: 0 });
 }
 
 export function exitDetail() {
-  if (detailPushed) { history.back(); }
+  // 是否能 history.back() 以「当前历史条目是否就是这次详情推入的」为准，
+  // 不再依赖可失同步的布尔标志（走查反馈：有时按返回回不去）
+  const st = history.state;
+  if (st && st.item && detailId && st.item === detailId) { history.back(); }
   else {
     closeDetail();
     try { history.replaceState({}, "", "/inbox"); } catch (e) {}
@@ -436,14 +439,15 @@ async function doDelete() {
   try {
     await api("/v1/items/" + encodeURIComponent(detailId), { method: "DELETE" });
     toast("已删除服务器材料", { type: "ok" });
-    detailPushed = false;
     exitDetailList();
     refreshList();
   } catch (e) { showErr(e); }
 }
 function exitDetailList() {
+  // 删除发生在详情页，返回时应回到进入前的条目列表，而不是金蔷薇主页（走查反馈）
   closeDetail();
   try { history.replaceState({}, "", "/inbox"); } catch (e) {}
+  openDrawer();
 }
 
 async function downloadSourceMd() {
@@ -663,7 +667,6 @@ export function initDetail() {
 }
 
 window.addEventListener("popstate", () => {
-  detailPushed = false;
   const id = new URLSearchParams(location.search).get("item");
   if (id && id !== detailId) { openDetail(id, { push: false }); }
   else if (!id && detailId) { closeDetail(); }

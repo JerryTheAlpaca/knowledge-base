@@ -56,14 +56,17 @@
 
 /* ============ 基底 ============ */
 html { background: #0a0705; }
-body {
-  background: radial-gradient(1100px 760px at 50% 30%, #241a09 0%, #150f07 48%, #0a0705 100%);
-  background-attachment: fixed;
-}
+body { background: transparent; }
+/* iOS Safari 不支持 background-attachment: fixed（滚动/回弹会露出纯黑底）：
+   改用 fixed 伪元素承载暖金渐变，铺满整个可视区，顶/底安全区也连续不露黑 */
+body::before { content: ""; position: fixed; inset: 0; z-index: -1;
+               background: radial-gradient(1100px 760px at 50% 30%, #241a09 0%, #150f07 48%, #0a0705 100%); }
 ::selection { background: rgba(226, 176, 74, .32); }
 
-/* —— 顶栏：暖黑玻璃 + 金色发丝线（§4.1） —— */
-header { background: rgba(14, 10, 5, .78);
+/* —— 顶栏：暖黑玻璃 + 金色发丝线（§4.1）；sticky 常驻，滚到哪里都在 —— */
+header { position: sticky; top: 0; z-index: 50;
+         padding-top: env(safe-area-inset-top);
+         background: rgba(14, 10, 5, .78);
          border-bottom: 1px solid rgba(226, 176, 74, .14);
          backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
 .topbar-inner { max-width: 960px; margin: 0 auto; padding: 0 24px;
@@ -115,18 +118,19 @@ label { display: block; font-size: var(--fs-small); color: var(--text-2); margin
 #loginBtn { min-width: 220px; }
 
 /* ============ 首页三层：顶部条目抽屉 / 中间金蔷薇 / 底部胶囊采集框 ============ */
-#homeView { display: flex; flex-direction: column; min-height: calc(100dvh - 96px - env(safe-area-inset-bottom)); }
+#homeView { display: flex; flex-direction: column;
+            min-height: calc(100dvh - 96px - env(safe-area-inset-top) - env(safe-area-inset-bottom)); }
 .home-main { display: flex; flex-direction: column; flex: 1; min-height: 0; position: relative; }
 
 /* —— 顶部：条目抽屉。收起时只剩一个从顶边垂下来的半圆拉手 —— */
 .drawer { position: relative; z-index: 30; display: flex; justify-content: center; }
-.drawer-handle { position: relative; width: 132px; min-height: 34px; padding: 3px 0 9px;
+.drawer-handle { position: relative; width: 132px; min-height: 46px; padding: 6px 0 8px;
                  margin-top: -24px;  /* 抵消 main 顶边距，让半圆贴住顶栏下沿 */
                  border: 1px solid var(--border-strong); border-top: none;
                  border-radius: 0 0 66px 66px;
                  background: linear-gradient(180deg, rgba(56, 39, 17, .92) 0%, rgba(24, 16, 8, .96) 100%);
-                 color: var(--text-2); font-size: 0;
-                 display: flex; align-items: center; justify-content: center; gap: 5px;
+                 color: var(--text-2);
+                 display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
                  box-shadow: 0 6px 18px rgba(0, 0, 0, .5), inset 0 1px 0 rgba(226, 176, 74, .12);
                  transition: color var(--t-fast), box-shadow var(--t-fast); }
 .drawer-handle::after { content: ""; position: absolute; inset: -6px 0 -4px; }  /* 半圆视觉小，命中区扩到 ≥44px */
@@ -134,14 +138,12 @@ label { display: block; font-size: var(--fs-small); color: var(--text-2); margin
                        box-shadow: 0 6px 22px rgba(226, 176, 74, .18), inset 0 1px 0 rgba(226, 176, 74, .25); }
 .drawer-handle svg { flex: none; transition: transform var(--t-slow) var(--ease); }
 .drawer.open .drawer-handle svg { transform: rotate(180deg); }
-.drawer-badge { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px;
-                background: var(--accent); color: var(--on-accent);
-                font-size: 11px; font-weight: 600; line-height: 1;
-                display: inline-flex; align-items: center; justify-content: center; }
-.drawer-badge.hot { background: var(--warn); }
+/* 拉手文字（已收集/收起）：替代数字徽标 */
+.handle-label { font-size: 12px; line-height: 1; letter-spacing: 3px; text-indent: 3px; }
 .drawer-panel { position: fixed; inset: 0; z-index: 45; display: flex; flex-direction: column;
                 background: linear-gradient(170deg, rgba(26, 18, 9, .985) 0%, rgba(14, 9, 4, .995) 100%);
-                padding: 46px 0 calc(16px + env(safe-area-inset-bottom));
+                /* 顶部让出 sticky 顶栏 + 收起拉手的高度：顶栏（品牌/设置/账号）在条目列表页也一直可见 */
+                padding: calc(110px + env(safe-area-inset-top)) 0 calc(16px + env(safe-area-inset-bottom));
                 backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
                 transform: translateY(-100%); opacity: 0; pointer-events: none;
                 transition: transform .34s var(--ease), opacity .3s var(--ease); }
@@ -150,15 +152,20 @@ label { display: block; font-size: var(--fs-small); color: var(--text-2); margin
                display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .drawer-scroll { overflow-y: auto; min-height: 0; overscroll-behavior: contain; flex: 1;
                  padding-bottom: 8px; }
-/* 全屏面板顶部中央的收起拉手：与主页半圆拉手同一视觉语言，箭头朝上 */
-.drawer-close { position: absolute; top: 0; left: 50%; transform: translateX(-50%);
-                width: 96px; min-height: 30px; padding: 3px 0 7px;
+/* 全屏面板顶部中央的收起拉手：与主页拉手同宽同位（顶栏正下方）、
+   同为「文字+箭头」两行布局，开合切换时按钮位置尺寸完全不变（走查反馈：按钮左右跳）。
+   注意：必须用 left/right + auto margin 居中——若用 translateX(-50%)，
+   全局 button:active 的 transform 会覆盖它，按下瞬间按钮右跳 66px、
+   pointerup 落到面板上，click 派发不到按钮，抽屉就收不起来 */
+.drawer-close { position: absolute; top: calc(56px + env(safe-area-inset-top));
+                left: 0; right: 0; margin-inline: auto;
+                width: 132px; min-height: 46px; padding: 6px 0 8px;
                 border: 1px solid var(--border-strong); border-top: none;
-                border-radius: 0 0 48px 48px;
+                border-radius: 0 0 66px 66px;
                 background: linear-gradient(180deg, rgba(56, 39, 17, .92) 0%, rgba(24, 16, 8, .96) 100%);
                 color: var(--text-2);
-                display: flex; align-items: center; justify-content: center;
-                box-shadow: 0 4px 14px rgba(0, 0, 0, .5);
+                display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+                box-shadow: 0 6px 18px rgba(0, 0, 0, .5), inset 0 1px 0 rgba(226, 176, 74, .12);
                 transition: color var(--t-fast), box-shadow var(--t-fast); }
 .drawer-close::after { content: ""; position: absolute; inset: -8px 0; }
 .drawer-close:hover { color: var(--accent);
@@ -186,38 +193,49 @@ label { display: block; font-size: var(--fs-small); color: var(--text-2); margin
 .rose { display: block; width: clamp(260px, 40vh, 420px); height: auto;
         filter: drop-shadow(0 0 30px rgba(232, 169, 60, .13)); }
 
-/* 胶囊采集框：初始胶囊型，聚焦或有内容后舒展为圆角容器 */
-.smartbox { display: flex; flex-direction: column;
+/* 胶囊采集框：常态为单行胶囊（上传｜输入｜发送 同排）；
+   内容超过一行时（capture.js 依胶囊态宽度判定加 .multi）舒展为圆角矩形：
+   文字全宽移到按钮上方，按钮行移到底部 */
+.smartbox { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 0 6px;
             border: 1px solid var(--border-strong); border-radius: 999px;
             background: linear-gradient(165deg, rgba(56, 39, 17, .58) 0%, rgba(24, 16, 8, .92) 100%);
-            padding: 5px 7px;
+            padding: 5px 8px;
             box-shadow: 0 10px 34px rgba(0, 0, 0, .45), inset 0 1px 0 rgba(255, 225, 160, .07);
             transition: border-color var(--t-fast), box-shadow var(--t-fast),
                         border-radius .32s var(--ease); }
-.smartbox:focus-within,
 .smartbox:has(.chiprow:not([hidden])),
-.smartbox:has(.capmeta span:not(:empty)) { border-radius: 30px; }
+.smartbox:has(.capmeta span:not(:empty)),
+.smartbox.multi { border-radius: 30px; }
 .smartbox:focus-within { border-color: #b8862f;
                          box-shadow: 0 0 0 3px rgba(226, 176, 74, .12),
                                      0 8px 30px rgba(226, 176, 74, .10); }
-.capline { display: flex; align-items: flex-end; gap: 6px; min-height: 44px; }
-.smartbox textarea { flex: 1; border: none; box-shadow: none; padding: 10px 4px;
+/* 胶囊态：一行输入夹在两个按钮之间（grid 第 1 行） */
+.smartbox textarea { grid-area: 1 / 2; border: none; box-shadow: none; padding: 10px 4px;
                      min-height: 44px; max-height: 220px; resize: none; line-height: 24px;
                      background: transparent; color: var(--text); caret-color: var(--accent); }
+.smartbox .uploadpick { grid-area: 1 / 1; }
+.smartbox .capsubmit { grid-area: 1 / 3; }
+.smartbox .chiprow, .smartbox .capmeta { grid-column: 1 / -1; }
+/* 多行态：文字全宽在上（左缘与上传按钮对齐：框 8px + 文字 0 = 按钮 8px），按钮行在下 */
+.smartbox.multi { grid-template-columns: 1fr auto; }
+.smartbox.multi textarea { grid-area: 1 / 1 / 2 / 3; padding: 12px 4px 6px 0; }
+.smartbox.multi .uploadpick { grid-area: 2 / 1; }
+.smartbox.multi .capsubmit { grid-area: 2 / 2; }
 .smartbox textarea:focus { box-shadow: none; }
 .smartbox textarea::placeholder { color: #8a7554; }
 .uploadpick { width: 40px; min-width: 40px; min-height: 40px; border: none; background: transparent;
-              border-radius: 50%; color: #d9b56a; flex: none; margin-bottom: 2px; }
+              border-radius: 50%; color: #d9b56a; flex: none; }
 .uploadpick:hover { background: rgba(226, 176, 74, .12); color: var(--accent-hover); border: none; }
-.capsubmit { width: 40px; min-width: 40px; height: 40px; min-height: 40px; padding: 0;
-             border-radius: 50%; border: 1px solid #b8862f; flex: none; margin-bottom: 2px;
+/* 发送按钮调小（走查反馈）：36px 视觉圆钮，::before 把命中区扩到 ≥44px */
+.capsubmit { width: 36px; min-width: 36px; height: 36px; min-height: 36px; padding: 0;
+             border-radius: 50%; border: 1px solid #b8862f; flex: none;
              background: linear-gradient(180deg, #f4ca72 0%, #dfab4e 60%, #c9973a 100%);
              color: #241703; position: relative;
              box-shadow: 0 2px 12px rgba(226, 176, 74, .35), inset 0 1px 0 rgba(255, 240, 200, .55); }
-/* 触屏设备保持 44px 最小触控目标（U-01），桌面按视觉缩小 */
+.capsubmit::before { content: ""; position: absolute; inset: -4px; border-radius: 50%; }
+/* 触屏设备上传钮保持 44px 触控目标（U-01）；发送钮视觉 36px，命中区已由 ::before 扩足 */
 @media (pointer: coarse) {
   .uploadpick { width: 44px; min-width: 44px; min-height: 44px; }
-  .capsubmit { width: 44px; min-width: 44px; height: 44px; min-height: 44px; }
 }
 .capsubmit:hover { filter: brightness(1.07); border-color: #b8862f; }
 .capsubmit.busy svg { opacity: 0; }
@@ -225,7 +243,7 @@ label { display: block; font-size: var(--fs-small); color: var(--text-2); margin
                          width: 18px; height: 18px; border-radius: 50%;
                          border: 2px solid rgba(36, 23, 3, .3); border-top-color: #241703;
                          animation: rot .8s linear infinite; }
-.capmeta { display: flex; align-items: center; gap: 8px; padding: 0 16px; min-height: 0; }
+.capmeta { display: flex; align-items: center; gap: 8px; padding: 0 12px; min-height: 0; }
 .capmeta:not(:has(span:not(:empty))) { height: 0; overflow: hidden; }
 /* —— 链接/文件/录音 chips —— */
 .chiprow { display: flex; flex-wrap: wrap; gap: 6px; padding: 4px 14px 8px; }
@@ -301,7 +319,11 @@ ul.items > li.enter { animation: enter var(--t-slow) var(--ease) backwards; }
 
 /* ============ 详情：返回 + 更多菜单；标题区不放状态堆叠 ============ */
 .detail { animation: enter var(--t-slow) var(--ease) backwards; }
-.detail-top { display: flex; align-items: center; gap: 12px; }
+/* 返回/更多栏 sticky 在顶栏正下方：长文下滚也随时能返回（走查反馈） */
+.detail-top { display: flex; align-items: center; gap: 12px;
+              position: sticky; top: calc(56px + env(safe-area-inset-top)); z-index: 25;
+              margin: 0 -24px; padding: 8px 24px 10px;
+              background: linear-gradient(180deg, rgba(10, 7, 5, .96) 0%, rgba(10, 7, 5, .88) 78%, rgba(10, 7, 5, 0) 100%); }
 .back { margin-left: -16px; }
 .detail-title { font-family: var(--font-display); font-weight: 600; font-size: var(--fs-h1);
                 margin-top: 10px; overflow-wrap: anywhere; letter-spacing: .3px; }
@@ -421,7 +443,8 @@ ul.items > li.enter { animation: enter var(--t-slow) var(--ease) backwards; }
 
 /* —— 折叠组件 —— */
 details.disclosure { background: var(--surface-2); border: 1px solid var(--border);
-                     border-radius: var(--radius-inner); margin-top: 12px; scroll-margin-top: 76px; }
+                     border-radius: var(--radius-inner); margin-top: 12px;
+                     scroll-margin-top: calc(76px + env(safe-area-inset-top)); }
 details.disclosure > summary { cursor: pointer; list-style: none; display: flex; align-items: center;
                                gap: 8px; min-height: 44px; padding: 10px 14px;
                                font-weight: 600; font-size: 14px; border-radius: var(--radius-inner); }
@@ -508,6 +531,7 @@ details.disclosure.slim .disclosure-body { padding: 0 8px 8px; }
   .drawer-body { padding: 0 16px; }
   .card { padding: 18px; }
   .back { margin-left: -10px; }
+  .detail-top { margin: 0 -16px; padding: 8px 16px 10px; }
   .rose { width: clamp(220px, 34vh, 320px); }
   .dock::before { inset: -22px -16px -16px; }
 }
@@ -518,7 +542,8 @@ details.disclosure.slim .disclosure-body { padding: 0 8px 8px; }
   .rose { width: clamp(190px, 30vh, 260px); }
   .rose-caption { font-size: var(--fs-display); }
   .smartbox:has(.chiprow:not([hidden])),
-  .smartbox:has(.capmeta span:not(:empty)) { border-radius: 24px; }
+  .smartbox:has(.capmeta span:not(:empty)),
+  .smartbox.multi { border-radius: 24px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .rose .plant, .rose .sheenRect, .rose .glowPulse { animation: none !important; }

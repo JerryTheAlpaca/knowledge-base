@@ -18,21 +18,11 @@ export function openDrawer() {
   $("listWrap").classList.add("open");
   $("drawerHandle").setAttribute("aria-expanded", "true");
 }
+let drawerClosedAt = 0;
 export function closeDrawer() {
   $("listWrap").classList.remove("open");
   $("drawerHandle").setAttribute("aria-expanded", "false");
-}
-
-// 拉手徽标：正在处理 + 需要处理的条目数；有待处理条目时换成警示色
-function updateDrawerBadge() {
-  const count = (id) => $(id).querySelectorAll("li.item").length;
-  const attention = $("groupAttention").hidden ? 0 : count("groupAttention");
-  const working = $("groupWorking").hidden ? 0 : count("groupWorking");
-  const total = attention + working;
-  const b = $("drawerBadge");
-  b.hidden = total === 0;
-  b.textContent = total > 99 ? "99+" : String(total);
-  b.classList.toggle("hot", attention > 0);
+  drawerClosedAt = Date.now();
 }
 
 // 下拉手势状态：收起态按住拉手往下拖 ≥28px 直接展开
@@ -154,7 +144,6 @@ export async function refreshItems() {
       fillGroup("published", published);
     }
     updateEmptyState();
-    updateDrawerBadge();
   } catch (e) {
     if (!(e && e.net && document.visibilityState === "hidden")) showErr(e);
   }
@@ -197,6 +186,8 @@ export function initItemList() {
   // —— 抽屉：点击拉手切换；收起态往下拖 ≥28px 展开；点面板外/Esc 收起 ——
   $("drawerHandle").addEventListener("click", () => {
     if (drawerDragging) { drawerDragging = false; return; }  // 手势展开后吞掉这次 click
+    // 收起动画期间落在拉手上的连点不回开：否则快速连点时按钮在开/关之间来回弹（走查反馈：按钮跳）
+    if (Date.now() - drawerClosedAt < 400) return;
     if (isDrawerOpen()) closeDrawer(); else openDrawer();
   });
   $("drawerHandle").addEventListener("pointerdown", (e) => {
@@ -207,7 +198,15 @@ export function initItemList() {
     if (pressY === null || drawerDragging) return;
     if (e.clientY - pressY > 28) { drawerDragging = true; openDrawer(); }
   });
-  document.addEventListener("pointerup", () => { pressY = null; });
+  document.addEventListener("pointerup", () => {
+    pressY = null;
+    if (drawerDragging) {
+      // 紧随的 click（若有）会先于这个定时器派发并被拉手吞掉；
+      // 之后无论如何都复位，避免标志卡死吞掉下一次正常点击（走查反馈：有时按了没反应）
+      setTimeout(() => { drawerDragging = false; }, 0);
+    }
+  });
+  document.addEventListener("pointercancel", () => { pressY = null; });
   document.addEventListener("click", (e) => {
     if (isDrawerOpen() && !e.target.closest("#listWrap")) closeDrawer();
   });

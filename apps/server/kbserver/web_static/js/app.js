@@ -5,7 +5,7 @@
 
 import { $, api, setUnauthorizedHandler, closeModal } from "./api.js";
 import { initCapture, submitCapture, restoreDraft, saveDrafts, clearDraft } from "./capture.js";
-import { initItemList, refreshItems, scheduleRefresh, openDrawer } from "./item-list.js";
+import { initItemList, refreshItems, scheduleRefresh } from "./item-list.js";
 import { initDetail, openDetail, closeDetail, currentDetailId, isDetailBusy } from "./item-detail.js";
 import { initOnboarding, maybeShowOnboarding, reopenOnboarding } from "./onboarding.js";
 import { initSettings, showSettings, hideSettings } from "./settings.js";
@@ -135,8 +135,8 @@ window.addEventListener("popstate", route);
 
 (async function boot() {
   wireTopbar();
-  // 提交成功后：刷新条目并拉开抽屉，看到新条目进入处理队列
-  initCapture({ onSubmit: () => { refreshItems(); openDrawer(); } });
+  // 提交成功后：刷新条目并更新拉手徽标；留在金蔷薇主页（走查反馈：不要自动跳页）
+  initCapture({ onSubmit: () => { refreshItems(); } });
   initItemList();
   initDetail();
   initOnboarding();
