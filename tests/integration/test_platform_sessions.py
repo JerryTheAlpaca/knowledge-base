@@ -187,6 +187,15 @@ def test_test_endpoint_unconfigured_and_probe(client, user_a, monkeypatch):
     assert "fake-zhihu" not in json.dumps(check)
     assert "checked_at" in check
 
+    # 大页面超过探针读取上限 → 平台已正常返回正文，如实 unverified 而非误报 blocked
+    def fake_too_large(url, **kwargs):
+        raise SafeFetchError("PAYLOAD_TOO_LARGE", "响应超过 65536 字节上限")
+
+    monkeypatch.setattr(mod, "safe_fetch", fake_too_large)
+    r_large = client.post("/v1/platform-sessions/zhihu/test", headers=auth(token))
+    assert r_large.status_code == 200
+    assert r_large.json()["status"] == "unverified"
+
     # 页面可达 → 如实 unverified，不伪造 valid（docs/18 §5.3）
     def fake_ok(url, **kwargs):
         return FetchResult(url=url, status_code=200, mime="text/html", content=b"<html>ok</html>")

@@ -63,6 +63,12 @@ def _generic_probe(spec: PlatformSessionSpec, value: dict[str, str]) -> dict:
     except SafeFetchError as exc:
         if exc.code == "NETWORK_ERROR":
             return {"status": "network_error", "detail": f"检测请求失败：{exc}"}
+        if exc.code == "PAYLOAD_TOO_LARGE":
+            # 平台首页（小红书 /explore、知乎首页等）远大于探针读取上限：
+            # 能读满上限说明平台已正常返回页面正文，视为可达而非拒绝。
+            return {"status": "unverified",
+                    "detail": "已能携带会话访问平台（页面较大未完整读取）；"
+                              "登录态是否有效需在真实提取中确认。"}
         return {"status": "blocked", "detail": f"平台拒绝访问：{exc}"}
     if result.status_code >= 500:
         return {"status": "network_error", "detail": f"平台临时错误（HTTP {result.status_code}）"}
