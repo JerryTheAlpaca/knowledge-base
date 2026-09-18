@@ -161,8 +161,8 @@ label { display: block; font-size: var(--fs-small); color: var(--text-2); margin
 .drawer-body { width: 100%; max-width: 960px; margin: 0 auto; padding: 0 24px;
                display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .drawer-scroll { overflow-y: auto; overflow-x: hidden; min-height: 0; overscroll-behavior: contain; flex: 1;
-                 /* 顶部/右侧留边：卡片右上角红点有一半溢出卡片，不能被滚动容器裁掉 */
-                 padding: 6px 6px 8px 0; }
+                 /* 顶部/右侧留边：卡片右上角红点（12px）有一半溢出卡片，不能被滚动容器裁掉 */
+                 padding: 8px 8px 8px 0; }
 /* 全屏面板顶部中央的收起拉手：与主页拉手同宽同位（顶栏正下方）、
    同为「文字+箭头」两行布局，开合切换时按钮位置尺寸完全不变（走查反馈：按钮左右跳）。
    注意：必须用 left/right + auto margin 居中——若用 translateX(-50%)，
@@ -306,7 +306,7 @@ ul.items > li:hover { background: var(--surface-2); border-color: var(--border-s
 ul.items > li.pre { opacity: 0; }
 ul.items > li.enter { animation: enter var(--t-slow) var(--ease) backwards; }
 /* 需要你处理的条目：红色小圆点压在卡片右上角、一半溢出卡片（微信未读红点式） */
-.item-dot { position: absolute; top: -4px; right: -4px; width: 9px; height: 9px;
+.item-dot { position: absolute; top: -6px; right: -6px; width: 12px; height: 12px;
             border-radius: 50%; background: var(--bad); }
 @keyframes enter { from { opacity: 0; transform: translateY(4px); } }
 .item-main { display: flex; gap: 12px; align-items: baseline; min-width: 0; }
