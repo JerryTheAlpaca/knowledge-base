@@ -73,6 +73,11 @@ header { position: sticky; top: 0; z-index: 50;
                 display: flex; align-items: center; gap: 8px; height: 56px; }
 .brand { font-family: var(--font-display); font-size: var(--fs-display); font-weight: 600;
          color: #e8d5a8; letter-spacing: 1px; }
+/* 品牌名做成可点回主页的按钮：剥掉全局 button 外观，只留文字与指针 */
+.brandbtn { border: none; background: transparent; padding: 0; min-height: 0;
+            font: inherit; letter-spacing: inherit; border-radius: var(--radius-note); }
+.brandbtn:hover { color: var(--accent-hover); border: none; background: transparent; }
+.brandbtn:active { transform: none; }
 .userchip { display: inline-flex; align-items: center; gap: 8px; max-width: 220px;
             border: none; background: transparent; min-height: 44px; padding: 6px 10px;
             border-radius: 999px; }
@@ -272,29 +277,39 @@ label { display: block; font-size: var(--fs-small); color: var(--text-2); margin
 .opttoggle input:checked ~ .switch i { transform: translateX(16px); }
 .opttoggle input:focus-visible ~ .switch { outline: 2px solid var(--accent); outline-offset: 2px; }
 
-/* ============ 条目流：三组；独立小卡片 + 滚动显现（在抽屉面板内滚动） ============ */
-.listtoolbar { display: flex; align-items: center; min-height: 36px; }
-.searchrow { margin: 4px 0 12px; }
+/* ============ 条目流：单一时间倒序 + 搜索组（在抽屉面板内滚动） ============ */
+.listtoolbar { display: flex; align-items: center; gap: 8px; min-height: 44px; }
+#searchToggle { flex: none; }
+/* 搜索框从放大镜图标处向左生长：宽度由 item-list.js 设 px，transition 驱动；
+   与图标同排、行高不变，下方条目不被推动 */
+/* overflow: clip（旧浏览器回退 hidden）：槽不是滚动容器，focus() 无法横向滚动它；
+   输入框 min-width:0 跟随槽宽，不存在被裁掉的溢出部分 */
+.searchslot { display: flex; align-items: center; flex: none; width: 0;
+              overflow: hidden; overflow: clip;
+              opacity: 0; transition: width .3s var(--ease), opacity .18s var(--ease); }
+.listtoolbar.search-open .searchslot { opacity: 1; }
+.searchslot .search { flex: 1; min-width: 0; }
+#itemList { margin-bottom: 8px; }
 .itemgroup { margin-bottom: 20px; }
 .grouptitle { font-size: var(--fs-small); font-weight: 600; color: var(--text-2);
               margin: 0 0 8px; display: flex; align-items: center; gap: 8px;
               letter-spacing: .4px; }
-.grouptitle::before { content: ""; width: 6px; height: 6px; border-radius: 50%; flex: none; }
-.grouptitle.tone-attention { color: var(--warn); }
-.grouptitle.tone-attention::before { background: var(--warn); box-shadow: 0 0 8px var(--warn); }
-.grouptitle.tone-working { color: var(--info); }
-.grouptitle.tone-working::before { background: var(--info); box-shadow: 0 0 8px var(--info); }
-.grouptitle.tone-published { color: var(--ok); }
-.grouptitle.tone-published::before { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
 ul.items { list-style: none; margin: 0; padding: 0;
            display: flex; flex-direction: column; gap: 10px; }
-ul.items > li { background: var(--surface); border: 1px solid var(--border);
+ul.items > li { position: relative; background: var(--surface); border: 1px solid var(--border);
                 border-radius: var(--radius-inner); box-shadow: var(--shadow-card);
                 padding: 12px 16px; cursor: pointer; min-width: 0;
                 transition: border-color var(--t-fast), background var(--t-fast); }
 ul.items > li:hover { background: var(--surface-2); border-color: var(--border-strong); }
 ul.items > li.pre { opacity: 0; }
 ul.items > li.enter { animation: enter var(--t-slow) var(--ease) backwards; }
+/* 卡片右上角色块：workflow.overall_state（悬停有文字提示） */
+.item-tone { position: absolute; top: -1px; right: -1px; width: 12px; height: 12px;
+             border-radius: 0 var(--radius-inner) 0 var(--radius-inner); }
+.item-tone.tone-working { background: var(--info); }
+.item-tone.tone-attention { background: var(--warn); }
+.item-tone.tone-failed { background: var(--bad); }
+.item-tone.tone-published { background: var(--ok); }
 @keyframes enter { from { opacity: 0; transform: translateY(4px); } }
 .item-main { display: flex; gap: 12px; align-items: baseline; min-width: 0; }
 .item-title { font-weight: 600; font-size: var(--fs-body); color: var(--text); flex: 1; min-width: 0;
@@ -466,11 +481,32 @@ details.disclosure.slim > summary { min-height: 32px; padding: 4px 8px; font-wei
                                     font-size: var(--fs-caption); color: var(--text-2); }
 details.disclosure.slim .disclosure-body { padding: 0 8px 8px; }
 
-/* —— 设置页 —— */
+/* —— 设置页 ——
+   字阶统一走 tokens 令牌：页标题 --fs-h1 / 卡片标题 --fs-h2 / 分区标题 --fs-body /
+   表单 label 与说明 --fs-small / 时间等弱信息 --fs-caption；不再混用裸像素 */
+#settingsView { transform-origin: 50% 0; }
+#settingsView.slide-in { animation: settings-open .34s var(--ease) backwards; }
+@keyframes settings-open {
+  from { clip-path: inset(0 0 100% 0); transform: translateY(-10px); opacity: .4; }
+  to   { clip-path: inset(0 0 0 0); transform: none; opacity: 1; }
+}
+#settingsView.slide-out { animation: settings-close .32s var(--ease) forwards; }
+@keyframes settings-close {
+  from { clip-path: inset(0 0 0 0); transform: none; opacity: 1; }
+  to   { clip-path: inset(0 0 100% 0); transform: translateY(-10px); opacity: .4; }
+}
 .settings-top { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
-.settings-title { font-size: var(--fs-h1); font-weight: 600; }
-#secModel h3 { font-size: var(--fs-body); font-weight: 600; }
-.list-head h3 { flex: 1; margin: 0; }
+.settings-title { flex: 1; font-size: var(--fs-h1); font-weight: 600; }
+#settingsView h2 { font-size: var(--fs-h2); font-weight: 600; margin: 0 0 12px; }
+#settingsView h3 { font-size: var(--fs-body); font-weight: 600; margin: 0; }
+#settingsView .list-head h3 { flex: 1; }
+#settingsView .subhead { margin-top: 26px; }
+#settingsView .subhead + .help { margin-top: 6px; }
+#settingsView .btnrow { margin-top: 14px; }
+#profileList { margin-top: 4px; }
+/* 内容平台分区：平台名做小标题，首个紧跟卡片标题不重复分隔线 */
+.plat-head { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--border); }
+#settingsView h2 + .plat-head { margin-top: 6px; padding-top: 0; border-top: none; }
 .defrow { display: flex; align-items: center; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
 .defrow label { margin: 0; white-space: nowrap; flex: none; }
 .defrow select { flex: 1; min-width: 0; width: auto; }
@@ -499,8 +535,8 @@ details.disclosure.slim .disclosure-body { padding: 0 8px 8px; }
 .devrow .devmain { flex: 1; min-width: 0; }
 .devrow .devname { font-weight: 600; }
 .devrow .devmeta { font-size: var(--fs-caption); color: var(--text-2); }
-.platblock { margin-top: 18px; }
-.platblock + .platblock { border-top: 1px solid var(--border); padding-top: 18px; }
+/* 平台区块：小标题（.plat-head）已负责分隔，块内不再叠大间距 */
+.platblock { margin-top: 4px; }
 
 /* —— 初始化向导 —— */
 .onboard { border: 1px solid var(--border); border-radius: var(--radius-card);

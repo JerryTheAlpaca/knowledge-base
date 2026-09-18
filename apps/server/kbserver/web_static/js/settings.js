@@ -497,12 +497,42 @@ function onDocClick(e) {
   setTip(btn, open);
 }
 
+// —— 进出场动画：整页从顶栏下沿向下展开；关闭时向上收拢后再交还主页 ——
+// 收起动画期间 settingsView 仍在流内占位，homeView 延后点亮，避免两个视图同屏堆叠
+const SETTINGS_ANIM_MS = 320;
+const settingsReduceMotion = window.matchMedia
+  && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+let settingsHideTimer = 0;
+
 export function showSettings() {
-  $("settingsView").hidden = false;
+  if (settingsHideTimer) { clearTimeout(settingsHideTimer); settingsHideTimer = 0; }
+  const sv = $("settingsView");
+  sv.classList.remove("slide-out");
   $("homeView").hidden = true;
+  sv.hidden = false;
+  if (!settingsReduceMotion) {
+    sv.classList.remove("slide-in");
+    void sv.offsetWidth;  // 重启动画
+    sv.classList.add("slide-in");
+  }
   loadSettingsData();
 }
+
 export function hideSettings() {
-  $("settingsView").hidden = true;
-  $("homeView").hidden = false;
+  const sv = $("settingsView");
+  if (settingsHideTimer) { clearTimeout(settingsHideTimer); settingsHideTimer = 0; }
+  if (sv.hidden || settingsReduceMotion) {
+    sv.hidden = true;
+    $("homeView").hidden = false;
+    return;
+  }
+  sv.classList.remove("slide-in");
+  void sv.offsetWidth;
+  sv.classList.add("slide-out");
+  settingsHideTimer = setTimeout(() => {
+    settingsHideTimer = 0;
+    sv.classList.remove("slide-out");
+    sv.hidden = true;
+    $("homeView").hidden = false;
+  }, SETTINGS_ANIM_MS);
 }

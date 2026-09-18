@@ -16,7 +16,7 @@
 
 <header id="topbar" hidden>
   <div class="topbar-inner">
-    <div class="brand">知识收件箱</div>
+    <button class="brand brandbtn" id="brandHome" title="返回主页">知识收件箱</button>
     <div class="spacer"></div>
     <div class="menuwrap">
       <button class="icon gear" id="gearBtn" aria-label="设置" title="设置">
@@ -75,34 +75,22 @@
             </svg>
           </button>
           <div class="drawer-body">
-          <div class="listtoolbar">
+          <!-- 搜索框与放大镜同排：插槽紧邻图标左侧，展开时右缘钉住、从图标处向左生长 -->
+          <div class="listtoolbar" id="listToolbar">
             <span class="spacer"></span>
-            <button class="icon ghost" id="searchToggle" aria-label="搜索" title="搜索">
+            <div class="searchslot" id="searchRow"><input class="search" id="searchBox" placeholder="搜索标题、链接或来源…" aria-label="搜索条目"></div>
+            <button class="icon ghost" id="searchToggle" aria-label="搜索" title="搜索" aria-expanded="false">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                    stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>
               </svg>
             </button>
           </div>
-          <div class="searchrow" id="searchRow" hidden>
-            <input class="search" id="searchBox" placeholder="搜索标题、链接或来源…" aria-label="搜索条目">
-          </div>
           <div class="drawer-scroll">
-            <div id="groupAttention" class="itemgroup" hidden>
-              <h3 class="grouptitle tone-attention">需要你处理</h3>
-              <ul class="items" data-group="attention"></ul>
-            </div>
-            <div id="groupWorking" class="itemgroup" hidden>
-              <h3 class="grouptitle tone-working">正在处理</h3>
-              <ul class="items" data-group="working"></ul>
-            </div>
-            <div id="groupPublished" class="itemgroup" hidden>
-              <h3 class="grouptitle tone-published">最近完成</h3>
-              <ul class="items" data-group="published"></ul>
-            </div>
+            <ul class="items" id="itemList"></ul>
             <div id="groupSearch" class="itemgroup" hidden>
               <h3 class="grouptitle">搜索结果 <span class="small num" id="searchCount"></span></h3>
-              <ul class="items" data-group="search"></ul>
+              <ul class="items" id="searchList"></ul>
             </div>
             <div class="empty" id="emptyState" hidden>
               <div class="empty-title">收件箱还是空的</div>
@@ -231,7 +219,7 @@
         </label>
       </div>
       <div class="smartbox" id="smartBox">
-        <textarea id="capText" rows="1" placeholder="粘贴链接，上传录音，或写下想法……" aria-label="采集内容"></textarea>
+        <textarea id="capText" rows="1" placeholder="粘贴链接，或写下想法……" aria-label="采集内容"></textarea>
         <button type="button" class="icon uploadpick" id="uploadPick" aria-label="添加文件或录音" title="添加文件或录音">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -290,8 +278,14 @@
   <!-- ============ 设置（齿轮进入，docs/17 §8.3） ============ -->
   <section id="settingsView" hidden>
     <div class="settings-top">
-      <button class="ghost back" id="settingsBack">← 返回</button>
       <span class="settings-title">设置</span>
+      <span class="spacer"></span>
+      <button class="icon ghost" id="settingsClose" aria-label="关闭设置" title="关闭">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" aria-hidden="true">
+          <path d="M6 6l12 12M18 6L6 18"/>
+        </svg>
+      </button>
     </div>
     <div class="card" id="secModel">
       <div class="list-head">
@@ -300,12 +294,12 @@
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
         </button>
       </div>
-      <div id="profileList" style="margin-top:4px"></div>
+      <div id="profileList"></div>
 
-      <div class="list-head" style="margin-top:28px">
+      <div class="list-head subhead">
         <h3>优化文本模型</h3>
       </div>
-      <p class="help" style="margin:0 0 4px">负责修正错别字、语义分段等原文优化，建议关闭思考模式。</p>
+      <p class="help">负责修正错别字、语义分段等原文优化，建议关闭思考模式。</p>
       <div class="defrow">
         <label for="optimizeProfile">使用配置</label>
         <select id="optimizeProfile"><option value="">（未设置）</option></select>
@@ -327,10 +321,10 @@
         <span class="switch" aria-hidden="true"><i></i></span>
       </label>
 
-      <div class="list-head" style="margin-top:28px">
+      <div class="list-head subhead">
         <h3>整理文本模型</h3>
       </div>
-      <p class="help" style="margin:0 0 4px">负责把原文提炼和整理成知识笔记。</p>
+      <p class="help">负责把原文提炼和整理成知识笔记。</p>
       <div class="defrow">
         <label for="defaultProfile">使用配置</label>
         <select id="defaultProfile"><option value="">（未设置）</option></select>
@@ -362,28 +356,28 @@
 
     <div class="card" id="secBili">
       <h2>内容平台</h2>
+
+      <h3 class="plat-head">B 站</h3>
       <div class="bili-state" id="biliStatus">加载中…</div>
       <label for="biliSecret">B 站登录信息（SESSDATA）——用于读取需要登录才能查看的字幕</label>
       <input id="biliSecret" type="password" autocomplete="off" placeholder="粘贴 SESSDATA 值或整个 Cookie 串">
-      <div class="row" style="margin-top:14px">
+      <div class="row btnrow">
         <button class="primary" id="biliSave">更新登录态</button>
         <button id="biliCheck">检测登录态</button>
         <button class="danger" id="biliRevoke">撤销</button>
       </div>
-      <div class="list-head" style="margin-top:24px">
-        <h3>其他平台登录态</h3>
-      </div>
-      <p class="help" style="margin:0 0 4px">分享链接能直接读取的就不需要登录态；撞到平台登录墙时才用这里的 Cookie 重试一次。Cookie 只加密保存，任何页面都不会回显明文。</p>
-      <div id="platSessions"></div>
       <label class="asrtoggle" id="asrAutoRow" for="asrAuto" hidden>
         <input type="checkbox" id="asrAuto">
         <span class="asrtoggle-text"><b>无字幕时自动语音转写
           <button type="button" class="infobtn" aria-label="这条设置的说明" aria-expanded="false">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11.2v5"/><path d="M12 7.6h.01"/></svg>
           </button></b>
-        <span class="infotip" hidden>B 站视频没有字幕轨时，服务器空闲时自动转写。</span></span>
+        <span class="infotip" hidden>开启时，B 站视频没有字幕轨会自动排队语音转写；关闭则只提取已有字幕轨。</span></span>
         <span class="switch" aria-hidden="true"><i></i></span>
       </label>
+
+      <h3 class="plat-head">小红书</h3>
+      <div id="platSessions"></div>
     </div>
   </section>
 </main>

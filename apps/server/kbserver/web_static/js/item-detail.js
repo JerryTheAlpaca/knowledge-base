@@ -46,6 +46,13 @@ function mayHaveAudio(it) {
 }
 
 // ---------- 打开/关闭 ----------
+// 定时刷新每 4s 跑一次：内容与上次相同时绝不重写 DOM，避免动画重启导致闪烁
+function setHTML(el, html) {
+  if (el._lastHTML === html) return;
+  el._lastHTML = html;
+  el.innerHTML = html;
+}
+
 export async function openDetail(itemId, opts = {}) {
   detailId = itemId;
   detailSeq++;
@@ -60,9 +67,9 @@ export async function openDetail(itemId, opts = {}) {
   $("homeMain").hidden = true;
   closeDrawer();
   $("detailView").hidden = false;
-  $("detailBody").innerHTML = "";
-  $("stepperHost").innerHTML = "";
-  $("stagePanelHost").innerHTML = "";
+  setHTML($("detailBody"), "");
+  setHTML($("stepperHost"), "");
+  setHTML($("stagePanelHost"), "");
   $("detailTitle").textContent = "加载中…";
   $("detailMeta").textContent = "";
   $("moreMenu").hidden = true;
@@ -107,7 +114,7 @@ export function exitDetail() {
   exitToList();
 }
 
-export function isDetailBusy() {
+function isDetailBusy() {
   const wf = detailData && detailData.item && detailData.item.workflow;
   return !!wf && wf.overall_state === "working";
 }
@@ -171,18 +178,18 @@ function renderDetail() {
   $("detailTitle").textContent = it.title || (it.original_url || "条目详情");
   $("detailMeta").textContent = [it.source_label, fmtTime(it.created_at)].filter(Boolean).join(" · ");
   renderHeader(it);
-  $("detailBody").innerHTML =
+  setHTML($("detailBody"),
     '<nav class="readtabs">' +
       '<button class="' + (detailTab === "digest" ? "active" : "") + '" data-tab="digest">整理结果</button>' +
       '<button class="' + (detailTab === "source" ? "active" : "") + '" data-tab="source">原始内容</button>' +
     "</nav>" +
-    '<div class="readpane">' + renderPane(d) + "</div>";
+    '<div class="readpane">' + renderPane(d) + "</div>");
   renderMoreMenu(it);
 }
 
 function renderHeader(it) {
   const wf = it.workflow;
-  $("stepperHost").innerHTML = stepperHTML(wf);
+  setHTML($("stepperHost"), stepperHTML(wf));
   let extra = "";
   const cands = (asrStatus && asrStatus.audio_candidates) || [];
   if (wf && wf.reason_code === "SELECTION_REQUIRED" && cands.length > 1) {
@@ -193,7 +200,7 @@ function renderHeader(it) {
         '<button class="small" data-asr-candidate="' + esc(c.candidate_id) + '">转写这条</button>' +
         "</div>").join("") + "</div>";
   }
-  $("stagePanelHost").innerHTML = stagePanelHTML(wf) + extra;
+  setHTML($("stagePanelHost"), stagePanelHTML(wf) + extra);
   const hasPanel = !!wf;
   $("stagePanelHost").hidden = !hasPanel;
 }

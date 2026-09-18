@@ -1,16 +1,17 @@
 // item-list.js — 首页条目流（docs/17 §4.5、§6.4）
 //
-// 三个用户分组：需要你处理 / 正在处理 / 最近完成；空组不显示。
+// 单一时间流：全部条目按 created_at 倒序（最新在最上），状态用卡片右上角色块标识。
 // 状态文案与进度全部来自服务端 WorkflowView；本模块不做业务状态推断。
 // 刷新按 item_id 做 DOM diff，只更新变化行，保护滚动位置（§6.4）。
 
 import { $, api, esc, fmtShort, showErr } from "./api.js";
-import { groupOf, listRowAux } from "./workflow.js";
+import { listRowAux } from "./workflow.js";
 import { openDetail } from "./item-detail.js";
 
 const FETCH_LIMIT = 50;
 let refreshing = false;
 let searchTimer = null;
+let searchOpen = false;
 
 // —— 顶部抽屉（金蔷薇布局）：圆弧拉手拖着整页下拉，点外部或 Esc 收起 ——
 // 动画模型：面板钉在终位，clip-path 可视区恒为 [顶栏下沿, 拉手上沿]；拉手用
@@ -88,6 +89,11 @@ const revealIO = ("IntersectionObserver" in window)
     }, { rootMargin: "60px 0px" })
   : null;
 
+// 状态色块（卡片右上角）：语义色与分组标题一致
+const TONE_LABELS = {
+  working: "正在处理", attention: "需要你处理", failed: "处理失败", published: "已完成",
+};
+
 function rowJSON(it) {
   const wf = it.workflow || {};
   return JSON.stringify([
@@ -100,7 +106,10 @@ function rowJSON(it) {
 function rowInner(it) {
   const display = it.title || (it.original_url || "").replace(/^https?:\/\/(www\.)?/, "").slice(0, 60) || "文字 / 文件采集";
   const aux = listRowAux(it.workflow, it);
-  return '<div class="item-main"><span class="item-title">' + esc(display) + "</span>" +
+  const tone = (it.workflow && it.workflow.overall_state) || "";
+  const toneLabel = TONE_LABELS[tone] || "";
+  return (tone ? '<span class="item-tone tone-' + esc(tone) + '" title="' + esc(toneLabel) + '"></span>' : "") +
+    '<div class="item-main"><span class="item-title">' + esc(display) + "</span>" +
     '<span class="item-time num" title="' + esc(new Date(it.created_at).toLocaleString("zh-CN", { hour12: false })) + '">' +
     esc(fmtShort(it.created_at)) + "</span></div>" +
     '<div class="item-aux">' + aux + "</div>";
@@ -124,10 +133,8 @@ function updateRow(li, it) {
   li.innerHTML = rowInner(it);
 }
 
-function fillGroup(groupKey, items) {
-  const section = $(groupKey === "search" ? "groupSearch" : "group" + groupKey.charAt(0).toUpperCase() + groupKey.slice(1));
-  const ul = section.querySelector("ul.items");
-  section.hidden = items.length === 0;
+// 时间倒序 diff：新条目插到正确位置，变化行才重写，未变化的 DOM 原样保留
+function fillList(ul, items) {
   const keep = new Set(items.map((it) => it.item_id));
   for (const li of Array.from(ul.children)) {
     if (!keep.has(li.dataset.id)) {
@@ -145,23 +152,29 @@ function fillGroup(groupKey, items) {
   }
 }
 
-function updateEmptyState() {
-  const searching = !$("searchRow").hidden && $("searchBox").value.trim();
-  const any = ["groupAttention", "groupWorking", "groupPublished", "groupSearch"]
-    .some((id) => !$(id).hidden);
-  $("emptyState").hidden = any || !!searching;
-  if (!any && searching) {
-    $("emptyState").hidden = false;
-    $("emptyState").querySelector(".empty-title").textContent = "没有匹配的内容";
-    $("emptyState").querySelector("p").textContent = "换个关键词，或清空搜索看看全部。";
-  } else {
-    $("emptyState").querySelector(".empty-title").textContent = "收件箱还是空的";
-    $("emptyState").querySelector("p").textContent = "粘贴一条你刚看到的文章或视频链接。";
+function searchQuery() {
+  return searchOpen ? $("searchBox").value.trim() : "";
+}
+
+function updateEmptyState(items) {
+  const searching = !!searchQuery();
+  const empty = items.length === 0;
+  $("emptyState").hidden = !empty;
+  if (empty) {
+    const title = $("emptyState").querySelector(".empty-title");
+    const p = $("emptyState").querySelector("p");
+    if (searching) {
+      title.textContent = "没有匹配的内容";
+      p.textContent = "换个关键词，或清空搜索看看全部。";
+    } else {
+      title.textContent = "收件箱还是空的";
+      p.textContent = "粘贴一条你刚看到的文章或视频链接。";
+    }
   }
 }
 
-async function fetchView(view) {
-  const q = new URLSearchParams({ view, limit: String(FETCH_LIMIT), offset: "0" });
+async function fetchAll() {
+  const q = new URLSearchParams({ limit: String(FETCH_LIMIT), offset: "0" });
   const r = await api("/v1/items?" + q.toString());
   return r.items || [];
 }
@@ -177,20 +190,20 @@ export async function refreshItems() {
   if (refreshing) return;
   refreshing = true;
   try {
-    const searching = !$("searchRow").hidden && $("searchBox").value.trim();
-    if (searching) {
-      const items = await fetchSearch(searching);
-      fillGroup("search", items);
+    const q = searchQuery();
+    let items;
+    if (q) {
+      $("itemList").hidden = true;
+      items = await fetchSearch(q);
+      fillList($("searchList"), items);
+      $("groupSearch").hidden = items.length === 0;
     } else {
       $("groupSearch").hidden = true;
-      const [attention, working, published] = await Promise.all([
-        fetchView("attention"), fetchView("working"), fetchView("published"),
-      ]);
-      fillGroup("attention", attention);
-      fillGroup("working", working);
-      fillGroup("published", published);
+      $("itemList").hidden = false;
+      items = await fetchAll();
+      fillList($("itemList"), items);
     }
-    updateEmptyState();
+    updateEmptyState(items);
   } catch (e) {
     if (!(e && e.net && document.visibilityState === "hidden")) showErr(e);
   }
@@ -198,12 +211,10 @@ export async function refreshItems() {
 }
 
 // 轮询节奏（§6.4）：有活跃任务 4s；否则 30s；页面不可见时暂停
-export function scheduleRefresh(getDetailActive) {
+export function scheduleRefresh() {
   setInterval(() => {
     if (document.visibilityState !== "visible") return;
-    const active = getDetailActive();
     refreshItems();
-    if (active) refreshDetailFromList();
   }, 4000);
   setInterval(() => {
     if (document.visibilityState !== "visible") return;
@@ -211,8 +222,23 @@ export function scheduleRefresh(getDetailActive) {
   }, 30000);
 }
 
-function refreshDetailFromList() {
-  // 详情的增量刷新由 item-detail 自管，这里只负责列表
+// —— 搜索框：与放大镜同排，从图标处向左展开（宽度过渡），不推动下方条目 ——
+function searchSlotMax() {
+  const toolbar = $("listToolbar");
+  // 扣掉图标 + 两个 flex gap（spacer|槽、槽|图标各 8px）；超出容器会把图标挤跑
+  return Math.max(0, toolbar.clientWidth - $("searchToggle").offsetWidth - 16);
+}
+
+function setSearchOpen(open) {
+  searchOpen = open;
+  const slot = $("searchRow");
+  $("listToolbar").classList.toggle("search-open", open);
+  slot.style.width = open ? searchSlotMax() + "px" : "0px";
+  $("searchToggle").setAttribute("aria-expanded", String(open));
+  // preventScroll：槽此刻宽度还在 0，默认 focus 会横向滚动祖先把整页推跳（走查反馈：点搜索左右跳）
+  if (open) $("searchBox").focus({ preventScroll: true });
+  else $("searchBox").value = "";
+  refreshItems();
 }
 
 export function initItemList() {
@@ -283,17 +309,16 @@ export function initItemList() {
     if (isDrawerOpen() && !e.target.closest("#listWrap")) closeDrawer();
   });
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && isDrawerOpen()) closeDrawer();
+    if (e.key === "Escape" && isDrawerOpen()) {
+      if (searchOpen) { setSearchOpen(false); return; }  // 先收搜索，再收抽屉
+      closeDrawer();
+    }
   });
   window.addEventListener("resize", () => {
     if (pull > 0) applyPull(Math.min(pull, drawerMaxPull()));
+    if (searchOpen) $("searchRow").style.width = searchSlotMax() + "px";
   });
-  $("searchToggle").addEventListener("click", () => {
-    const row = $("searchRow");
-    row.hidden = !row.hidden;
-    if (!row.hidden) { $("searchBox").focus(); refreshItems(); }
-    else { $("searchBox").value = ""; refreshItems(); }
-  });
+  $("searchToggle").addEventListener("click", () => setSearchOpen(!searchOpen));
   $("searchBox").addEventListener("input", () => {
     clearTimeout(searchTimer);
     searchTimer = setTimeout(refreshItems, 300);

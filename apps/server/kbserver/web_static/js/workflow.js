@@ -41,14 +41,6 @@ export function availableActionLabels() {
   };
 }
 
-// 首页分组：overall_state → 组名（§5.2）
-export function groupOf(wf) {
-  if (!wf) return "published";
-  if (wf.overall_state === "attention" || wf.overall_state === "failed") return "attention";
-  if (wf.overall_state === "published") return "published";
-  return "working";
-}
-
 const STEP_MARKS = { done: "✓", skipped: "—", attention: "!", failed: "!" };
 
 // 四阶段状态图（§6.1/§6.2）：圆点连线；发布节点只在 receipt 到达后点亮
