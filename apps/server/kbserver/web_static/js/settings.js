@@ -508,6 +508,7 @@ export function showSettings() {
   if (settingsHideTimer) { clearTimeout(settingsHideTimer); settingsHideTimer = 0; }
   const sv = $("settingsView");
   sv.classList.remove("slide-out");
+  sv.style.top = sv.style.left = sv.style.width = "";
   $("homeView").hidden = true;
   sv.hidden = false;
   if (!settingsReduceMotion) {
@@ -528,11 +529,18 @@ export function hideSettings() {
   }
   sv.classList.remove("slide-in");
   void sv.offsetWidth;
+  // 收起前量下它在流内的矩形并钉住：浮层化后靠 CSS 居中的话，宽度会随断点
+  // 上限和滚动条消失后的可视区变化，整页看起来是往外扩张着收上去的
+  const r = sv.getBoundingClientRect();
+  sv.style.top = `${r.top}px`;
+  sv.style.left = `${r.left}px`;
+  sv.style.width = `${r.width}px`;
   sv.classList.add("slide-out");
   $("homeView").hidden = false;
   settingsHideTimer = setTimeout(() => {
     settingsHideTimer = 0;
     sv.classList.remove("slide-out");
+    sv.style.top = sv.style.left = sv.style.width = "";
     sv.hidden = true;
   }, SETTINGS_ANIM_MS);
 }

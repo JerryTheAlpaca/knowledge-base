@@ -491,10 +491,12 @@ details.disclosure.slim .disclosure-body { padding: 0 8px 8px; }
 }
 #settingsView.slide-out { animation: settings-close .32s var(--ease) forwards;
   /* 浮层化收起：不再在流内占位，homeView 可立即点亮——从抽屉进设置返回时，
-     设置页直接向上滑走露出底下的条目抽屉，不再先闪主页再播下拉动画 */
-  position: fixed; top: calc(56px + env(safe-area-inset-top)); left: 0; right: 0; bottom: 0;
-  z-index: 47; overflow: auto; background: var(--bg);
-  max-width: 960px; margin: 0 auto; box-sizing: border-box; padding: 24px 24px 16px; }
+     设置页直接向上滑走露出底下的条目抽屉，不再先闪主页再播下拉动画。
+     top/left/width 由 hideSettings 按收起前它在流内的实际矩形写死：
+     这里若改用 left/right + max-width 自行居中，宽度会跟着断点上限和
+     滚动条消失后的可视区变化，收起瞬间整页横向扩张，就不再是直上直下。
+     overflow 用 hidden：浮层自带纵向滚动条会挤掉约 15px 内容宽度 */
+  position: fixed; bottom: 0; z-index: 47; overflow: hidden; background: var(--bg); }
 @keyframes settings-close {
   from { clip-path: inset(0 0 0 0); transform: none; opacity: 1; }
   to   { clip-path: inset(0 0 100% 0); transform: translateY(-10px); opacity: .4; }
