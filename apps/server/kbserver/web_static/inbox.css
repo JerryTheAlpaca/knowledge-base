@@ -306,7 +306,7 @@ ul.items > li:hover { background: var(--surface-2); border-color: var(--border-s
 ul.items > li.pre { opacity: 0; }
 ul.items > li.enter { animation: enter var(--t-slow) var(--ease) backwards; }
 /* 需要你处理的条目：红色小圆点压在卡片右上角、一半溢出卡片（微信未读红点式） */
-.item-dot { position: absolute; top: -6px; right: -6px; width: 12px; height: 12px;
+.item-dot { position: absolute; top: -4px; right: -4px; width: 12px; height: 12px;
             border-radius: 50%; background: var(--bad); }
 @keyframes enter { from { opacity: 0; transform: translateY(4px); } }
 .item-main { display: flex; gap: 12px; align-items: baseline; min-width: 0; }
