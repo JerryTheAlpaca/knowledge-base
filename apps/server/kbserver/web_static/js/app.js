@@ -5,7 +5,7 @@
 
 import { $, api, setUnauthorizedHandler, closeModal } from "./api.js";
 import { initCapture, submitCapture, restoreDraft, saveDrafts, clearDraft } from "./capture.js";
-import { initItemList, refreshItems, scheduleRefresh, isDrawerOpen, openDrawer } from "./item-list.js";
+import { initItemList, refreshItems, scheduleRefresh, isDrawerOpen, openDrawer, closeDrawer } from "./item-list.js";
 import { initDetail, openDetail, closeDetail, currentDetailId } from "./item-detail.js";
 import { initOnboarding, maybeShowOnboarding, reopenOnboarding } from "./onboarding.js";
 import { initSettings, showSettings, hideSettings } from "./settings.js";
@@ -45,8 +45,8 @@ function route() {
     showSettings();
     return;
   }
-  hideSettings();  // 收起动画结束后由 settings.js 点亮 homeView
-  // 从设置返回且来时抽屉是开着的：回到条目列表页
+  hideSettings();  // slide-out 浮层化收起，底下立即是 homeView/抽屉
+  // 从设置返回且来时抽屉是开着的：定格恢复条目列表页，不闪主页、不播下拉动画
   const reopenDrawer = wasOnSettings && settingsFromDrawer;
   settingsFromDrawer = false;
   const item = params.get("item");
@@ -59,7 +59,7 @@ function route() {
   }
   if (item && item !== currentDetailId()) openDetail(item, { push: false });
   else if (!item && currentDetailId()) closeDetail();
-  if (reopenDrawer) setTimeout(() => openDrawer(), 360);  // 等设置页收起动画交还主页
+  if (reopenDrawer) openDrawer(true);
 }
 
 export function openSettings(cardId) {
@@ -82,14 +82,16 @@ function closeMenus() {
   $("userMenu").hidden = true;
 }
 
-// 品牌「知识收件箱」：任何二级视图（详情/设置）下一键回到金蔷薇主页面
+// 品牌「知识收件箱」：任何二级视图（详情/设置）或展开的抽屉下一键回到金蔷薇主页面
 function goHome() {
+  const drawerWasOpen = isDrawerOpen();
   const atHome = location.pathname === "/inbox" && !location.search &&
-    $("settingsView").hidden && $("detailView").hidden;
+    $("settingsView").hidden && $("detailView").hidden && !drawerWasOpen;
   settingsFromDrawer = false;
   if (atHome) return;
   try { history.pushState({}, "", "/inbox"); } catch (e) { /* 忽略 */ }
   route();
+  if (drawerWasOpen) closeDrawer();
 }
 
 // ---------- 登录 / 登出 ----------

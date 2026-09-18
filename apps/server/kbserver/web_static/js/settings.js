@@ -497,8 +497,8 @@ function onDocClick(e) {
   setTip(btn, open);
 }
 
-// —— 进出场动画：整页从顶栏下沿向下展开；关闭时向上收拢后再交还主页 ——
-// 收起动画期间 settingsView 仍在流内占位，homeView 延后点亮，避免两个视图同屏堆叠
+// —— 进出场动画：整页从顶栏下沿向下展开；关闭时向上收拢 ——
+// slide-out 已浮层化（不占流），homeView 立即点亮：从抽屉返回时底下直接是条目页
 const SETTINGS_ANIM_MS = 320;
 const settingsReduceMotion = window.matchMedia
   && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -529,10 +529,10 @@ export function hideSettings() {
   sv.classList.remove("slide-in");
   void sv.offsetWidth;
   sv.classList.add("slide-out");
+  $("homeView").hidden = false;
   settingsHideTimer = setTimeout(() => {
     settingsHideTimer = 0;
     sv.classList.remove("slide-out");
     sv.hidden = true;
-    $("homeView").hidden = false;
   }, SETTINGS_ANIM_MS);
 }
