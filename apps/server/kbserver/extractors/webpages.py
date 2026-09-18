@@ -14,54 +14,32 @@
 """
 from __future__ import annotations
 
-import hashlib
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from html.parser import HTMLParser
 from urllib.parse import urljoin, urlparse
 
-from ..security.safe_fetch import SafeFetchError, safe_fetch
+from .fetch_base import (
+    ImageDownload,
+    PlatformError,
+    fetch_page,
+    download_images,
+    extract_first_url,
+    page_slug,
+)
 
 EXTRACTOR_VERSION = "webpage_article-1.0.0"
 
 # 单条最多下载的正文图片数；其余如实记入缺失清单
 MAX_CONTENT_IMAGES = 24
 
-_URL_IN_TEXT = re.compile(r"https?://[^\s，,、）)】\]]+")
-
-_IMG_EXT = {
-    "image/jpeg": "jpg",
-    "image/png": "png",
-    "image/gif": "gif",
-    "image/webp": "webp",
-    "image/svg+xml": "svg",
-    "image/bmp": "bmp",
-    "image/avif": "avif",
-}
+# 统一错误语义（fetch_base.PlatformError）：status ∈ unsupported / blocked /
+# network_error / empty_content。worker 据此决定重试（network_error）或
+# 进入补充材料（其余）。别名保留历史调用面。
+WebpageError = PlatformError
 
 _WECHAT_HOST_SUFFIX = "mp.weixin.qq.com"
-
-
-class WebpageError(Exception):
-    """提取失败。status: unsupported / blocked / network_error / empty_content。
-
-    worker 据此决定重试（network_error）或进入补充材料（其余）。
-    """
-
-    def __init__(self, status: str, message: str):
-        super().__init__(message)
-        self.status = status
-        self.message = message
-
-
-@dataclass
-class ImageDownload:
-    """成功下载的一张正文图片。"""
-    url: str
-    mime: str
-    ext: str
-    data: bytes
 
 
 @dataclass
@@ -83,19 +61,6 @@ class WebpageExtraction:
     def coverage(self) -> str:
         # 完成了本次页面静态正文范围（docs/02 §5.3；不含脚本/动态内容）
         return "full_text" if self.segments else "metadata_only"
-
-
-def extract_first_url(share_text: str | None) -> str | None:
-    """从分享文字提取第一条 URL（分享文字本身由 capture.json 留存）。"""
-    if not share_text:
-        return None
-    m = _URL_IN_TEXT.search(share_text)
-    return m.group(0).rstrip(".,;！!?？") if m else None
-
-
-def page_slug(url: str) -> str:
-    """URL 的确定性短标识，用于归档路径。"""
-    return hashlib.sha256(url.encode("utf-8")).hexdigest()[:10]
 
 
 # ---- 容错 HTML 树 ----
@@ -439,13 +404,7 @@ def extract(url: str | None, *, share_text: str | None = None,
     if not target.lower().startswith(("http://", "https://")):
         raise WebpageError("unsupported", f"不是 HTTP(S) 链接：{target[:200]}")
 
-    try:
-        res = safe_fetch(target, max_bytes=settings.html_download_limit, timeout=20.0,
-                         headers=_browser_headers())
-    except SafeFetchError as exc:
-        if exc.code == "NETWORK_ERROR":
-            raise WebpageError("network_error", f"网页下载失败：{exc}") from exc
-        raise WebpageError("blocked", f"网页下载被拒绝：{exc}") from exc
+    res = fetch_page(target, max_bytes=settings.html_download_limit, timeout=20.0)
 
     if res.status_code >= 400:
         raise WebpageError("blocked", f"页面返回 HTTP {res.status_code}，无法读取正文")
@@ -534,21 +493,9 @@ def extract(url: str | None, *, share_text: str | None = None,
     warnings: list[str] = []
     image_urls = _collect_image_urls(container, res.url, wechat=wechat)
     if include_images:
-        for iu in image_urls:
-            if len(images) >= MAX_CONTENT_IMAGES:
-                missing.append(f"正文图片未下载（超出单条 {MAX_CONTENT_IMAGES} 张上限）：{iu}")
-                continue
-            try:
-                ir = safe_fetch(iu, max_bytes=settings.max_image_bytes, timeout=20.0,
-                                mime_prefixes=("image/",))
-            except SafeFetchError as exc:
-                missing.append(f"正文图片未取得：{iu}（{exc}）")
-                continue
-            if ir.status_code >= 400:
-                missing.append(f"正文图片未取得：{iu}（HTTP {ir.status_code}）")
-                continue
-            images.append(ImageDownload(url=iu, mime=ir.mime,
-                                        ext=_IMG_EXT.get(ir.mime, "img"), data=ir.content))
+        images, missing = download_images(
+            image_urls, max_bytes_per_image=settings.max_image_bytes
+        )
         if len(image_urls) > len(images):
             warnings.append(
                 f"页面含 {len(image_urls)} 张正文图片，已取得 {len(images)} 张；"
