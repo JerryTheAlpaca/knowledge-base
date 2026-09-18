@@ -305,9 +305,10 @@ ul.items > li { position: relative; background: var(--surface); border: 1px soli
 ul.items > li:hover { background: var(--surface-2); border-color: var(--border-strong); }
 ul.items > li.pre { opacity: 0; }
 ul.items > li.enter { animation: enter var(--t-slow) var(--ease) backwards; }
-/* 需要你处理的条目：红色小圆点压在卡片右上角、一半溢出卡片（微信未读红点式） */
+/* 需要你处理的条目：红色小圆点压在卡片右上角、一半溢出卡片（微信未读红点式）。
+   用固定的微信通知红 #FA5151，不用 --bad——深色主题下 --bad 偏粉橘不够醒目 */
 .item-dot { position: absolute; top: -4px; right: -4px; width: 12px; height: 12px;
-            border-radius: 50%; background: var(--bad); }
+            border-radius: 50%; background: #FA5151; }
 @keyframes enter { from { opacity: 0; transform: translateY(4px); } }
 .item-main { display: flex; gap: 12px; align-items: baseline; min-width: 0; }
 .item-title { font-weight: 600; font-size: var(--fs-body); color: var(--text); flex: 1; min-width: 0;
