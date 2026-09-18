@@ -73,9 +73,10 @@ header { position: sticky; top: 0; z-index: 50;
                 display: flex; align-items: center; gap: 8px; height: 56px; }
 .brand { font-family: var(--font-display); font-size: var(--fs-display); font-weight: 600;
          color: #e8d5a8; letter-spacing: 1px; }
-/* 品牌名做成可点回主页的按钮：剥掉全局 button 外观，只留文字与指针 */
+/* 品牌名做成可点回主页的按钮：剥掉全局 button 外观，只留文字与指针。
+   不要在这里写 `font: inherit`——简写会把 .brand 的 serif 展示字重置回正文字体 */
 .brandbtn { border: none; background: transparent; padding: 0; min-height: 0;
-            font: inherit; letter-spacing: inherit; border-radius: var(--radius-note); }
+            border-radius: var(--radius-note); }
 .brandbtn:hover { color: var(--accent-hover); border: none; background: transparent; }
 .brandbtn:active { transform: none; }
 .userchip { display: inline-flex; align-items: center; gap: 8px; max-width: 220px;
