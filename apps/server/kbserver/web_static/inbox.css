@@ -161,7 +161,8 @@ label { display: block; font-size: var(--fs-small); color: var(--text-2); margin
 .drawer-body { width: 100%; max-width: 960px; margin: 0 auto; padding: 0 24px;
                display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .drawer-scroll { overflow-y: auto; overflow-x: hidden; min-height: 0; overscroll-behavior: contain; flex: 1;
-                 padding-bottom: 8px; }
+                 /* 顶部/右侧留边：卡片右上角红点有一半溢出卡片，不能被滚动容器裁掉 */
+                 padding: 6px 6px 8px 0; }
 /* 全屏面板顶部中央的收起拉手：与主页拉手同宽同位（顶栏正下方）、
    同为「文字+箭头」两行布局，开合切换时按钮位置尺寸完全不变（走查反馈：按钮左右跳）。
    注意：必须用 left/right + auto margin 居中——若用 translateX(-50%)，
@@ -304,9 +305,9 @@ ul.items > li { position: relative; background: var(--surface); border: 1px soli
 ul.items > li:hover { background: var(--surface-2); border-color: var(--border-strong); }
 ul.items > li.pre { opacity: 0; }
 ul.items > li.enter { animation: enter var(--t-slow) var(--ease) backwards; }
-/* 需要你处理的条目：右上角小圆点，像未读消息提示 */
-.item-dot { position: absolute; top: 6px; right: 6px; width: 8px; height: 8px;
-            border-radius: 50%; background: var(--warn); }
+/* 需要你处理的条目：红色小圆点压在卡片右上角、一半溢出卡片（微信未读红点式） */
+.item-dot { position: absolute; top: -4px; right: -4px; width: 9px; height: 9px;
+            border-radius: 50%; background: var(--bad); }
 @keyframes enter { from { opacity: 0; transform: translateY(4px); } }
 .item-main { display: flex; gap: 12px; align-items: baseline; min-width: 0; }
 .item-title { font-weight: 600; font-size: var(--fs-body); color: var(--text); flex: 1; min-width: 0;
@@ -487,7 +488,12 @@ details.disclosure.slim .disclosure-body { padding: 0 8px 8px; }
   from { clip-path: inset(0 0 100% 0); transform: translateY(-10px); opacity: .4; }
   to   { clip-path: inset(0 0 0 0); transform: none; opacity: 1; }
 }
-#settingsView.slide-out { animation: settings-close .32s var(--ease) forwards; }
+#settingsView.slide-out { animation: settings-close .32s var(--ease) forwards;
+  /* 浮层化收起：不再在流内占位，homeView 可立即点亮——从抽屉进设置返回时，
+     设置页直接向上滑走露出底下的条目抽屉，不再先闪主页再播下拉动画 */
+  position: fixed; top: calc(56px + env(safe-area-inset-top)); left: 0; right: 0; bottom: 0;
+  z-index: 47; overflow: auto; background: var(--bg);
+  max-width: 960px; margin: 0 auto; box-sizing: border-box; padding: 24px 24px 16px; }
 @keyframes settings-close {
   from { clip-path: inset(0 0 0 0); transform: none; opacity: 1; }
   to   { clip-path: inset(0 0 100% 0); transform: translateY(-10px); opacity: .4; }

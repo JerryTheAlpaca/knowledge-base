@@ -65,10 +65,15 @@ function animatePull(target) {
 export function isDrawerOpen() { return $("listWrap").classList.contains("open"); }
 
 let drawerClosedAt = 0;
-export function openDrawer() {
+export function openDrawer(instant) {
   $("listWrap").classList.add("open");
   $("drawerHandle").setAttribute("aria-expanded", "true");
-  animatePull(drawerMaxPull());
+  if (instant) {  // 从设置返回条目抽屉：直接定格在展开位，不重播下拉动画
+    if (pullRaf) { cancelAnimationFrame(pullRaf); pullRaf = 0; }
+    applyPull(drawerMaxPull());
+  } else {
+    animatePull(drawerMaxPull());
+  }
 }
 export function closeDrawer() {
   $("listWrap").classList.remove("open");
