@@ -12,22 +12,69 @@ const FETCH_LIMIT = 50;
 let refreshing = false;
 let searchTimer = null;
 
-// —— 顶部抽屉（金蔷薇布局）：条目折叠在顶栏下，点击/下拉展开，点外部或 Esc 收起 ——
+// —— 顶部抽屉（金蔷薇布局）：圆弧拉手拖着整页下拉，点外部或 Esc 收起 ——
+// 动画模型：面板钉在终位，clip-path 可视区恒为 [顶栏下沿, 拉手上沿]；拉手用
+// transform 下移、充当页面前缘的拉环，顶端同时露出面板自带的收起钮（新圆弧）。
+// 拖拽必须 1:1 跟手且拉手与页面边缘同帧同位，CSS transition 做不到，统一 rAF 驱动。
+const drawerHeader = document.querySelector("header");
+function drawerRestTop() {
+  return drawerHeader ? drawerHeader.getBoundingClientRect().bottom : 56;
+}
+function drawerMaxPull() {
+  return Math.max(0, window.innerHeight - drawerRestTop());
+}
+
+let pull = 0;        // 当前拉出量 px = 拉手相对静止位的下移量
+let pullRaf = 0;
+const reduceMotion = window.matchMedia
+  && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+function applyPull(px) {
+  pull = px;
+  const top = drawerRestTop();
+  const max = Math.max(0, window.innerHeight - top);
+  const handle = $("drawerHandle");
+  const panel = $("drawerPanel");
+  const close = $("drawerClose");
+  handle.style.transform = px > 0.5 ? "translateY(" + px + "px)" : "";
+  const bottom = Math.max(0, window.innerHeight - top - px);
+  panel.style.clipPath = "inset(" + top + "px 0 " + bottom + "px 0)";
+  panel.style.visibility = px > 0.5 ? "visible" : "";
+  // 收起钮不全程占位：拉到最后 10% 才渐显，收起时随之隐去；未显现时不可点
+  const show = max > 0 && px / max > 0.9 ? Math.min(1, (px / max - 0.9) / 0.1) : 0;
+  close.style.opacity = show;
+  close.style.pointerEvents = show > 0.5 ? "auto" : "none";
+}
+
+function animatePull(target) {
+  if (pullRaf) { cancelAnimationFrame(pullRaf); pullRaf = 0; }
+  if (reduceMotion || Math.abs(target - pull) < 1) { applyPull(target); return; }
+  const from = pull;
+  const start = performance.now();
+  const dur = 420;
+  const ease = (t) => 1 - Math.pow(1 - t, 3);  // easeOutCubic
+  const step = (now) => {
+    const t = Math.min(1, (now - start) / dur);
+    applyPull(from + (target - from) * ease(t));
+    pullRaf = t < 1 ? requestAnimationFrame(step) : 0;
+  };
+  pullRaf = requestAnimationFrame(step);
+}
+
 export function isDrawerOpen() { return $("listWrap").classList.contains("open"); }
+
+let drawerClosedAt = 0;
 export function openDrawer() {
   $("listWrap").classList.add("open");
   $("drawerHandle").setAttribute("aria-expanded", "true");
+  animatePull(drawerMaxPull());
 }
-let drawerClosedAt = 0;
 export function closeDrawer() {
   $("listWrap").classList.remove("open");
   $("drawerHandle").setAttribute("aria-expanded", "false");
   drawerClosedAt = Date.now();
+  animatePull(0);
 }
-
-// 下拉手势状态：收起态按住拉手往下拖 ≥28px 直接展开
-let pressY = null;
-let drawerDragging = false;
 
 // 滚动显现（走查反馈）：卡片进入视口时淡入上移；已显现的行不再重复动画
 const revealIO = ("IntersectionObserver" in window)
@@ -183,35 +230,63 @@ export function initItemList() {
       openDetail(li.dataset.id);
     });
   });
-  // —— 抽屉：点击拉手切换；收起态往下拖 ≥28px 展开；点面板外/Esc 收起 ——
-  $("drawerHandle").addEventListener("click", () => {
-    if (drawerDragging) { drawerDragging = false; return; }  // 手势展开后吞掉这次 click
+  // —— 抽屉：拉手拖着整页跟手下拉，松手按位移/速度决定展开或弹回；纯点击仍可开关 ——
+  //    点面板外/Esc/收起钮收起。拖拽结束后的那次 click 是手势余波，吞掉不回切
+  const drawerHandle = $("drawerHandle");
+  let drag = null;           // { id, startY, basePull, moved, samples:[{y,t}] }
+  let swallowClick = false;
+
+  drawerHandle.addEventListener("click", () => {
+    if (swallowClick) { swallowClick = false; return; }
     // 收起动画期间落在拉手上的连点不回开：否则快速连点时按钮在开/关之间来回弹（走查反馈：按钮跳）
     if (Date.now() - drawerClosedAt < 400) return;
     if (isDrawerOpen()) closeDrawer(); else openDrawer();
   });
-  $("drawerHandle").addEventListener("pointerdown", (e) => {
-    pressY = e.clientY; drawerDragging = false;
+  drawerHandle.addEventListener("pointerdown", (e) => {
+    if (isDrawerOpen() || e.button > 0) return;  // 展开态拉手已在屏外
+    swallowClick = false;
+    if (pullRaf) { cancelAnimationFrame(pullRaf); pullRaf = 0; }
+    drag = { id: e.pointerId, startY: e.clientY, basePull: pull, moved: false, samples: [] };
+    document.body.style.userSelect = "none";
   });
-  $("drawerClose").addEventListener("click", () => closeDrawer());
   document.addEventListener("pointermove", (e) => {
-    if (pressY === null || drawerDragging) return;
-    if (e.clientY - pressY > 28) { drawerDragging = true; openDrawer(); }
+    if (!drag || e.pointerId !== drag.id) return;
+    const now = performance.now();
+    drag.samples.push({ y: e.clientY, t: now });
+    while (drag.samples.length > 2 && now - drag.samples[0].t > 100) drag.samples.shift();
+    const dy = e.clientY - drag.startY;
+    if (!drag.moved && Math.abs(dy) > 3) drag.moved = true;
+    if (drag.moved) applyPull(Math.min(Math.max(0, drag.basePull + dy), drawerMaxPull()));
   });
-  document.addEventListener("pointerup", () => {
-    pressY = null;
-    if (drawerDragging) {
-      // 紧随的 click（若有）会先于这个定时器派发并被拉手吞掉；
-      // 之后无论如何都复位，避免标志卡死吞掉下一次正常点击（走查反馈：有时按了没反应）
-      setTimeout(() => { drawerDragging = false; }, 0);
+  const endDrag = (e) => {
+    if (!drag || e.pointerId !== drag.id) return;
+    const d = drag;
+    drag = null;
+    document.body.style.userSelect = "";
+    if (!d.moved) return;  // 纯点击：交给 click 处理
+    d.samples.push({ y: e.clientY, t: performance.now() });
+    const s = d.samples;
+    const vel = s.length > 1 && s[s.length - 1].t > s[0].t
+      ? (s[s.length - 1].y - s[0].y) / (s[s.length - 1].t - s[0].t) : 0;
+    if (pull > drawerMaxPull() * 0.22 || vel > 0.5) {
+      swallowClick = true;  // 拖拽展开后紧跟的 click（若有）不得把抽屉关回去
+      openDrawer();
+    } else {
+      closeDrawer();        // 弹回；drawerClosedAt 会吞掉余波 click
     }
-  });
-  document.addEventListener("pointercancel", () => { pressY = null; });
+  };
+  document.addEventListener("pointerup", endDrag);
+  document.addEventListener("pointercancel", endDrag);
+  $("drawerClose").addEventListener("click", () => closeDrawer());
   document.addEventListener("click", (e) => {
+    if (swallowClick) { swallowClick = false; return; }  // 拖拽余波落在面板外时由这里吞
     if (isDrawerOpen() && !e.target.closest("#listWrap")) closeDrawer();
   });
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && isDrawerOpen()) closeDrawer();
+  });
+  window.addEventListener("resize", () => {
+    if (pull > 0) applyPull(Math.min(pull, drawerMaxPull()));
   });
   $("searchToggle").addEventListener("click", () => {
     const row = $("searchRow");

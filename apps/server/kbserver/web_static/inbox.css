@@ -124,8 +124,10 @@ label { display: block; font-size: var(--fs-small); color: var(--text-2); margin
 
 /* —— 顶部：条目抽屉。收起时只剩一个从顶边垂下来的半圆拉手 —— */
 .drawer { position: relative; z-index: 30; display: flex; justify-content: center; }
-.drawer-handle { position: relative; width: 150px; min-height: 46px; padding: 6px 0 8px;
+/* 拉手 z 高于面板(45)：拖动中它是页面前缘的拉环，要画在面板之上 */
+.drawer-handle { position: relative; z-index: 46; width: 150px; min-height: 46px; padding: 6px 0 8px;
                  margin-top: -24px;  /* 抵消 main 顶边距，让半圆贴住顶栏下沿 */
+                 touch-action: none;  /* 拖拽把手：按住下拖不能触发页面滚动 */
                  border: 1px solid var(--border-strong); border-top: none;
                  border-radius: 0 0 75px 75px;
                  background: linear-gradient(180deg, rgba(56, 39, 17, .92) 0%, rgba(24, 16, 8, .96) 100%);
@@ -136,8 +138,7 @@ label { display: block; font-size: var(--fs-small); color: var(--text-2); margin
 .drawer-handle::after { content: ""; position: absolute; inset: -6px 0 -4px; }  /* 半圆视觉小，命中区扩到 ≥44px */
 .drawer-handle:hover { color: var(--accent);
                        box-shadow: 0 6px 22px rgba(226, 176, 74, .18), inset 0 1px 0 rgba(226, 176, 74, .25); }
-.drawer-handle svg { flex: none; transition: transform var(--t-slow) var(--ease); }
-.drawer.open .drawer-handle svg { transform: rotate(180deg); }
+.drawer-handle svg { flex: none; }
 /* 拉手文字（已收集/收起）：替代数字徽标 */
 .handle-label { font-size: 12px; line-height: 1; letter-spacing: 3px; text-indent: 3px; }
 .drawer-panel { position: fixed; inset: 0; z-index: 45; display: flex; flex-direction: column;
@@ -145,9 +146,12 @@ label { display: block; font-size: var(--fs-small); color: var(--text-2); margin
                 /* 顶部让出 sticky 顶栏 + 收起拉手的高度：顶栏（品牌/设置/账号）在条目列表页也一直可见 */
                 padding: calc(110px + env(safe-area-inset-top)) 0 calc(16px + env(safe-area-inset-bottom));
                 backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
-                transform: translateY(-100%); opacity: 0; pointer-events: none;
-                transition: transform .34s var(--ease), opacity .3s var(--ease); }
-.drawer.open .drawer-panel { transform: none; opacity: 1; pointer-events: auto; }
+                /* 「圆弧拉手拖着整页下拉」：面板钉在终位、不整块位移，clip 可视区恒为
+                   [顶栏下沿, 拉手上沿]，由 item-list.js 的 rAF 逐帧驱动——拉手
+                   （transform 下移）就是页面前缘的拉环，顶栏下同时露出面板自带的
+                   收起钮（拉动时顶端新生成的圆弧）；收起时拉手带着前缘反向卷回。
+                   clip 不走 CSS transition：拖拽要 1:1 跟手，且必须与拉手同帧同位 */
+                visibility: hidden; }
 .drawer-body { width: 100%; max-width: 960px; margin: 0 auto; padding: 0 24px;
                display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .drawer-scroll { overflow-y: auto; min-height: 0; overscroll-behavior: contain; flex: 1;
