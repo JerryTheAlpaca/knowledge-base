@@ -1,6 +1,6 @@
 // item-list.js — 首页条目流（docs/17 §4.5、§6.4）
 //
-// 单一时间流：全部条目按 created_at 倒序（最新在最上），状态用卡片右上角色块标识。
+// 单一时间流：全部条目按 created_at 倒序（最新在最上），「需要你处理」的条目右上角标圆点。
 // 状态文案与进度全部来自服务端 WorkflowView；本模块不做业务状态推断。
 // 刷新按 item_id 做 DOM diff，只更新变化行，保护滚动位置（§6.4）。
 
@@ -89,11 +89,6 @@ const revealIO = ("IntersectionObserver" in window)
     }, { rootMargin: "60px 0px" })
   : null;
 
-// 状态色块（卡片右上角）：语义色与分组标题一致
-const TONE_LABELS = {
-  working: "正在处理", attention: "需要你处理", failed: "处理失败", published: "已完成",
-};
-
 function rowJSON(it) {
   const wf = it.workflow || {};
   return JSON.stringify([
@@ -106,9 +101,8 @@ function rowJSON(it) {
 function rowInner(it) {
   const display = it.title || (it.original_url || "").replace(/^https?:\/\/(www\.)?/, "").slice(0, 60) || "文字 / 文件采集";
   const aux = listRowAux(it.workflow, it);
-  const tone = (it.workflow && it.workflow.overall_state) || "";
-  const toneLabel = TONE_LABELS[tone] || "";
-  return (tone ? '<span class="item-tone tone-' + esc(tone) + '" title="' + esc(toneLabel) + '"></span>' : "") +
+  const attention = it.workflow && it.workflow.overall_state === "attention";
+  return (attention ? '<span class="item-dot" title="需要你处理"></span>' : "") +
     '<div class="item-main"><span class="item-title">' + esc(display) + "</span>" +
     '<span class="item-time num" title="' + esc(new Date(it.created_at).toLocaleString("zh-CN", { hour12: false })) + '">' +
     esc(fmtShort(it.created_at)) + "</span></div>" +

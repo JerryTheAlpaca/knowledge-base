@@ -160,7 +160,7 @@ label { display: block; font-size: var(--fs-small); color: var(--text-2); margin
                 visibility: hidden; }
 .drawer-body { width: 100%; max-width: 960px; margin: 0 auto; padding: 0 24px;
                display: flex; flex-direction: column; flex: 1; min-height: 0; }
-.drawer-scroll { overflow-y: auto; min-height: 0; overscroll-behavior: contain; flex: 1;
+.drawer-scroll { overflow-y: auto; overflow-x: hidden; min-height: 0; overscroll-behavior: contain; flex: 1;
                  padding-bottom: 8px; }
 /* 全屏面板顶部中央的收起拉手：与主页拉手同宽同位（顶栏正下方）、
    同为「文字+箭头」两行布局，开合切换时按钮位置尺寸完全不变（走查反馈：按钮左右跳）。
@@ -304,13 +304,9 @@ ul.items > li { position: relative; background: var(--surface); border: 1px soli
 ul.items > li:hover { background: var(--surface-2); border-color: var(--border-strong); }
 ul.items > li.pre { opacity: 0; }
 ul.items > li.enter { animation: enter var(--t-slow) var(--ease) backwards; }
-/* 卡片右上角色块：workflow.overall_state（悬停有文字提示） */
-.item-tone { position: absolute; top: -1px; right: -1px; width: 12px; height: 12px;
-             border-radius: 0 var(--radius-inner) 0 var(--radius-inner); }
-.item-tone.tone-working { background: var(--info); }
-.item-tone.tone-attention { background: var(--warn); }
-.item-tone.tone-failed { background: var(--bad); }
-.item-tone.tone-published { background: var(--ok); }
+/* 需要你处理的条目：右上角小圆点，像未读消息提示 */
+.item-dot { position: absolute; top: 6px; right: 6px; width: 8px; height: 8px;
+            border-radius: 50%; background: var(--warn); }
 @keyframes enter { from { opacity: 0; transform: translateY(4px); } }
 .item-main { display: flex; gap: 12px; align-items: baseline; min-width: 0; }
 .item-title { font-weight: 600; font-size: var(--fs-body); color: var(--text); flex: 1; min-width: 0;
