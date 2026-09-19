@@ -168,7 +168,6 @@ function topBar() {
   const top = document.getElementById("landTop");
   const bar = document.getElementById("landProgress");
   const pill = top.querySelector(".land-pill");
-  const title = view.querySelector(".land-title");
   let queued = false;
 
   // 平时那一行是通宽的：品牌组在左、入口组在右。收拢要走多远 = (顶栏内容盒宽 - 收拢后的原生宽) / 2。
@@ -192,16 +191,10 @@ function topBar() {
     const y = scrollY;
     top.classList.toggle("stuck", y > 8);
     view.classList.toggle("scrolled", y > 40);
-    if (title) {
-      // 首屏那行「金蔷薇」整个滚过顶栏下沿，顶栏这一行就收成一颗悬着的胶囊。
-      // 来回 26px 的迟滞带，免得停在边界上时一闪一闪。
-      const box = title.getBoundingClientRect();
-      if (box.height) {                // 同上：量不到就别挂类，否则一进页面就凭空吸出胶囊
-        const line = top.getBoundingClientRect().bottom;
-        const on = top.classList.contains("capsule");
-        if (on ? box.bottom > line + 26 : box.bottom <= line) top.classList.toggle("capsule", !on);
-      }
-    }
+    // 一开始往上滑就把这一行收拢成胶囊，不等首屏那行字滚出去。
+    // 24 / 8 这一档迟滞带既躲开了回弹与橡皮筋时的误触发，也够让底衬来不及显形。
+    const on = top.classList.contains("capsule");
+    top.classList.toggle("capsule", on ? y > 8 : y > 24);
     const max = document.documentElement.scrollHeight - innerHeight;
     bar.style.setProperty("--p", max > 40 ? (y / max).toFixed(4) : 0);
   };

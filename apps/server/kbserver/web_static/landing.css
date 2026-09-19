@@ -58,7 +58,7 @@
 .land-pill.measure { flex: 0 0 auto; width: max-content; }   /* 只在量的那一瞬 */
 .land-pill.notrans .land-mark, .land-pill.notrans .land-ends { transition: none !important; }
 .land-mark, .land-ends { flex: none; display: flex; align-items: center; gap: 6px;
-                         transition: transform .55s var(--ease); }
+                         transition: transform .8s var(--ease); }
 .land-ends { margin-left: clamp(26px, 4vw, 44px); }   /* 收拢后品牌与入口之间留够，别挤成一条 */
 .land-top.capsule .land-mark { transform: translateX(var(--g, 0px)); }
 .land-top.capsule .land-ends { transform: translateX(calc(var(--g, 0px) * -1)); }
@@ -72,7 +72,7 @@
                      box-shadow: 0 10px 26px rgba(0, 0, 0, .36), inset 0 1px 0 rgba(255, 226, 150, .07);
                      backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
                      opacity: 0; transform: scale(.94);
-                     transition: opacity .4s var(--ease), transform .55s var(--ease); }
+                     transition: opacity .55s var(--ease), transform .8s var(--ease); }
 .land-top.capsule .land-pill::before { opacity: 1; transform: none; }
 /* 阅读进度就是这一条发丝线：平时跟底衬一样摸到屏幕两边，收拢时缩到胶囊里侧那一段（14px 内收，
    正好躲开胶囊两端的圆角）；上下不动，只挪左右两端 */
@@ -82,7 +82,7 @@
                  transform: scaleX(var(--p, 0)); transform-origin: left center;
                  background: linear-gradient(90deg, var(--rose-deep), var(--accent) 45%, var(--rose-hi));
                  opacity: 0;
-                 transition: opacity .45s var(--ease), left .55s var(--ease), right .55s var(--ease); }
+                 transition: opacity .45s var(--ease), left .8s var(--ease), right .8s var(--ease); }
 .land-top.stuck .land-progress { opacity: .85; }
 /* 收拢后缩到那一行的原生宽度上，两端各让开胶囊的圆角 */
 .land-top.capsule .land-progress { left: calc((100% - var(--w, 0px)) / 2);
