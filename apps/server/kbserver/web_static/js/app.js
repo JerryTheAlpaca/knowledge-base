@@ -150,6 +150,12 @@ setUnauthorizedHandler(() => {
   showLogin();
 });
 
+// 前进/后退缓存里复活的页面不会重跑 boot()：回来先问一次服务端还会不会认这个会话。
+// 别处（或本标签页退出后）会话已失效时，401 由 api() 统一交给 showLogin。
+window.addEventListener("pageshow", (e) => {
+  if (e.persisted) api("/v1/auth/me").catch(() => { /* 401 已切到登录视图 */ });
+});
+
 scheduleRefresh();
 
 window.addEventListener("popstate", route);

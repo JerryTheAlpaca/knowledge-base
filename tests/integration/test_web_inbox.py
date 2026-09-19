@@ -217,6 +217,25 @@ def test_logout_revokes_central_session(wc, central):
     assert wc.get("/v1/items").status_code == 401
 
 
+def test_logout_expires_parent_domain_session_cookie(wc, central, monkeypatch):
+    """中心把会话 Cookie 种在父域上（生产 AUTH_COOKIE_DOMAIN）：退出必须按同样的 Domain
+    让它过期，并且不能把中心的滑动续期 Cookie 又写回浏览器——那样点返回还是登录态。
+    """
+    monkeypatch.setenv("AUTH_COOKIE_DOMAIN", "example.com")
+    _login(wc, central)
+    csrf = wc.cookies.get("kb_csrf")
+    central["renew"] = True  # 中心每次校验都回一颗续期 Cookie
+
+    r = wc.post("/v1/auth/logout", headers={"X-CSRF-Token": csrf})
+    assert r.status_code == 200
+    session = [c for c in r.headers.get_list("set-cookie") if c.startswith(AUTH_COOKIE + "=")]
+    # 只过期，不续期：会话 Cookie 的任何一条 Set-Cookie 都必须是空值
+    values = [c.split(";", 1)[0].partition("=")[2].strip('"') for c in session]
+    assert session and all(v == "" for v in values)
+    assert any("Domain=example.com" in c for c in session)
+    central["renew"] = False
+
+
 def test_old_web_pairing_session_no_longer_authenticates(wc, central, db, user_a):
     """旧配对码/旧 kb_session 认证路径已关闭（docs/05 §4.5）。"""
     from kbserver.security.tokens import WEB_SCOPES, issue_pairing_code

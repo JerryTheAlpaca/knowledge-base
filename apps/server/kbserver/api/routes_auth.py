@@ -90,6 +90,19 @@ class LogoutRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+def _expire_cookie(response: Response, name: str, *, domain: str | None = None,
+                   httponly: bool = False) -> None:
+    """让浏览器删掉这条 Cookie。
+
+    删除按「名称 + Domain + Path」匹配，Secure 也要与写入时一致：属性对不上时浏览器
+    把它当成另一条 Cookie，父域上的中心会话凭据就留在浏览器里了（退出后点返回仍是登录态）。
+    """
+    response.delete_cookie(
+        name, domain=domain, path="/", httponly=httponly,
+        secure=get_settings().public_base_url.startswith("https://"), samesite="lax",
+    )
+
+
 @router.post("/v1/auth/logout")
 def auth_logout(request: Request, response: Response, principal=Depends(current_principal)):
     """共享退出：撤销当前中心会话并清理 Cookie（中心会话通道）。
@@ -97,6 +110,9 @@ def auth_logout(request: Request, response: Response, principal=Depends(current_
     设备 Token 通道不受浏览器退出影响（docs/05 §4.2：区分「退出网站」与「断开设备」）。
     """
     settings = get_settings()
+    # 认证依赖已把中心续期 Cookie 暂存到 request.state；退出不写回，
+    # 否则响应末尾又把刚清掉的凭据种回浏览器（中心每次校验都会回一颗续期 Cookie）。
+    request.state.central_renewal = None
     cookie = request.cookies.get(settings.auth_cookie_name)
     if principal.auth_method == "central_session" and cookie:
         try:
@@ -104,8 +120,13 @@ def auth_logout(request: Request, response: Response, principal=Depends(current_
         except central_auth.CentralAuthUnavailable:
             # 中心不可达也清理本地可见 Cookie；中心会话仍在时由中心自身过期兜底
             pass
-    response.delete_cookie(settings.auth_cookie_name, path="/")
-    response.delete_cookie(CSRF_COOKIE, path="/")
+    # 会话 Cookie 可能种在父域（AUTH_COOKIE_DOMAIN，与中心一致）也可能只在本机；
+    # 两种都过期掉，留一种就会把仍然有效的凭据留在浏览器里。
+    _expire_cookie(response, settings.auth_cookie_name, httponly=True)
+    if settings.auth_cookie_domain:
+        _expire_cookie(response, settings.auth_cookie_name, domain=settings.auth_cookie_domain,
+                       httponly=True)
+    _expire_cookie(response, CSRF_COOKIE)
     return {"logged_out": True}
 
 
