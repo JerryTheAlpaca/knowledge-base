@@ -28,29 +28,73 @@
 .landing .dust { position: fixed; inset: 0; width: 100%; height: 100%;
                  display: block; z-index: 0; pointer-events: none; }
 
-/* —— 右上角入口 —— */
+/* —— 顶栏：平时通宽一行，下滑后整行缩成一颗居中悬着的描金胶囊 —— */
+/* inbox.css 里那条给收件箱顶栏写的裸 `header` 规则会漏到这一行上（暖黑底 + 金发丝线 + 模糊），
+   说明页这一行平时是透明的、底衬另有其人，所以先把那三样按回去。
+   边框留着 1px 只是不想让顶栏高度差出一像素，把发丝线的位置挪走。 */
 .land-top { position: fixed; left: 0; right: 0; top: 0; z-index: 30;
-            display: flex; align-items: center; gap: 6px;
-            padding: calc(12px + env(safe-area-inset-top)) clamp(14px, 4vw, 40px) 12px;
-            border-bottom: 1px solid transparent;
-            background: rgba(10, 7, 5, 0);
-            transition: background .45s var(--ease), border-color .45s var(--ease); }
-.land-top.stuck { background: rgba(12, 8, 4, .74); border-bottom-color: rgba(226, 176, 74, .13);
-                  backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
-/* 阅读进度就是顶栏那条发丝线：不另起一根，也不占高度 */
-.land-progress { position: absolute; left: 0; right: 0; bottom: -1px; height: 1px;
+            --pad-x: clamp(14px, 4vw, 40px);
+            display: flex; align-items: center;
+            padding: calc(12px + env(safe-area-inset-top)) var(--pad-x) 12px;
+            background: transparent; border-bottom: 1px solid transparent;
+            backdrop-filter: none; -webkit-backdrop-filter: none; }
+/* 吸顶底衬单独一层，只动 opacity：胶囊态要把它整层让位给胶囊自己。
+   backdrop-filter 没法过渡，所以实测确认过 opacity:0 会把模糊一起淡掉（条纹底逐像素相同），
+   写在这里才不会出现「暗带淡掉了、模糊还硬着」的那一下。 */
+.land-top::before { content: ""; position: absolute; inset: 0; z-index: -1;
+                    border-bottom: 1px solid rgba(226, 176, 74, .13);
+                    background: rgba(12, 8, 4, .74);
+                    backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+                    opacity: 0; transition: opacity .45s var(--ease); }
+.land-top.stuck::before { opacity: 1; }
+.land-top.capsule::before { opacity: 0; }
+/* 一行通宽摊在顶栏内容盒两端；收拢时两组各按 --g 往中间走。宽高与纵向位置全程不动，
+   谁也推不走，看上去就是那一行自己缩了上去。
+   --g（走多远）与 --w（收拢后的原生宽度）由 landing.js 量：视图可见时一次、resize 一次、
+   内嵌宋体落定再一次；量不到（还 hidden）就留 0，那一行按原样摊开，不会先缩再弹开。 */
+.land-pill { --pw: calc(var(--w, 0px) + 28px);
+             position: relative; flex: 1 1 auto; display: flex; align-items: center;
+             justify-content: space-between; gap: 6px; }
+.land-pill.measure { flex: 0 0 auto; width: max-content; }   /* 只在量的那一瞬 */
+.land-pill.notrans .land-mark, .land-pill.notrans .land-ends { transition: none !important; }
+.land-mark, .land-ends { flex: none; display: flex; align-items: center; gap: 6px;
+                         transition: transform .55s var(--ease); }
+.land-ends { margin-left: clamp(26px, 4vw, 44px); }   /* 收拢后品牌与入口之间留够，别挤成一条 */
+.land-top.capsule .land-mark { transform: translateX(var(--g, 0px)); }
+.land-top.capsule .land-ends { transform: translateX(calc(var(--g, 0px) * -1)); }
+/* 胶囊底：比右边那颗注册按钮安静一档——它是这一行的容器，不是按钮。
+   平时就按 --w 宽在正中悬着、只是没显形，所以收拢过程不必再改它的宽高。 */
+.land-pill::before { content: ""; position: absolute; top: -6px; bottom: -6px; z-index: -1;
+                     left: 50%; width: var(--pw); margin-left: calc(var(--pw) / -2);
+                     border-radius: var(--radius-pill);
+                     border: 1px solid rgba(226, 176, 74, .28);
+                     background: linear-gradient(180deg, rgba(41, 28, 12, .9) 0%, rgba(15, 10, 6, .93) 100%);
+                     box-shadow: 0 10px 26px rgba(0, 0, 0, .36), inset 0 1px 0 rgba(255, 226, 150, .07);
+                     backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+                     opacity: 0; transform: scale(.94);
+                     transition: opacity .4s var(--ease), transform .55s var(--ease); }
+.land-top.capsule .land-pill::before { opacity: 1; transform: none; }
+/* 阅读进度就是这一条发丝线：平时跟底衬一样摸到屏幕两边，收拢时缩到胶囊里侧那一段（14px 内收，
+   正好躲开胶囊两端的圆角）；上下不动，只挪左右两端 */
+.land-progress { position: absolute; left: calc(-1 * var(--pad-x)); right: calc(-1 * var(--pad-x));
+                 bottom: -13px;                        /* 顶栏底衬的下沿：内容盒下沿 + 12px 内边距 */
+                 height: 1px; border-radius: 1px;
                  transform: scaleX(var(--p, 0)); transform-origin: left center;
                  background: linear-gradient(90deg, var(--rose-deep), var(--accent) 45%, var(--rose-hi));
-                 opacity: 0; transition: opacity .45s; }
+                 opacity: 0;
+                 transition: opacity .45s var(--ease), left .55s var(--ease), right .55s var(--ease); }
 .land-top.stuck .land-progress { opacity: .85; }
+/* 收拢后缩到那一行的原生宽度上，两端各让开胶囊的圆角 */
+.land-top.capsule .land-progress { left: calc((100% - var(--w, 0px)) / 2);
+                                   right: calc((100% - var(--w, 0px)) / 2); }
 .land-brand { font-family: var(--font-display); font-size: 19px; font-weight: 600; letter-spacing: .3em;
               border: none; background: transparent; padding: 0; min-height: 0; cursor: pointer;
               color: var(--rose-brand); text-shadow: 0 0 22px rgba(226, 176, 74, .28);
               transition: color .3s, text-shadow .3s; }
 .land-brand:hover { color: var(--accent-hover); text-shadow: 0 0 26px rgba(240, 193, 105, .5); }
 .land-brand:active { transform: none; }
-.land-nav { display: flex; align-items: center; gap: 22px; margin-left: clamp(10px, 3vw, 30px); }
-.land-spacer { flex: 1; }
+/* 「怎么用」是品牌的附属，收拢后要贴着品牌，别跟右边两个入口等距 */
+.land-nav { display: flex; align-items: center; gap: 22px; margin-left: clamp(8px, 1.6vw, 16px); }
 .land-anchor { position: relative; font-size: var(--fs-small); letter-spacing: .1em;
                color: var(--text-2); text-decoration: none; padding: 6px 0; transition: color .3s; }
 .land-anchor::after { content: ""; position: absolute; left: 0; right: 0; bottom: 2px; height: 1px;
@@ -285,6 +329,8 @@
 @media (max-width: 420px) {
   .land-cta { padding: 0 12px; }
   .land-brand { font-size: 17px; }
+  /* 窄屏顶栏左右只留 14px，胶囊再按 14px 外扩就顶到屏幕边了 */
+  .land-pill { --pw: calc(var(--w, 0px) + 20px); }
 }
 
 /* —— 矮视口（横放的手机、小笔记本）：首屏仍要是一整屏，只能收花冠与字号 —— */
@@ -309,4 +355,7 @@
   .landing .stem i { transform: scaleY(1); }
   .poem-word::before { transition: none; }
   .land-cue-line::after { display: none; }
+  /* 顶栏那行该不该收拢仍由滚动决定，只是不再滑：位移是布局的一部分，留着，只把过渡掐掉 */
+  .land-mark, .land-ends, .land-progress, .land-top::before { transition-duration: 1ms; }
+  .land-pill::before { transform: none; transition: opacity .2s linear; }
 }

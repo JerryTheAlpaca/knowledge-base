@@ -163,16 +163,45 @@ function stemGrow() {
   whenShown(measure);
 }
 
-// ---------- 顶栏：吸顶态 + 那条当进度用的发丝线 ----------
+// ---------- 顶栏：吸顶态 + 整行缩成胶囊 + 那条当进度用的发丝线 ----------
 function topBar() {
   const top = document.getElementById("landTop");
   const bar = document.getElementById("landProgress");
+  const pill = top.querySelector(".land-pill");
+  const title = view.querySelector(".land-title");
   let queued = false;
+
+  // 平时那一行是通宽的：品牌组在左、入口组在右。收拢要走多远 = (顶栏内容盒宽 - 收拢后的原生宽) / 2。
+  // 原生宽度没有现成的可量，就临时给 .land-pill 挂 .measure 让它按内容宽排一次、只读这一瞬，
+  // 中间不绘制。写完值摘 .measure 那一下必须掐住过渡，否则刷新时会看见整行从中间弹开。
+  const spread = () => {
+    pill.classList.add("measure");
+    const w = pill.getBoundingClientRect().width;
+    pill.classList.remove("measure");
+    const c = pill.getBoundingClientRect().width;
+    if (!w || !c) return;              // 登录视图还 hidden：矩形全是 0，量了个假结论
+    pill.classList.add("notrans");
+    pill.style.setProperty("--g", Math.max(0, (c - w) / 2).toFixed(1) + "px");
+    pill.style.setProperty("--w", w.toFixed(1) + "px");
+    void pill.offsetWidth;             // 新位置先在无过渡的情况下落定
+    pill.classList.remove("notrans");
+  };
+
   const measure = () => {
     queued = false;
     const y = scrollY;
     top.classList.toggle("stuck", y > 8);
     view.classList.toggle("scrolled", y > 40);
+    if (title) {
+      // 首屏那行「金蔷薇」整个滚过顶栏下沿，顶栏这一行就收成一颗悬着的胶囊。
+      // 来回 26px 的迟滞带，免得停在边界上时一闪一闪。
+      const box = title.getBoundingClientRect();
+      if (box.height) {                // 同上：量不到就别挂类，否则一进页面就凭空吸出胶囊
+        const line = top.getBoundingClientRect().bottom;
+        const on = top.classList.contains("capsule");
+        if (on ? box.bottom > line + 26 : box.bottom <= line) top.classList.toggle("capsule", !on);
+      }
+    }
     const max = document.documentElement.scrollHeight - innerHeight;
     bar.style.setProperty("--p", max > 40 ? (y / max).toFixed(4) : 0);
   };
@@ -181,9 +210,12 @@ function topBar() {
     queued = true;
     requestAnimationFrame(measure);
   }, { passive: true });
-  addEventListener("resize", measure, { passive: true });
+  addEventListener("resize", () => { spread(); measure(); }, { passive: true });
+  document.fonts.ready.then(spread);   // 内嵌宋体落定后品牌字变宽，胶囊得跟着重量一次
+  spread();
   measure();          // 刷新时可能停在页面中间：吸顶态要立刻对上
-  whenShown(measure); // 进度条分母（文档总高）要等登录视图真的可见才量得准
+  // 进度条分母（文档总高）与那一行的宽度都要等登录视图真的可见才量得准
+  whenShown(() => { spread(); measure(); });
 }
 
 // ---------- 末句「金蔷薇。」：背光一次亮起，落几粒金粉 ----------
