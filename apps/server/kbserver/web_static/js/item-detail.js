@@ -7,7 +7,7 @@
 import { $, api, esc, toast, showErr, confirmModal, fmtTime, uploadFiles,
          sanitizeFilename, openModalHTML, closeModal } from "./api.js";
 import { stepperHTML, stagePanelHTML, actionLabel, availableActionLabels, STAGE_LABELS } from "./workflow.js";
-import { refreshItems as refreshList, closeDrawer, openDrawer } from "./item-list.js";
+import { refreshItems as refreshList, closeDrawer, openDrawer, setListPollPaused } from "./item-list.js";
 
 let detailId = null;
 let detailData = null;
@@ -70,6 +70,7 @@ export async function openDetail(itemId, opts = {}) {
   setHTML($("detailBody"), "");
   setHTML($("stepperHost"), "");
   setHTML($("stagePanelHost"), "");
+  setListPollPaused(true);   // 列表被详情盖住，停掉它的轮询（审查 C-06）
   $("detailTitle").textContent = "加载中…";
   $("detailMeta").textContent = "";
   $("moreMenu").hidden = true;
@@ -84,6 +85,7 @@ export async function openDetail(itemId, opts = {}) {
 export function closeDetail() {
   detailId = null; detailData = null; asrStatus = null;
   detailExiting = false;
+  setListPollPaused(false);
   $("detailView").hidden = true;
   $("homeMain").hidden = false;
   if (onboardingWasVisible) $("onboardingHost").hidden = false;
@@ -193,14 +195,14 @@ function renderHeader(it) {
   let extra = "";
   const cands = (asrStatus && asrStatus.audio_candidates) || [];
   if (wf && wf.reason_code === "SELECTION_REQUIRED" && cands.length > 1) {
-    extra = '<div class="auxcard"><div class="small" style="margin-bottom:8px">这个页面有多条音频，选择要转写的一条：</div>' +
-      cands.map((c) => '<div class="row" style="justify-content:space-between">' +
+    extra = '<div class="auxcard"><div class="small mb-8">这个页面有多条音频，选择要转写的一条：</div>' +
+      cands.map((c) => '<div class="row row-between">' +
         "<span>" + esc(c.title || c.host || "音频") + (c.duration_hint
           ? "（约 " + Math.round(c.duration_hint) + " 秒）" : "") + "</span>" +
         '<button class="small" data-asr-candidate="' + esc(c.candidate_id) + '">转写这条</button>' +
         "</div>").join("") + "</div>";
   }
-  setHTML($("stagePanelHost"), stagePanelHTML(wf) + extra);
+  setHTML($("stagePanelHost"), stagePanelHTML(wf, { platLabel: it.source_label }) + extra);
   const hasPanel = !!wf;
   $("stagePanelHost").hidden = !hasPanel;
 }
@@ -280,7 +282,7 @@ function renderSourcePane(d) {
   }
   const incomplete = it.coverage && COVERAGE_WARN[it.coverage];
   if (incomplete) {
-    rows.push('<div class="muted" style="margin-bottom:10px">' + esc(COVERAGE_WARN[it.coverage]) +
+    rows.push('<div class="muted mb-10">' + esc(COVERAGE_WARN[it.coverage]) +
       (it.missing_materials && it.missing_materials.length
         ? "；缺失：" + esc(it.missing_materials.map(missingLabel).join("、")) : "") + "</div>");
   }
@@ -293,9 +295,9 @@ function renderSourcePane(d) {
   }
   const hasEditable = !!(sm.readable_md || sm.normalized_md);
   if (sourceEditing && hasEditable) {
-    rows.push('<div class="small muted" style="margin-bottom:8px">编辑原始内容：一行一段，以 # 开头为标题。保存后会生成新版本（旧版本保留）。</div>');
+    rows.push('<div class="small muted mb-8">编辑原始内容：一行一段，以 # 开头为标题。保存后会生成新版本（旧版本保留）。</div>');
     rows.push('<textarea id="editSourceText" rows="16" placeholder="一行一段；以 # 开头为标题">' + esc(sourceEditText(sm)) + "</textarea>");
-    rows.push('<div class="row" style="margin-top:12px">' +
+    rows.push('<div class="row mt-12">' +
       '<button class="primary" id="saveSourceBtn">保存修改</button>' +
       '<button id="cancelEditBtn">取消</button></div>');
     return rows.join("");
@@ -315,7 +317,7 @@ function renderSourcePane(d) {
     rows.push('<div class="readbody" id="sourceBody">' +
       shown.map(paras ? renderParagraphLine : renderSourceLine).join("") + "</div>");
     if (shown.length < lines.length) {
-      rows.push('<div class="row" style="margin-top:12px">' +
+      rows.push('<div class="row mt-12">' +
         '<button data-act="more-segments">继续展开（还有 ' + (lines.length - shown.length) + (paras ? " 段）" : " 片段）") + "</button>" +
         '<button data-act="source-top">回到顶部</button></div>');
     }
@@ -348,7 +350,7 @@ function sourceEditText(sm) {
 function renderMoreMenu(it) {
   const wf = it.workflow || {};
   const acts = wf.available_actions || [];
-  const labels = availableActionLabels();
+  const labels = availableActionLabels(it.source_label);
   const items = [];
   const seen = new Set();
   for (const code of acts) {
@@ -361,7 +363,7 @@ function renderMoreMenu(it) {
   const menu = $("moreMenu");
   menu.innerHTML = items.map((x) =>
     '<button class="menu-item" data-more="' + esc(x.code) + '">' + esc(x.label) + "</button>").join("") +
-    '<div style="border-top:1px solid var(--border);margin:4px 0"></div>' +
+    '<div class="soft-hr"></div>' +
     '<button class="menu-item danger" data-more="delete">删除服务器材料</button>';
 }
 
@@ -394,10 +396,10 @@ async function openRecords() {
   openModalHTML(
     '<div class="modal-title">处理记录</div>' +
     '<div class="modal-body"><div class="record-summary">' + summary + "</div>" +
-    '<details class="disclosure slim" style="margin-top:14px"><summary>技术信息</summary><div class="disclosure-body">' +
+    '<details class="disclosure slim mt-14"><summary>技术信息</summary><div class="disclosure-body">' +
     '<p class="small">' + esc(d.explanation || "") + "</p>" +
     '<div class="techgrid">' + tech.join("") + "</div>" +
-    '<div class="row" style="margin-top:10px"><button class="small" id="copyTech">复制技术信息</button></div>' +
+    '<div class="row mt-10"><button class="small" id="copyTech">复制技术信息</button></div>' +
     "</div></details></div>" +
     '<div class="modal-foot"><button id="recClose">关闭</button></div>');
   $("recClose").onclick = () => closeModal(null);
@@ -499,7 +501,7 @@ function openSupplementModal() {
     '<div class="modal-title">补充内容</div>' +
     '<div class="modal-body">' +
     '<label for="supText">补充文字</label><textarea id="supText" rows="4" placeholder="粘贴缺失的正文、字幕内容…"></textarea>' +
-    '<div class="row" style="margin-top:10px"><button type="button" class="ghost small" id="supPick">添加文件</button>' +
+    '<div class="row mt-10"><button type="button" class="ghost small" id="supPick">添加文件</button>' +
     '<input id="supFiles" type="file" multiple hidden><span class="small" id="supProgress"></span></div>' +
     '<div class="chiprow" id="supFileChips" hidden></div>' +
     "</div>" +
@@ -604,8 +606,14 @@ function jumpToSegment(sid) {
   if (!body) return;
   const lines = body.split("\n").filter((l) => l.trim());
   const idx = lines.findIndex((l) => l.indexOf("^" + target) !== -1);
-  if (idx === -1) return;
-  if (idx >= segShown + SEG_PAGE) segShown = Math.floor(idx / SEG_PAGE) * SEG_PAGE;
+  if (idx === -1) {
+    // 静默不响应会被当成「按钮坏了」；来源版本换过之后旧段落定位不到是真实情况
+    toast("没有定位到这段原文：可能已随新的来源版本调整，可在「原始内容」里搜索关键词", { type: "info" });
+    return;
+  }
+  // 目标段在当前窗口之上时同样要翻到它所在的那一页：否则下面的
+  // getElementById 取不到节点，点「原文」毫无反应（审查 C-11、U-08）
+  if (idx < segShown || idx >= segShown + SEG_PAGE) segShown = Math.floor(idx / SEG_PAGE) * SEG_PAGE;
   detailTab = "source";
   renderDetail();
   const el = document.getElementById(target);
@@ -618,7 +626,8 @@ async function stageAction(code) {
     case "supplement": openSupplementModal(); break;
     case "choose_model": goSettingsCard("secModel"); break;
     case "connect_obsidian": goSettingsCard("secObsidian"); break;
-    case "connect_bilibili": goSettingsCard("secBili"); break;
+    case "connect_platform": goPlatformSettings(); break;
+    case "update_session": goPlatformSettings(); break;
     case "retry": doReprocess(); break;
     case "start_organize": doReprocess(); break;
     default: break;
@@ -626,6 +635,11 @@ async function stageAction(code) {
 }
 function goSettingsCard(cardId) {
   import("./app.js").then((m) => m.openSettings(cardId));
+}
+// 登录态动作落到设置页「内容平台」卡：该平台已有独立配置块时直接定位到它
+function goPlatformSettings() {
+  const plat = (detailData && detailData.item && detailData.item.platform) || "";
+  goSettingsCard($("plat-" + plat) ? "plat-" + plat : "secBili");
 }
 
 // ---------- 事件 ----------
@@ -651,7 +665,7 @@ export function initDetail() {
     else if (code === "start_organize") doReprocess();
     else if (code === "choose_model") goSettingsCard("secModel");
     else if (code === "connect_obsidian") goSettingsCard("secObsidian");
-    else if (code === "connect_bilibili") goSettingsCard("secBili");
+    else if (code === "connect_platform" || code === "update_session") goPlatformSettings();
   });
   $("stagePanelHost").addEventListener("click", (e) => {
     const b = e.target.closest("[data-stage-action]");

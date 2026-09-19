@@ -13,12 +13,12 @@ async function loadDevices() {
     const sum = await api("/v1/devices/summary");
     const devices = (await api("/v1/devices")).filter((d) => d.kind === "desktop" && !d.revoked);
     if (!sum.connected) {
-      host.innerHTML = '<span class="st-warn" style="display:inline-flex;padding:2px 10px;border-radius:999px">未连接</span>' +
-        '<span class="small" style="margin-left:8px">在 Obsidian 中安装 KB Inbox 插件并登录后自动连接。</span>';
+      host.innerHTML = '<span class="st-warn status-pill">未连接</span>' +
+        '<span class="small ml-8">在 Obsidian 中安装 KB Inbox 插件并登录后自动连接。</span>';
     } else {
       const dev = sum.active_device || {};
-      host.innerHTML = '<span class="st-ok" style="display:inline-flex;padding:2px 10px;border-radius:999px">已连接</span>' +
-        '<span class="small" style="margin-left:8px">当前主要写入设备：<b>' + esc(dev.name || "桌面设备") + "</b>" +
+      host.innerHTML = '<span class="st-ok status-pill">已连接</span>' +
+        '<span class="small ml-8">当前主要写入设备：<b>' + esc(dev.name || "桌面设备") + "</b>" +
         (dev.last_seen_at ? "，最近连接 " + fmtTime(dev.last_seen_at) : "") + "。</span>";
     }
     list.innerHTML = devices.map((d) =>
@@ -78,7 +78,7 @@ function profileCard(p) {
   return '<div class="pcard" data-id="' + esc(p.id) + '">' +
     '<div class="pcard-main">' +
       '<div class="pcard-top"><span class="pcard-model">' + esc(p.model) + "</span>" + stateBadgeHtml + usageBadge + "</div>" +
-      '<div class="small" style="margin-top:4px">' + esc(hostName) + "</div>" +
+      '<div class="small mt-4">' + esc(hostName) + "</div>" +
     "</div>" +
     '<div class="menuwrap"><button class="icon" data-menu aria-label="更多操作" aria-haspopup="menu">' +
       '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">' +
@@ -94,8 +94,10 @@ function profileOption(p, selected) {
 
 async function loadSettingsData() {
   try {
+    // B 站登录态与 asr-settings 一样单独兜住：它挂掉时整页模型配置区不该跟着不渲染
     const [profiles, settings, bili, asrSettings] = await Promise.all([
-      api("/v1/provider-profiles"), api("/v1/settings"), api("/v1/bilibili-session"),
+      api("/v1/provider-profiles"), api("/v1/settings"),
+      api("/v1/bilibili-session").catch(() => null),
       api("/v1/asr-settings").catch(() => null),
     ]);
     loadedProfiles = profiles.filter((p) => p.kind === "llm");
@@ -103,7 +105,7 @@ async function loadSettingsData() {
     // 统一配置池：所有 llm 配置都列在这里，用途由下面两个分区选择
     $("profileList").innerHTML = loadedProfiles.length
       ? loadedProfiles.map((p) => profileCard(p)).join("")
-      : '<div class="muted" style="padding:8px 0">还没有模型配置——点右上角的 + 添加。</div>';
+      : '<div class="muted py-8">还没有模型配置——点右上角的 + 添加。</div>';
     $("defaultProfile").innerHTML = '<option value="">（未设置）</option>' +
       loadedProfiles.map((p) => profileOption(p, p.id === settings.default_profile_id)).join("");
     $("optimizeProfile").innerHTML = '<option value="">（未设置）</option>' +
@@ -166,7 +168,7 @@ function closeMenus() {
 async function testProfile(id) {
   const t = toast("正在测试连接…", { type: "info" });
   try {
-    const r = await api("/v1/provider-profiles/" + id + "/test", { method: "POST" });
+    const r = await api("/v1/provider-profiles/" + encodeURIComponent(id) + "/test", { method: "POST" });
     dismissToast(t);
     if (r.ok) toast("连接正常", { type: "ok" });
     else toast("连接测试没有通过" + (r.message ? "：" + r.message : ""), { type: "error" });
@@ -178,7 +180,7 @@ async function rotateKey(id) {
     placeholder: "粘贴新的模型服务密钥（API Key）", confirmLabel: "保存" });
   if (!s) return;
   try {
-    await api("/v1/provider-profiles/" + id, { method: "PATCH", body: { secret: s } });
+    await api("/v1/provider-profiles/" + encodeURIComponent(id), { method: "PATCH", body: { secret: s } });
     toast("密钥已更新", { type: "ok" });
     loadSettingsData();
   } catch (e) { showErr(e); }
@@ -197,7 +199,7 @@ async function deleteProfile(id) {
   } catch (e) { showErr(e); }
 }
 
-// profile 传入时为编辑模式；新建为统一模型配置（不预设用途，也不含思考挡位——
+// profile 传入时为编辑模式；新建为统一模型配置（不预设用途，也不含思考档位——
 // 那是用途档的设置），整理/优化用哪个在下方两个分区里选择
 export function openProfileForm({ profile = null } = {}) {
   const isEdit = !!profile;
@@ -230,7 +232,7 @@ export function openProfileForm({ profile = null } = {}) {
     }
     try {
       if (isEdit) {
-        // capabilities 原样保留（context_tokens 等服务能力；思考挡位已上移到用途档）
+        // capabilities 原样保留（context_tokens 等服务能力；思考档位已上移到用途档）
         const body = { endpoint, model, capabilities: profile.capabilities || {} };
         if (secret) body.secret = secret;
         await api("/v1/provider-profiles/" + encodeURIComponent(profile.id), { method: "PATCH", body });
@@ -249,7 +251,7 @@ export function openProfileForm({ profile = null } = {}) {
   };
 }
 
-// 思考挡位按用途设置（off/low/high/max）：同一份配置可整理开思考、优化关思考
+// 思考档位按用途设置（off/low/high/max）：同一份配置可整理开思考、优化关思考
 function renderThinkingLevels() {
   const s = currentSettings || {};
   $("digestThinking").value = s.digest_thinking || "high";
@@ -260,7 +262,7 @@ async function changeThinkingLevel(field, value) {
   const label = field === "digest_thinking" ? "整理" : "优化";
   try {
     currentSettings = await api("/v1/settings", { method: "PATCH", body: { [field]: value } });
-    toast(label + "思考挡位已更新", { type: "ok" });
+    toast(label + "思考档位已更新", { type: "ok" });
   } catch (e) { showErr(e); }
   renderThinkingLevels();
 }
@@ -276,9 +278,10 @@ async function selectProfile(field, value) {
 
 // ---------- B 站登录态 ----------
 function renderBili(bili) {
-  const v = bili.verification || "unverified";
+  const state = bili || {};   // 接口失败时按「未连接」呈现，不整页崩
+  const v = state.verification || "unverified";
   let ico = "…", cls = "st-info", title = "未连接", desc = "连接后可以读取需要登录才能查看的字幕。";
-  if (bili.configured && v === "valid") {
+  if (state.configured && v === "valid") {
     ico = "✓"; cls = "st-ok"; title = "登录态有效";
     desc = "需要登录的 B 站字幕可以直接取得。";
   } else if (v === "invalid" || v === "blocked") {
@@ -371,11 +374,11 @@ function renderPlatSessions(states) {
   host.innerHTML = PLAT_SHOWN.map((meta, i) => {
     const st = states[i];
     const configured = !!(st && st.configured);
-    return '<div class="platblock">' +
+    return '<div class="platblock" id="plat-' + esc(meta.platform) + '">' +
       platStateView(meta, st) +
       '<label for="platSecret-' + esc(meta.platform) + '">' + esc(meta.label + "登录信息（Cookie）——" + meta.usage) + "</label>" +
       '<input id="platSecret-' + esc(meta.platform) + '" type="password" autocomplete="off" placeholder="粘贴完整 Cookie 串" data-plat-secret="' + esc(meta.platform) + '">' +
-      '<div class="row" style="margin-top:14px">' +
+      '<div class="row mt-14">' +
         '<button class="primary" data-plat-act="save" data-platform="' + esc(meta.platform) + '">更新登录态</button>' +
         (configured
           ? '<button data-plat-act="check" data-platform="' + esc(meta.platform) + '">检测登录态</button>' +

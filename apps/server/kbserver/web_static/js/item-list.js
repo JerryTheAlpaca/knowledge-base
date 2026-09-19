@@ -4,7 +4,7 @@
 // 状态文案与进度全部来自服务端 WorkflowView；本模块不做业务状态推断。
 // 刷新按 item_id 做 DOM diff，只更新变化行，保护滚动位置（§6.4）。
 
-import { $, api, esc, fmtShort, showErr } from "./api.js";
+import { $, api, esc, fmtShort, showErr, isModalOpen } from "./api.js";
 import { listRowAux } from "./workflow.js";
 import { openDetail } from "./item-detail.js";
 
@@ -202,24 +202,42 @@ export async function refreshItems() {
       items = await fetchAll();
       fillList($("itemList"), items);
     }
+    // 「有任务在跑」由服务端给（workflow.has_active_job），前端不猜状态
+    workingActive = items.some((it) => it.workflow && it.workflow.has_active_job);
     updateEmptyState(items);
   } catch (e) {
     if (!(e && e.net && document.visibilityState === "hidden")) showErr(e);
+  } finally {
+    refreshing = false;
+    armListPoll();
   }
-  refreshing = false;
 }
 
-// 轮询节奏（§6.4）：有活跃任务 4s；否则 30s；页面不可见时暂停
-export function scheduleRefresh() {
-  setInterval(() => {
-    if (document.visibilityState !== "visible") return;
+// 轮询节奏（§6.4，审查 C-06）：只有一个自排期的定时器——有活跃任务 4s，
+// 没有就 30s；两个常驻 setInterval 会把空闲时的列表拉取放大到每 4s 一次。
+// 页面不可见、或详情/设置这类覆盖列表的视图打开时不拉（拉了也没人看）。
+const ACTIVE_REFRESH_MS = 4000;
+const IDLE_REFRESH_MS = 30000;
+let listTimer = null;
+let workingActive = false;
+let pollPaused = false;
+
+function armListPoll() {
+  clearTimeout(listTimer);
+  listTimer = setTimeout(() => {
+    listTimer = null;
+    if (pollPaused || document.visibilityState !== "visible") { armListPoll(); return; }
     refreshItems();
-  }, 4000);
-  setInterval(() => {
-    if (document.visibilityState !== "visible") return;
-    refreshItems();
-  }, 30000);
+  }, workingActive ? ACTIVE_REFRESH_MS : IDLE_REFRESH_MS);
 }
+
+export function setListPollPaused(paused) {
+  if (pollPaused === paused) return;
+  pollPaused = paused;
+  if (!paused && document.visibilityState === "visible") refreshItems();
+}
+
+export function scheduleRefresh() { armListPoll(); }
 
 // —— 搜索框：与放大镜同排，从图标处向左展开（宽度过渡），不推动下方条目 ——
 function searchSlotMax() {
@@ -305,10 +323,10 @@ export function initItemList() {
   $("drawerClose").addEventListener("click", () => closeDrawer());
   document.addEventListener("click", (e) => {
     if (swallowClick) { swallowClick = false; return; }  // 拖拽余波落在面板外时由这里吞
-    if (isDrawerOpen() && !e.target.closest("#listWrap")) closeDrawer();
+    if (isDrawerOpen() && !isModalOpen() && !e.target.closest("#listWrap")) closeDrawer();
   });
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && isDrawerOpen()) {
+    if (e.key === "Escape" && !isModalOpen() && isDrawerOpen()) {
       if (searchOpen) { setSearchOpen(false); return; }  // 先收搜索，再收抽屉
       closeDrawer();
     }

@@ -113,6 +113,42 @@
   }
 }
 
+/* —— 金蔷薇暗金主题（收件箱 / 管理 / 授权三页共用，审查 U-03）——
+   收件箱恒暗是刻意的品牌决策；这三页在同一次跳转里互相串门，若管理页与
+   授权页跟随系统偏好，浅色设备上就会从暗金整页跳到纸白。因此三页的 <html>
+   都固定 data-theme="rose"，配色由这一块决定、不再跟随 prefers-color-scheme。
+   色值原先写在 inbox.css 的 :root 覆写里，移到这里才是三页共用的一份。 */
+html[data-theme="rose"] {
+  color-scheme: dark;
+  --bg: #0a0705;
+  --surface: #171009;
+  --surface-2: #20150a;
+  --border: #37281a;
+  --border-strong: #4d3a1e;
+  --text: #f3e9d2;
+  --text-2: #b19c7c;
+  --accent: #e2b04a;
+  --accent-hover: #f0c169;
+  --accent-soft: rgba(226, 176, 74, .13);
+  --ok: #8fc9a0;   --ok-soft: rgba(143, 201, 160, .12);
+  --warn: #e0a45e; --warn-soft: rgba(224, 164, 94, .12);
+  --bad: #e07a6a;  --bad-soft: rgba(224, 122, 106, .12);
+  --info: #9ab0d8; --info-soft: rgba(154, 176, 216, .12);
+  --on-accent: #241703;
+  --on-ok: #0e1f14;
+  --on-warn: #241703;
+  --overlay: rgba(4, 2, 1, .66);
+  --switch-off-track: rgba(243, 233, 210, .22);
+  --switch-off-knob: #f3e9d2;
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, .4);
+  --shadow-pop: 0 2px 8px rgba(0, 0, 0, .45), 0 12px 34px rgba(0, 0, 0, .5);
+  /* 金蔷薇装饰色（审查 C-23）：收件箱里重复出现的暗金端点与品牌字色，
+     从 --accent 派生不出来的部分才单列，其余一律用 --accent/--on-accent/--bg */
+  --rose-hi: #ffedaa;      /* 暗金渐变顶端高光 */
+  --rose-deep: #b8862f;    /* 暗金渐变收尾、聚焦描边 */
+  --rose-brand: #e8d5a8;   /* 品牌字色 */
+}
+
 /* ============================================================
    组件层（U-05）：三页共用组件规则收敛于此，页面 <style> 只留本页布局。
    ============================================================ */
@@ -213,6 +249,25 @@ textarea { resize: vertical; }
 .modal-title { font-weight: 600; font-size: var(--fs-h2); margin-bottom: 10px; }
 .modal-body { font-size: var(--fs-body); line-height: 1.65; }
 .modal-foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+
+/* —— 间距与少量结构工具类（审查 U-07、C-23）——
+   JS 渲染的片段不再各写一份内联 style；只列项目里真正用到的档位。
+   进度条这类按数据算出来的 width 仍走内联，那是值不是样式。 */
+.mt-0 { margin-top: 0; }
+.mt-4 { margin-top: 4px; }
+.mt-6 { margin-top: 6px; }
+.mt-8 { margin-top: 8px; }
+.mt-10 { margin-top: 10px; }
+.mt-12 { margin-top: 12px; }
+.mt-14 { margin-top: 14px; }
+.mb-8 { margin-bottom: 8px; }
+.mb-10 { margin-bottom: 10px; }
+.ml-8 { margin-left: 8px; }
+.py-8 { padding: 8px 0; }
+.row-between { justify-content: space-between; }
+.status-pill { display: inline-flex; padding: 2px 10px; border-radius: var(--radius-pill); }
+.steps-list { margin: 6px 0 0; padding-left: 18px; }
+.soft-hr { border-top: 1px solid var(--border); margin: 4px 0; }
 
 /* —— 响应式公共段 —— */
 @media (max-width: 520px) {

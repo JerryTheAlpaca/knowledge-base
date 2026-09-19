@@ -42,10 +42,10 @@ function render(ob) {
   } else {
     steps.push(stepHTML(2, "连接 Obsidian", false,
       '<div class="small">两步即可连接：</div>' +
-      '<ol class="small" style="margin:6px 0 0;padding-left:18px">' +
+      '<ol class="small steps-list">' +
       "<li>在电脑版 Obsidian 中安装 KB Inbox 插件。</li>" +
       "<li>在插件设置里登录你的账号。</li></ol>" +
-      '<div class="small" id="obDeviceWait" style="margin-top:6px">等待连接中，连接成功后此步骤会自动完成…</div>'));
+      '<div class="small" id="obDeviceWait" class="mt-6">等待连接中，连接成功后此步骤会自动完成…</div>'));
   }
 
   // 第三步：可选连接内容平台
@@ -54,17 +54,17 @@ function render(ob) {
   } else {
     steps.push(stepHTML(3, "连接内容平台（可选）", false,
       '<div class="small">可选，可以稍后设置。连接 B 站后，需要登录才能查看的字幕也能读取。</div>' +
-      '<div class="row" style="margin-top:8px">' +
+      '<div class="row mt-8">' +
       '<button class="small" data-ob="connect-bili">连接 B 站</button></div>'));
   }
 
   const allDone = model.completed && obsidian.completed;
   host.innerHTML =
     '<div class="onboard" id="onboardCard">' +
-      '<div class="onboard-title">欢迎使用知识收件箱</div>' +
+      '<div class="onboard-title">欢迎使用金蔷薇</div>' +
       '<div class="onboard-sub">三步完成初始化：选择整理模型、连接 Obsidian 知识库；内容平台是可选项。</div>' +
       '<div class="obsteps">' + steps.join("") + "</div>" +
-      '<div class="row" style="margin-top:14px">' +
+      '<div class="row mt-14">' +
         (allDone ? '<button class="primary" data-ob="done">添加第一条内容</button>' : "") +
         '<button class="ghost" data-ob="dismiss">稍后再说</button>' +
       "</div>" +
@@ -90,12 +90,12 @@ async function loadModelPicker() {
       host.innerHTML = profiles.map((p) =>
         '<label class="obradio"><input type="radio" name="obModel" value="' + esc(p.id) + '" data-model="' + esc(p.model) + '">' +
         esc(p.model) + "</label>").join("") +
-        '<div class="row" style="margin-top:6px">' +
+        '<div class="row mt-6">' +
         '<button class="small primary" data-ob="save-model">使用选中的模型</button>' +
         '<button class="small ghost" data-ob="new-model">新建模型配置</button></div>';
     } else {
       host.innerHTML = '<div class="small">还没有模型配置。整理内容需要一个模型服务的密钥（API Key）。</div>' +
-        '<div class="row" style="margin-top:6px"><button class="small primary" data-ob="new-model">新建模型配置</button></div>';
+        '<div class="row mt-6"><button class="small primary" data-ob="new-model">新建模型配置</button></div>';
     }
   } catch (e) {
     host.textContent = "加载失败，请刷新重试。";
@@ -131,7 +131,7 @@ function openBiliConnectModal() {
   openModalHTML(
     '<div class="modal-title">连接 B 站</div>' +
     '<div class="modal-body">' +
-    '<p class="small" style="margin-top:0">登录 B 站网页版后，从浏览器 Cookie 中复制 SESSDATA 的值粘贴到下面。' +
+    '<p class="small mt-0">登录 B 站网页版后，从浏览器 Cookie 中复制 SESSDATA 的值粘贴到下面。' +
     "它只用于读取你需要登录才能查看的字幕，加密保存在服务器上。</p>" +
     '<label for="obBiliSecret">B 站登录信息（SESSDATA）</label>' +
     '<input id="obBiliSecret" type="password" autocomplete="off" placeholder="粘贴 SESSDATA 值或整个 Cookie 串">' +

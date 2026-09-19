@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="rose">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -34,6 +34,7 @@
                    100% { transform: scale(1); opacity: 1; } }
   .ok-title { font-family: var(--font-display); font-size: var(--fs-h1); font-weight: 600;
               text-align: center; margin-bottom: 6px; }
+  .ok-sub { text-align: center; }
   /* 响应式（docs/15 走查小结：授权页会在手机上打开，至少补 520 档） */
   @media (max-width: 520px) {
     main { padding-left: 14px; padding-right: 14px; }
@@ -43,7 +44,7 @@
 </head>
 <body>
 <main>
-  <div class="auth-brand">知识收件箱</div>
+  <div class="auth-brand">金蔷薇</div>
   <div class="card">
     <h1>授权插件设备</h1>
     <div id="state" class="muted">加载中…</div>
@@ -56,6 +57,9 @@
 <script>
 "use strict";
 const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s == null ? "" : s)
+  .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+  .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 const requestId = new URLSearchParams(window.location.search).get("request_id") || "";
 
 function csrfToken() {
@@ -64,6 +68,9 @@ function csrfToken() {
 }
 
 function setState(html) { $("state").innerHTML = html; }
+// 服务端回来的文本一律先过 esc()：设备名由插件自由填写（≤120），
+// 这一页正文是「确认本人操作」的安全提示，被注入即失效（审查 C-04）
+function setText(text) { $("state").textContent = text; }
 
 async function goLogin() {
   // 未登录：跳中心登录，回来继续授权
@@ -77,7 +84,8 @@ const DEVICE_STATE_TEXT = {
 };
 
 async function refresh() {
-  if (!requestId || requestId.length !== 32) {
+  // 长度不在这页判定：无效/过长的 request_id 由服务端返回不存在，前端不再复述协议细节
+  if (!requestId) {
     setState('<span class="err">授权链接无效：请在插件中重新点击「登录账号」。</span>');
     return;
   }
@@ -107,8 +115,8 @@ async function refresh() {
     }
     if (!me.ok) { await goLogin(); return; }
     const body = await me.json();
-    setState('<div class="devinfo">设备名称　<b>' + info.device_name + '</b><br>当前账号　<b>' +
-      (body.central_username || body.display_name || "") + '</b><br>' +
+    setState('<div class="devinfo">设备名称　<b>' + esc(info.device_name) + '</b><br>当前账号　<b>' +
+      esc(body.central_username || body.display_name || "") + '</b><br>' +
       '<span class="muted">批准后插件将以该账号同步。</span>' +
       (info.requests_local_key_binding
         ? '<div class="ok hint-ok">该设备还申请了「将此 Key 配置到本设备」权限：' +
@@ -131,7 +139,7 @@ $("approveBtn").addEventListener("click", async () => {
     });
     const data = await res.json();
     if (!res.ok) {
-      setState('<span class="err">' + (data.error?.message || "批准失败") + '</span>');
+      setState('<span class="err">' + esc(data.error?.message || "批准失败") + '</span>');
       $("approveBtn").disabled = false;
       return;
     }
@@ -139,7 +147,7 @@ $("approveBtn").addEventListener("click", async () => {
       'stroke="var(--ok)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">' +
       '<path d="M20 6 9 17l-5-5"/></svg></div>' +
       '<div class="ok-title">可以回到 Obsidian 了</div>' +
-      '<div class="muted" style="text-align:center">已批准授权，插件会自动完成登录。</div>');
+      '<div class="muted ok-sub">已批准授权，插件会自动完成登录。</div>');
     $("approveBtn").hidden = true;
     $("cancelBtn").hidden = true;
   } catch (e) {
@@ -156,7 +164,7 @@ $("cancelBtn").addEventListener("click", async () => {
       body: JSON.stringify({ request_id: requestId }),
     });
   } catch (e) { /* 页面即将无用 */ }
-  setState("已取消。请回到插件重新发起。");
+  setText("已取消。请回到插件重新发起。");
   $("approveBtn").hidden = true;
   $("cancelBtn").hidden = true;
 });

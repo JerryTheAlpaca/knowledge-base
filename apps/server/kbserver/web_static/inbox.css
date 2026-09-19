@@ -2,65 +2,64 @@
    inbox.css — Web 收件箱（金蔷薇主题 codex/golden-rose-home）
    基于原 docs/17 §6 视觉基线重构：暗夜鎏金 + serif 展示字。
    tokens.css 为三页共用（inbox/admin/authorize），保持不动；
-   本文件在其后加载，仅对收件箱页覆写设计令牌并重塑页面结构：
+   暗金令牌同样在 tokens.css 的 html[data-theme="rose"] 里（U-03：
+   三页统一恒暗，不再在本文件覆写 :root），本文件只写收件箱独有的
+   结构与装饰：
    - 花冠金蔷薇（inline SVG）作为首页主视觉：平时完全静止，
-     提交时播一次摇曳+流光，金粒从提交钮飞向花冠
+     提交时金粒从提交钮飘向花冠，粉落定后花冠亮一次
    - 采集框初始为胶囊型：左上传符号、右箭头提交
    - 组件类名与 DOM 钩子不变，纯视觉层重构
    ============================================================ */
 
-/* —— 主题令牌覆写（暗金）——
-   等特异性、后加载即胜出：覆盖 tokens.css 的 light/dark 两套值 */
+/* —— 收件箱尺度令牌（U-06）：顶栏高与拉手高在一页里被算三次
+   （面板留白、clip 区、收起钮定位），改一处要同步改三处，故显式命名 —— */
 :root {
-  color-scheme: dark;
-  --bg: #0a0705;
-  --surface: #171009;
-  --surface-2: #20150a;
-  --border: #37281a;
-  --border-strong: #4d3a1e;
-  --text: #f3e9d2;
-  --text-2: #b19c7c;
-  --accent: #e2b04a;
-  --accent-hover: #f0c169;
-  --accent-soft: rgba(226, 176, 74, .13);
-  --ok: #8fc9a0;   --ok-soft: rgba(143, 201, 160, .12);
-  --warn: #e0a45e; --warn-soft: rgba(224, 164, 94, .12);
-  --bad: #e07a6a;  --bad-soft: rgba(224, 122, 106, .12);
-  --info: #9ab0d8; --info-soft: rgba(154, 176, 216, .12);
-  --on-accent: #241703;
-  --on-ok: #0e1f14;
-  --on-warn: #241703;
-  --overlay: rgba(4, 2, 1, .66);
-  --switch-off-track: rgba(243, 233, 210, .22);
-  --switch-off-knob: #f3e9d2;
-  --shadow-card: 0 1px 2px rgba(0, 0, 0, .4);
-  --shadow-pop: 0 2px 8px rgba(0, 0, 0, .45), 0 12px 34px rgba(0, 0, 0, .5);
+  --topbar-h: 56px;       /* 顶栏内容高（不含 safe-area） */
+  --handle-h: 46px;       /* 抽屉拉手/收起钮的可视高 */
+  --panel-top: 110px;     /* 抽屉面板顶部留白 = 顶栏 + 收起钮位 + 呼吸 */
 }
 
-/* ============ 金蔷薇（inline SVG）：静态为主，提交后播一次 ============ */
-/* 平时完全静止；capture.js 提交时给 svg.rose 加 .play，播一次摇曳+流光+光晕呼吸 */
-.rose .sheenRect { transform: translateX(-640px); }  /* 流光平时停在花冠外 */
-.rose.play .plant { transform-box: view-box; transform-origin: 50% 50%;
-                    animation: swayOnce 2s ease-in-out 1 both; }
-@keyframes swayOnce { 0% { transform: rotate(0deg); } 32% { transform: rotate(-1.6deg); }
-                      68% { transform: rotate(1.1deg); } 100% { transform: rotate(0deg); } }
-.rose.play .sheenRect { animation: sheenOnce 1.5s ease-in-out .18s 1 both; }
-@keyframes sheenOnce { from { transform: translateX(-640px); } to { transform: translateX(640px); } }
-.rose.play .glowPulse { transform-box: fill-box; transform-origin: center;
-                        animation: glowOnce 1.8s ease-in-out 1 both; }
-@keyframes glowOnce { 0%, 100% { transform: scale(1); } 45% { transform: scale(1.045); } }
+/* ============ 金蔷薇（inline SVG）：静态为主，提交后亮一下 ============ */
+/* 平时完全静止。提交时 capture.js 先撒金粉，等粉升到花冠再给 svg.rose 加 .play，
+   于是顺序是「金粉飘上去 → 花冠被点亮」：一道光带自下而上扫过花瓣，整朵提亮一次，
+   配一点摇曳、一道斜掠的流光和一圈呼吸的光晕。
+   点亮两层都掩膜在花冠轮廓内（#gdSil），只提亮花瓣，不在背景上留出方块。
+   .plant 自身不带 transform 属性（位移在内层那个 g），所以摇曳的 rotate 不会把花推出画布。 */
+.rose .sheenRect { transform: translateX(-700px); }  /* 流光平时停在花冠外 */
+.rose .litGlow { opacity: 0; }
+.rose .litBand { opacity: 0; transform: translateY(200px); }
 
-/* —— 提交金粒：capture.js 动态生成，从提交钮飞向花冠 —— */
+.rose.play .plant { transform-box: view-box; transform-origin: 50% 50%;
+                    animation: swayOnce 2.2s ease-in-out 1 both; }
+@keyframes swayOnce { 0% { transform: rotate(0deg); } 30% { transform: rotate(-1.5deg); }
+                      66% { transform: rotate(1.1deg); } 100% { transform: rotate(0deg); } }
+/* 光带与金粉同向：由下往上穿过花冠，这是「点亮」的主动作 */
+.rose.play .litBand { animation: litRise 1.5s cubic-bezier(.42, .01, .32, 1) 1 both; }
+@keyframes litRise { 0% { opacity: 0; transform: translateY(200px); }
+                     18% { opacity: 1; } 64% { opacity: .9; }
+                     100% { opacity: 0; transform: translateY(-200px); } }
+/* 整朵提亮：亮得快、落得慢，落回原来的明度，不留一层白。
+   峰值刻意压在 .58 上下——再高就把金色洗成奶油色，不像发光像褪色 */
+.rose.play .litGlow { animation: litFlash 1.7s ease-out 1 both; }
+@keyframes litFlash { 0% { opacity: 0; } 20% { opacity: .58; } 48% { opacity: .26; }
+                      100% { opacity: 0; } }
+.rose.play .sheenRect { animation: sheenOnce 1.6s ease-in-out .3s 1 both; }
+@keyframes sheenOnce { from { transform: translateX(-700px); } to { transform: translateX(700px); } }
+.rose.play .glowPulse { transform-box: fill-box; transform-origin: center;
+                        animation: glowOnce 2s ease-in-out 1 both; }
+@keyframes glowOnce { 0%, 100% { transform: scale(1); } 32% { transform: scale(1.09); } }
+
+/* —— 提交金粒：capture.js 动态生成，从提交钮飘向花冠，落定后花冠才亮 —— */
 .gold-spark { position: fixed; z-index: 90; border-radius: 50%; pointer-events: none;
               box-shadow: 0 0 9px rgba(244, 202, 114, .95), 0 0 2px rgba(255, 243, 201, .9); }
 
 /* ============ 基底 ============ */
-html { background: #0a0705; }
+html { background: var(--bg); }
 body { background: transparent; }
 /* iOS Safari 不支持 background-attachment: fixed（滚动/回弹会露出纯黑底）：
    改用 fixed 伪元素承载暖金渐变，铺满整个可视区，顶/底安全区也连续不露黑 */
 body::before { content: ""; position: fixed; inset: 0; z-index: -1;
-               background: radial-gradient(1100px 760px at 50% 30%, #241a09 0%, #150f07 48%, #0a0705 100%); }
+               background: radial-gradient(1100px 760px at 50% 30%, #241a09 0%, #150f07 48%, var(--bg) 100%); }
 ::selection { background: rgba(226, 176, 74, .32); }
 
 /* —— 顶栏：暖黑玻璃 + 金色发丝线（§4.1）；sticky 常驻，滚到哪里都在 —— */
@@ -70,9 +69,9 @@ header { position: sticky; top: 0; z-index: 50;
          border-bottom: 1px solid rgba(226, 176, 74, .14);
          backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
 .topbar-inner { max-width: 960px; margin: 0 auto; padding: 0 24px;
-                display: flex; align-items: center; gap: 8px; height: 56px; }
+                display: flex; align-items: center; gap: 8px; height: var(--topbar-h); }
 .brand { font-family: var(--font-display); font-size: var(--fs-display); font-weight: 600;
-         color: #e8d5a8; letter-spacing: 1px; }
+         color: var(--rose-brand); letter-spacing: 1px; }
 /* 品牌名做成可点回主页的按钮：剥掉全局 button 外观，只留文字与指针。
    不要在这里写 `font: inherit`——简写会把 .brand 的 serif 展示字重置回正文字体 */
 .brandbtn { border: none; background: transparent; padding: 0; min-height: 0;
@@ -150,7 +149,7 @@ label { display: block; font-size: var(--fs-small); color: var(--text-2); margin
 .drawer-panel { position: fixed; inset: 0; z-index: 45; display: flex; flex-direction: column;
                 background: linear-gradient(170deg, rgba(26, 18, 9, .985) 0%, rgba(14, 9, 4, .995) 100%);
                 /* 顶部让出 sticky 顶栏 + 收起拉手的高度：顶栏（品牌/设置/账号）在条目列表页也一直可见 */
-                padding: calc(110px + env(safe-area-inset-top)) 0 calc(16px + env(safe-area-inset-bottom));
+                padding: calc(var(--panel-top) + env(safe-area-inset-top)) 0 calc(16px + env(safe-area-inset-bottom));
                 backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
                 /* 「圆弧拉手拖着整页下拉」：面板钉在终位、不整块位移，clip 可视区恒为
                    [顶栏下沿, 拉手上沿]，由 item-list.js 的 rAF 逐帧驱动——拉手
@@ -168,9 +167,9 @@ label { display: block; font-size: var(--fs-small); color: var(--text-2); margin
    注意：必须用 left/right + auto margin 居中——若用 translateX(-50%)，
    全局 button:active 的 transform 会覆盖它，按下瞬间按钮右跳 66px、
    pointerup 落到面板上，click 派发不到按钮，抽屉就收不起来 */
-.drawer-close { position: absolute; top: calc(56px + env(safe-area-inset-top));
+.drawer-close { position: absolute; top: calc(var(--topbar-h) + env(safe-area-inset-top));
                 left: 0; right: 0; margin-inline: auto;
-                width: 150px; min-height: 46px; padding: 6px 0 8px;
+                width: 150px; min-height: var(--handle-h); padding: 6px 0 8px;
                 border: 1px solid var(--border-strong); border-top: none;
                 border-radius: 0 0 75px 75px;
                 background: linear-gradient(180deg, rgba(56, 39, 17, .92) 0%, rgba(24, 16, 8, .96) 100%);
@@ -187,14 +186,14 @@ label { display: block; font-size: var(--fs-small); color: var(--text-2); margin
               align-items: center; justify-content: center; user-select: none; }
 .rose-caption { font-family: var(--font-display); font-size: var(--fs-h1); font-weight: 600;
                 margin-top: 14px; letter-spacing: 3px;
-                background: linear-gradient(180deg, #ffedaa 0%, #e2b04a 58%, #b8862f 100%);
+                background: linear-gradient(180deg, var(--rose-hi) 0%, var(--accent) 58%, var(--rose-deep) 100%);
                 -webkit-background-clip: text; background-clip: text; color: transparent; }
 .rose-sub { font-size: var(--fs-caption); color: var(--text-2); margin-top: 4px; letter-spacing: 1px; }
 
 /* —— 底部：胶囊采集框吸底常驻；向上渐隐遮住滚动穿过的内容 —— */
 .dock { position: sticky; bottom: 0; margin-top: 12px; z-index: 20; }
 .dock::before { content: ""; position: absolute; inset: -22px -24px -16px; z-index: -1;
-                background: linear-gradient(to top, #0a0705 58%, rgba(10, 7, 5, 0));
+                background: linear-gradient(to top, var(--bg) 58%, rgba(10, 7, 5, 0));
                 pointer-events: none; }
 
 /* ============ 采集卡：金蔷薇 + 胶囊输入 ============ */
@@ -217,7 +216,7 @@ label { display: block; font-size: var(--fs-small); color: var(--text-2); margin
 .smartbox:has(.chiprow:not([hidden])),
 .smartbox:has(.capmeta span:not(:empty)),
 .smartbox.multi { border-radius: 30px; }
-.smartbox:focus-within { border-color: #b8862f;
+.smartbox:focus-within { border-color: var(--rose-deep);
                          box-shadow: 0 0 0 3px rgba(226, 176, 74, .12),
                                      0 8px 30px rgba(226, 176, 74, .10); }
 /* 胶囊态：一行输入夹在两个按钮之间（grid 第 1 行） */
@@ -239,20 +238,20 @@ label { display: block; font-size: var(--fs-small); color: var(--text-2); margin
 .uploadpick:hover { background: rgba(226, 176, 74, .12); color: var(--accent-hover); border: none; }
 /* 发送按钮调小（走查反馈）：36px 视觉圆钮，::before 把命中区扩到 ≥44px */
 .capsubmit { width: 36px; min-width: 36px; height: 36px; min-height: 36px; padding: 0;
-             border-radius: 50%; border: 1px solid #b8862f; flex: none;
+             border-radius: 50%; border: 1px solid var(--rose-deep); flex: none;
              background: linear-gradient(180deg, #f4ca72 0%, #dfab4e 60%, #c9973a 100%);
-             color: #241703; position: relative;
+             color: var(--on-accent); position: relative;
              box-shadow: 0 2px 12px rgba(226, 176, 74, .35), inset 0 1px 0 rgba(255, 240, 200, .55); }
 .capsubmit::before { content: ""; position: absolute; inset: -4px; border-radius: 50%; }
 /* 触屏设备上传钮保持 44px 触控目标（U-01）；发送钮视觉 36px，命中区已由 ::before 扩足 */
 @media (pointer: coarse) {
   .uploadpick { width: 44px; min-width: 44px; min-height: 44px; }
 }
-.capsubmit:hover { filter: brightness(1.07); border-color: #b8862f; }
+.capsubmit:hover { filter: brightness(1.07); border-color: var(--rose-deep); }
 .capsubmit.busy svg { opacity: 0; }
 .capsubmit.busy::after { content: ""; position: absolute; left: calc(50% - 9px); top: calc(50% - 9px);
                          width: 18px; height: 18px; border-radius: 50%;
-                         border: 2px solid rgba(36, 23, 3, .3); border-top-color: #241703;
+                         border: 2px solid rgba(36, 23, 3, .3); border-top-color: var(--on-accent);
                          animation: rot .8s linear infinite; }
 .capmeta { display: flex; align-items: center; gap: 8px; padding: 0 12px; min-height: 0; }
 .capmeta:not(:has(span:not(:empty))) { height: 0; overflow: hidden; }
@@ -341,7 +340,7 @@ ul.items > li.enter { animation: enter var(--t-slow) var(--ease) backwards; }
           margin-top: -24px; }
 /* 返回/更多栏 sticky 在顶栏正下方：长文下滚也随时能返回（走查反馈） */
 .detail-top { display: flex; align-items: center; gap: 12px;
-              position: sticky; top: calc(56px + env(safe-area-inset-top)); z-index: 25;
+              position: sticky; top: calc(var(--topbar-h) + env(safe-area-inset-top)); z-index: 25;
               margin: 0 -24px; padding: 8px 24px 10px;
               background: linear-gradient(180deg, rgba(10, 7, 5, .96) 0%, rgba(10, 7, 5, .88) 78%, rgba(10, 7, 5, 0) 100%); }
 .back { margin-left: -16px; }

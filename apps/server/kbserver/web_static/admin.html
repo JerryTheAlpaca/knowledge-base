@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="rose">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>管理 · 知识收件箱</title>
+<title>管理 · 金蔷薇</title>
 <link rel="stylesheet" href="/tokens.css">
 <style>
   /* 与收件箱同一骨架（docs/10）：760px 居中、卡片、按钮、badge 全部复用设计令牌 */
@@ -62,7 +62,7 @@
 
 <header id="topbar">
   <div class="topbar-inner">
-    <div class="brand">知识收件箱<span class="tag">管理</span></div>
+    <div class="brand">金蔷薇<span class="tag">管理</span></div>
     <div class="spacer"></div>
     <a class="backlink" href="/inbox">← 返回收件箱</a>
   </div>
@@ -150,15 +150,14 @@
 <div class="overlay" id="overlay" hidden>
   <div class="modal" role="dialog" aria-modal="true" id="modalBox"></div>
 </div>
-<script>
-"use strict";
+<script type="module">
+// 管理页与收件箱共用一份 UI 原语（审查 U-05）：$、esc、toast、弹窗三件套
+// 都来自 js/api.js；本页只保留自己的 api()（401 跳登录、错误直接透传后端
+// message，管理员要看技术细节）与业务渲染。
+import { $, esc, toast, openModalHTML, closeModal, confirmModal }
+  from "/webstatic/js/api.js";
 
-// ---------- 基础（与收件箱同款） ----------
-const $ = (id) => document.getElementById(id);
-const esc = (s) => String(s == null ? "" : s)
-  .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-  .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
-
+// ---------- 基础 ----------
 function csrfToken() {
   const m = document.cookie.match(/(?:^|;\s*)kb_csrf=([^;]*)/);
   return m ? decodeURIComponent(m[1]) : "";
@@ -182,88 +181,9 @@ async function api(path, opts = {}) {
   return data;
 }
 
-function toast(text, o = {}) {
-  const host = $("toasts");
-  const el = document.createElement("div");
-  el.className = "toast t-" + (o.type || "info");
-  const t = document.createElement("div"); t.className = "ttext"; t.textContent = text; el.appendChild(t);
-  const x = document.createElement("button");
-  x.className = "tx"; x.setAttribute("aria-label", "关闭"); x.textContent = "✕";
-  x.onclick = () => dismissToast(el);
-  el.appendChild(x);
-  host.appendChild(el);
-  requestAnimationFrame(() => el.classList.add("show"));
-  if (o.type !== "error" && !o.sticky) setTimeout(() => dismissToast(el), o.type === "ok" ? 3000 : 4200);
-  return el;
-}
-function dismissToast(el) {
-  if (!el.isConnected) return;
-  el.classList.remove("show");
-  setTimeout(() => el.remove(), 220);
-}
+// 管理台的错误文案可能较长（含后端 message），不自动消失，读完了手动关闭
 function handleErr(e, prefix) {
-  toast((prefix || "") + ((e && e.message) || String(e)), { type: "error" });
-}
-
-let modalResolve = null;
-let modalLastFocus = null;
-let modalGen = 0;       // 关闭清理的代数：新弹窗打开后旧关闭定时器不得清掉它
-let modalLocked = false; // 锁定弹窗：点遮罩 / Escape 不关闭（如只显示一次的邀请码）
-const MODAL_FOCUSABLE = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
-// 只接受已净化 HTML（审查 C-28）：动态数据必须在调用前经 esc()；
-// confirmModal 的 o.title/o.confirmLabel 内部已 esc，o.body 视为可信字面量，
-// 若将来传入动态内容须先 esc。
-function openModalHTML(html, locked = false) {
-  modalGen += 1;
-  modalLocked = locked;
-  modalLastFocus = document.activeElement;  // U-02：记录触发元素，关闭时归还焦点
-  $("modalBox").innerHTML = html;
-  const ov = $("overlay");
-  ov.hidden = false;
-  requestAnimationFrame(() => {
-    ov.classList.add("show");
-    const f = $("modalBox").querySelector(MODAL_FOCUSABLE);
-    if (f) f.focus();  // 打开后把焦点移入弹窗
-  });
-}
-function closeModal(val) {
-  modalGen += 1;
-  const gen = modalGen;
-  modalLocked = false;
-  const ov = $("overlay");
-  ov.classList.remove("show");
-  // 竞态防护：若 200ms 内又打开了新弹窗（如生成邀请码），这轮清理必须跳过
-  setTimeout(() => {
-    if (gen === modalGen) { ov.hidden = true; $("modalBox").innerHTML = ""; }
-  }, 200);
-  if (modalLastFocus && document.contains(modalLastFocus)) {
-    try { modalLastFocus.focus(); } catch (e) { /* 元素已不可聚焦则忽略 */ }
-  }
-  modalLastFocus = null;
-  if (modalResolve) { const r = modalResolve; modalResolve = null; r(val); }
-}
-// U-02：焦点陷阱，Tab 循环限制在弹窗内
-document.addEventListener("keydown", (e) => {
-  if (e.key !== "Tab" || $("overlay").hidden) return;
-  const items = Array.from($("modalBox").querySelectorAll(MODAL_FOCUSABLE))
-    .filter((el) => !el.disabled && el.offsetParent !== null);
-  if (!items.length) return;
-  const first = items[0], last = items[items.length - 1];
-  if (!$("modalBox").contains(document.activeElement)) { e.preventDefault(); first.focus(); }
-  else if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
-  else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
-});
-function confirmModal(o = {}) {
-  return new Promise((res) => {
-    modalResolve = res;
-    openModalHTML(
-      '<div class="modal-title">' + esc(o.title || "确认操作") + '</div>' +
-      '<div class="modal-body">' + (o.body || "") + '</div>' +
-      '<div class="modal-foot"><button id="mCancel">取消</button>' +
-      '<button id="mOk" class="' + (o.danger ? "danger" : "primary") + '">' + esc(o.confirmLabel || "确认") + "</button></div>");
-    $("mOk").onclick = () => closeModal(true);
-    $("mCancel").onclick = () => closeModal(false);
-  });
+  toast((prefix || "") + ((e && e.message) || String(e)), { type: "error", sticky: true });
 }
 
 const fmtTime = (iso) => { if (!iso) return "—"; const d = new Date(iso); return isNaN(d.getTime()) ? "—" : d.toLocaleString("zh-CN", { hour12: false }); };
@@ -640,12 +560,7 @@ $("invList").addEventListener("click", async (e) => {
     loadAdminInvitations();
   } catch (err) { handleErr(err, "撤销失败："); }
 });
-$("overlay").addEventListener("click", (e) => {
-  if (e.target === $("overlay") && !modalLocked) closeModal(null);
-});
-document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && !$("overlay").hidden && !modalLocked) closeModal(null);
-});
+// 点遮罩与 Escape 关闭、焦点陷阱都由 js/api.js 的共用弹窗模块负责，本页不再挂一份
 
 (async function boot() {
   try {

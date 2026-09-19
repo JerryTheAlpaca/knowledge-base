@@ -112,7 +112,11 @@ function renderCapChips() {
 function renderContextOptions(urls) {
   const hasWebPage = capAudiosState.length === 0 &&
     urls.some((u) => !/bilibili\.com/i.test(u));
-  $("ctxOpts").hidden = !hasWebPage;
+  const box = $("ctxOpts");
+  box.hidden = !hasWebPage;
+  // 选项行隐藏不等于用户取消：不复位的话，删掉网页链接改传录音后
+  // 仍按「提取图片/音轨」提交，产生用户没要求的抓取与转写开销
+  if (!hasWebPage) $("capImages").checked = $("capAsr").checked = false;
 }
 
 // 歧义说明（§4.4）：只在检测到多内容时出现一行说明
@@ -256,50 +260,51 @@ export async function submitCapture() {
     }
 
     const ids = [];
-    try {
-      for (let i = 0; i < jobs.length; i++) {
-        const j = jobs[i];
-        if (jobs.length > 1) progress.textContent = "提交 " + (i + 1) + "/" + jobs.length + "…";
-        const body = {
-          schema_version: "1.0", client_capture_id: crypto.randomUUID(),
-          capture_channel: "web_inbox", source_hint: "unknown",
-          include_images: !!$("capImages").checked,
-          // 「提取音轨」开关（§4.3）：网页/公众号条目提取完成后自动排队转写；
-          // 后端只在网页适配分支消费该值，B 站沿用「无字幕自动转写」设置不受影响
-          include_asr: !!$("capAsr").checked,
-          text: null, share_text: null, original_url: null,
-          user_note: null, upload_ids: [],
-          processing_intent: "default", primary_audio_upload_id: null,
-          content_scope: "unknown", archive_policy: "source_materials",
-          captured_at: null,
-        };
-        if (j.kind === "url") {
-          body.input_kind = "url";
-          body.original_url = j.url;
-          // 文字自动成为备注（§4.4：一个 URL → 文字是它的用户备注）
-          if (text) body.user_note = text;
-          if (jobs.length === 1 && uploadIds.length && !urls.length) body.upload_ids = uploadIds;
-        } else if (j.kind === "text") {
-          body.input_kind = "text";
-          body.text = text;
-        } else if (j.kind === "file") {
-          body.input_kind = "file";
-          body.upload_ids = uploadIds;
-        } else if (j.kind === "audio") {
-          body.input_kind = "audio";
-          body.processing_intent = "transcribe_audio";
-          body.primary_audio_upload_id = j.entry.uploadId;
-        }
+    for (const j of jobs) {
+      if (jobs.length > 1) progress.textContent = "提交 " + (ids.length + 1) + "/" + jobs.length + "…";
+      const body = {
+        schema_version: "1.0", client_capture_id: crypto.randomUUID(),
+        capture_channel: "web_inbox", source_hint: "unknown",
+        include_images: !!$("capImages").checked,
+        // 「提取音轨」开关（§4.3）：网页/公众号条目提取完成后自动排队转写；
+        // 后端只在网页适配分支消费该值，B 站沿用「无字幕自动转写」设置不受影响
+        include_asr: !!$("capAsr").checked,
+        text: null, share_text: null, original_url: null,
+        user_note: null, upload_ids: [],
+        processing_intent: "default", primary_audio_upload_id: null,
+        content_scope: "unknown", archive_policy: "source_materials",
+        captured_at: null,
+      };
+      if (j.kind === "url") {
+        body.input_kind = "url";
+        body.original_url = j.url;
+        // 文字自动成为备注（§4.4：一个 URL → 文字是它的用户备注）
+        if (text) body.user_note = text;
+      } else if (j.kind === "text") {
+        body.input_kind = "text";
+        body.text = text;
+      } else if (j.kind === "file") {
+        body.input_kind = "file";
+        body.upload_ids = uploadIds;
+      } else if (j.kind === "audio") {
+        body.input_kind = "audio";
+        body.processing_intent = "transcribe_audio";
+        body.primary_audio_upload_id = j.entry.uploadId;
+      }
+      try {
         const r = await api("/v1/captures", { method: "POST", idempotencyKey: crypto.randomUUID(), body });
         ids.push(r.item_id);
-      }
-    } catch (e) {
-      if (ids.length) {
-        toast("已提交 " + ids.length + " 条，其余没有完成，请稍后再试", { type: "error" });
+      } catch (e) {
+        if (!ids.length) throw e;
+        // 顺序提交，ids 恰好是 jobs 的成功前缀：把已完成部分从输入里摘掉，
+        // 剩下的留在框里重试，否则第二次提交会重复建条目
+        jobs.slice(0, ids.length).forEach(dropSubmittedJob);
+        progress.textContent = "";
+        renderCapChips(); autosizeCap();
+        toast("已提交 " + ids.length + " 条，其余没有完成，可直接重试", { type: "error" });
         if (onSubmitted) onSubmitted();
         return;
       }
-      throw e;
     }
     // 成功：立即清空输入框，新条目出现在列表顶部（§4.2）
     $("capText").value = "";
@@ -313,10 +318,26 @@ export async function submitCapture() {
   } catch (e) {
     progress.textContent = "";
     showErr(e);
+  } finally {
+    // 复位必须在 finally：漏掉一次就让采集框在一次页面会话里永久卡死
+    submitting = false;
+    btn.disabled = false;
+    btn.classList.remove("busy");
+    btn.setAttribute("aria-label", "提交");
   }
-  btn.disabled = false;
-  btn.classList.remove("busy");
-  btn.setAttribute("aria-label", "提交");
+}
+
+// 部分成功后把已建条目那份从草稿里去掉（与 submitCapture 的 jobs 构造对应）
+function dropSubmittedJob(job) {
+  if (job.kind === "url") {
+    $("capText").value = $("capText").value.split(job.url).join(" ");
+  } else if (job.kind === "file") {
+    capFilesState.length = 0; $("capFiles").value = "";
+  } else if (job.kind === "audio") {
+    const i = capAudiosState.indexOf(job.entry);
+    if (i >= 0) capAudiosState.splice(i, 1);
+    refreshAudioSummary();
+  }
 }
 
 export function initCapture({ onSubmit }) {

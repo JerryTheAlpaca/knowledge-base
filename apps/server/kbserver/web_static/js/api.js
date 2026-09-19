@@ -69,6 +69,8 @@ export function showErr(e) {
 }
 
 // ---------- Toast ----------
+// o.sticky：不自动消失（管理页的错误文案可能较长，需要读完）；
+// o.timeout：自定义停留毫秒数，缺省 3000（走查反馈：提示 3 秒后自动消失）
 export function toast(text, o = {}) {
   const host = $("toasts");
   const el = document.createElement("div");
@@ -87,7 +89,8 @@ export function toast(text, o = {}) {
   el.appendChild(x);
   host.appendChild(el);
   requestAnimationFrame(() => el.classList.add("show"));
-  setTimeout(() => dismissToast(el), 3000);  // 走查反馈：所有提示（含错误）3 秒后自动消失
+  const ttl = o.sticky ? 0 : (o.timeout == null ? 3000 : o.timeout);
+  if (ttl) setTimeout(() => dismissToast(el), ttl);
   return el;
 }
 export function dismissToast(el) {
@@ -96,42 +99,78 @@ export function dismissToast(el) {
   setTimeout(() => el.remove(), 220);
 }
 
-// ---------- Modal 三件套（焦点管理沿用既有验收标准） ----------
+// ---------- Modal（收件箱与管理页共用，docs/15 U-05） ----------
+// openModalHTML 只接受已净化 HTML（审查 C-28）：动态数据必须在调用前经 esc()。
+// confirmModal/promptModal 的 title/confirmLabel/placeholder 内部已 esc，
+// o.body 视为可信字面量，若将来传入动态内容须先 esc。
 let modalResolve = null;
 let modalLastFocus = null;
+let modalGen = 0;         // 关闭清理的世代号：新弹窗打开后，旧的延迟清理不得清掉它
+let modalLocked = false;  // 锁定弹窗：点遮罩 / Escape 不关闭（如只显示一次的邀请码）
+let modalVisible = false;
+let modalWired = false;
 const MODAL_FOCUSABLE = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
 
-export function openModalHTML(html) {
-  modalLastFocus = document.activeElement;
+export function isModalOpen() { return modalVisible; }
+
+export function openModalHTML(html, locked = false) {
+  wireModal();
+  modalGen += 1;
+  modalVisible = true;
+  modalLocked = locked;
+  modalLastFocus = document.activeElement;  // U-02：记录触发元素，关闭时归还焦点
   $("modalBox").innerHTML = html;
   const ov = $("overlay");
   ov.hidden = false;
   requestAnimationFrame(() => {
     ov.classList.add("show");
     const f = $("modalBox").querySelector(MODAL_FOCUSABLE);
-    if (f) f.focus();
+    if (f) f.focus();  // 打开后把焦点移入弹窗
   });
 }
+
 export function closeModal(val) {
+  const gen = ++modalGen;
   const ov = $("overlay");
+  modalVisible = false;
+  modalLocked = false;
   ov.classList.remove("show");
-  setTimeout(() => { ov.hidden = true; $("modalBox").innerHTML = ""; }, 200);
+  // 竞态防护：淡出 200ms 内又打开了下一个弹窗（确认 → 输入、确认 → 确认的链式
+  // 交互），这轮清理必须跳过，否则会把刚打开的弹窗清空并隐藏（审查 C-10）
+  setTimeout(() => {
+    if (gen === modalGen) { ov.hidden = true; $("modalBox").innerHTML = ""; }
+  }, 200);
   if (modalLastFocus && document.contains(modalLastFocus)) {
     try { modalLastFocus.focus(); } catch (e) { /* 元素已不可聚焦则忽略 */ }
   }
   modalLastFocus = null;
   if (modalResolve) { const r = modalResolve; modalResolve = null; r(val); }
 }
-document.addEventListener("keydown", (e) => {
-  if (e.key !== "Tab" || $("overlay").hidden) return;
-  const items = Array.from($("modalBox").querySelectorAll(MODAL_FOCUSABLE))
-    .filter((el) => !el.disabled && el.offsetParent !== null);
-  if (!items.length) return;
-  const first = items[0], last = items[items.length - 1];
-  if (!$("modalBox").contains(document.activeElement)) { e.preventDefault(); first.focus(); }
-  else if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
-  else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
-});
+
+// 遮罩点击与键盘只在第一次开弹窗时挂一次：本模块也被没有弹窗结构的页面复用
+function wireModal() {
+  if (modalWired) return;
+  modalWired = true;
+  $("overlay").addEventListener("click", (e) => {
+    if (e.target === $("overlay") && !modalLocked) closeModal(null);
+  });
+  // U-02：焦点陷阱，Tab 循环限制在弹窗内
+  document.addEventListener("keydown", (e) => {
+    if (!modalVisible) return;
+    if (e.key === "Escape") {
+      if (!modalLocked) closeModal(null);
+      return;
+    }
+    if (e.key !== "Tab") return;
+    const items = Array.from($("modalBox").querySelectorAll(MODAL_FOCUSABLE))
+      .filter((el) => !el.disabled && el.offsetParent !== null);
+    if (!items.length) return;
+    const first = items[0], last = items[items.length - 1];
+    if (!$("modalBox").contains(document.activeElement)) { e.preventDefault(); first.focus(); }
+    else if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  });
+}
 export function confirmModal(o = {}) {
   return new Promise((res) => {
     modalResolve = res;
@@ -149,7 +188,7 @@ export function promptModal(o = {}) {
     modalResolve = res;
     openModalHTML(
       '<div class="modal-title">' + esc(o.title || "输入") + '</div>' +
-      '<div class="modal-body">' + (o.body ? '<div style="margin-bottom:8px">' + o.body + "</div>" : "") +
+      '<div class="modal-body">' + (o.body ? '<div class="mb-8">' + o.body + "</div>" : "") +
       '<div class="pwrow"><input id="mInput" type="' + (o.type || "text") + '" placeholder="' + esc(o.placeholder || "") +
       '" autocomplete="off"><button type="button" class="ghost eye" id="mEye">显示</button></div>' +
       '<div class="modal-foot"><button id="mCancel">取消</button>' +
@@ -192,15 +231,6 @@ export function shortUrl(u) {
 }
 export function sanitizeFilename(name) {
   return name.replace(/[\\/:*?"<>|\x00-\x1f]/g, "_").slice(0, 80).trim() || "原文";
-}
-export function sourceTypeLabel(t) {
-  const MAP = {
-    bilibili: "B 站", wechat_mp: "微信公众号", xiaohongshu: "小红书",
-    web: "网页", web_audio: "网页音频", audio_upload: "上传录音",
-    weichat_mp: "微信公众号", wechat: "微信公众号", webpage: "网页",
-    note: "笔记", file: "文件", unknown: "未知", web_inbox: "未知",
-  };
-  return MAP[t] || t || "未知";
 }
 export function uploadFiles(fileList, onProgress) {
   // 普通附件逐个上传；返回 upload_id 列表

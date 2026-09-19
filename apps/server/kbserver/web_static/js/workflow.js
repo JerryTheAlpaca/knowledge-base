@@ -12,12 +12,15 @@ import { esc } from "./api.js";
 export const STAGE_LABELS = { extract: "提取", process: "加工", organize: "整理", publish: "发布" };
 
 // 主按钮文案：前端按稳定 action code 本地化（§10.2）
-export function actionLabel(code) {
+// platLabel 来自条目的 source_label：「连接/更新哪个平台」由条目决定，不写死在码里
+export function actionLabel(code, platLabel) {
+  const plat = platLabel || "该平台";
   const MAP = {
     supplement: "补充内容",
     choose_model: "选择整理模型",
     connect_obsidian: "连接 Obsidian",
-    connect_bilibili: "连接 B 站",
+    connect_platform: "连接" + plat,
+    update_session: "更新" + plat + "登录信息",
     retry: "重试",
     start_organize: "开始整理",
     choose_audio: "选择音频",
@@ -28,7 +31,8 @@ export function actionLabel(code) {
 
 // 可用操作 → 更多菜单项文案（§7.5：不存在对应能力时不显示菜单项）
 // view_source 不再进菜单（2026-09 走查：原始内容页签已常驻，菜单项冗余）
-export function availableActionLabels() {
+export function availableActionLabels(platLabel) {
+  const plat = platLabel || "该平台";
   return {
     refetch: "重新提取",
     cancel_process: "取消转写",
@@ -37,7 +41,8 @@ export function availableActionLabels() {
     choose_model: "选择整理模型",
     start_organize: "重新整理",
     connect_obsidian: "连接 Obsidian",
-    connect_bilibili: "连接 B 站",
+    connect_platform: "连接" + plat,
+    update_session: "更新" + plat + "登录信息",
   };
 }
 
@@ -72,7 +77,7 @@ function barHTML(progress, indeterminate) {
 
 // 当前阶段面板（§6.3）：一个面板、至多一个主按钮
 // extraHTML 由详情页传入（如音频候选选择），保持「面板内不拼业务状态」
-export function stagePanelHTML(wf, { primaryHandler = "data-stage-action" } = {}) {
+export function stagePanelHTML(wf, { primaryHandler = "data-stage-action", platLabel = "" } = {}) {
   if (!wf) return "";
   const running = wf.overall_state === "working";
   const indeterminate = running && wf.progress_percent == null && wf.current_stage !== "publish";
@@ -85,7 +90,7 @@ export function stagePanelHTML(wf, { primaryHandler = "data-stage-action" } = {}
   if (wf.overall_state === "working") {
     html += '<div class="panelnote">你可以离开此页面，服务器会继续处理。</div>';
   }
-  const label = wf.primary_action ? actionLabel(wf.primary_action) : null;
+  const label = wf.primary_action ? actionLabel(wf.primary_action, platLabel) : null;
   if (label) {
     html += '<div class="panelaction"><button class="primary" ' + primaryHandler + '="' +
       esc(wf.primary_action) + '">' + esc(label) + "</button></div>";
@@ -111,8 +116,4 @@ export function listRowAux(wf, it) {
     }
   }
   return msg + '<span class="grow"></span><span class="src">' + src + "</span>" + bar;
-}
-
-export function isWorkflowActive(wf) {
-  return !!wf && wf.overall_state === "working";
 }

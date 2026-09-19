@@ -3,9 +3,10 @@
 // 顶部不再有「收件箱 / 设置」页签：左侧产品名，右侧无边框齿轮与账号菜单。
 // 设置走浏览器路由（?view=settings）进入，不与首页争夺导航层级。
 
-import { $, api, setUnauthorizedHandler, closeModal } from "./api.js";
+import { $, api, setUnauthorizedHandler, closeModal, isModalOpen } from "./api.js";
 import { initCapture, submitCapture, restoreDraft, saveDrafts, clearDraft } from "./capture.js";
-import { initItemList, refreshItems, scheduleRefresh, isDrawerOpen, openDrawer, closeDrawer } from "./item-list.js";
+import { initItemList, refreshItems, scheduleRefresh, setListPollPaused,
+         isDrawerOpen, openDrawer, closeDrawer } from "./item-list.js";
 import { initDetail, openDetail, closeDetail, currentDetailId } from "./item-detail.js";
 import { initOnboarding, maybeShowOnboarding, reopenOnboarding } from "./onboarding.js";
 import { initSettings, showSettings, hideSettings } from "./settings.js";
@@ -40,6 +41,8 @@ function route() {
   const params = new URLSearchParams(location.search);
   const onSettings = params.get("view") === "settings";
   const wasOnSettings = !$("settingsView").hidden;
+  // 列表被详情/设置盖住时停掉它的轮询（审查 C-06）：抽屉展开时列表可见，继续轮询
+  setListPollPaused(onSettings || !!params.get("item"));
   if (onSettings) {
     $("homeView").hidden = true;
     showSettings();
@@ -82,7 +85,7 @@ function closeMenus() {
   $("userMenu").hidden = true;
 }
 
-// 品牌「知识收件箱」：任何二级视图（详情/设置）或展开的抽屉下一键回到金蔷薇主页面
+// 品牌「金蔷薇」：任何二级视图（详情/设置）或展开的抽屉下一键回到金蔷薇主页面
 function goHome() {
   const drawerWasOpen = isDrawerOpen();
   const atHome = location.pathname === "/inbox" && !location.search &&
@@ -126,23 +129,20 @@ function wireTopbar() {
     reopenOnboarding();
   });
   $("logoutBtn").addEventListener("click", doLogout);
-  $("loginBtn").addEventListener("click", () => { window.location.href = "/login?next=%2Finbox"; });
+  // 登录入口有右上角落与结尾 CTA 两处，指向同一个中心登录页
+  for (const el of document.querySelectorAll("[data-login-entry]")) {
+    el.addEventListener("click", () => { window.location.href = "/login?next=%2Finbox"; });
+  }
   document.addEventListener("click", (e) => {
     if (!e.target.closest(".menuwrap")) closeMenus();
   });
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") {
-      if (!$("overlay").hidden) { closeModalEscape(); return; }
-      closeMenus();
-    }
+    // 弹窗的 Escape/点遮罩由共用 modal 模块负责，这里不重复关闭
+    if (e.key === "Escape" && !isModalOpen()) closeMenus();
     if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
       if (!$("appView").hidden && !$("homeView").hidden) submitCapture();
     }
   });
-}
-async function closeModalEscape() {
-  const m = await import("./api.js");
-  m.closeModal(null);
 }
 
 setUnauthorizedHandler(() => {
