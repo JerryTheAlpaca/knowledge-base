@@ -157,6 +157,44 @@ def test_auto_enrich_off_skips_organize_step(wc, user_a, db):
     assert "start_organize" in wf["available_actions"]  # 手动整理仍在「更多操作」里
 
 
+def test_auto_enrich_off_clears_old_waiting_key_backlog(wc, user_a, db):
+    """开着开关时攒下的「等模型凭据」条目：关掉开关后不该再催用户，落到待发布且视图捞得到。"""
+    from kbserver.models import User
+
+    db.get(User, user_a["user_id"]).settings_json = {"ai": {"auto_enrich": False}}
+    item = _seed_item(db, user_a["user_id"], pipeline_state="waiting_key",
+                      state_detail="未配置模型凭据：配置后自动继续；原始材料已保存。",
+                      bundle_revision=1)
+    _add_bundle(db, item, 1, processing_state="original_only")
+    token = user_a["desktop"]["token"]
+    wf = _workflow(db, wc, token, item)
+
+    org = wf["steps"][1]
+    assert org["status"] == "skipped" and org["reason_code"] == "AUTO_ORGANIZE_OFF"
+    assert wf["overall_state"] == "working" and wf["requires_user_action"] is False
+    db.commit()
+    ids = lambda view: [it["item_id"] for it in wc.get(f"/v1/items?view={view}", headers=auth(token)).json()["items"]]
+    assert item.id in ids("working") and item.id not in ids("attention")
+
+
+def test_auto_enrich_off_clears_stale_organize(wc, user_a, db):
+    """原文后来更新过：开关开着时催「重新整理」，关着时整理这一步不存在，不该再算需要处理。"""
+    from kbserver.models import User
+
+    user = db.get(User, user_a["user_id"])
+    item = _seed_item(db, user.id, pipeline_state="ready", source_revision=2, bundle_revision=1)
+    db.add(SourceRevision(item_id=item.id, user_id=user.id, revision=2, content_hash="1" * 64,
+                          metadata_json={}, artifacts_json={}))
+    _add_bundle(db, item, 1, processing_state="ready", source_revision=1)
+    wf = _workflow(db, wc, user_a["desktop"]["token"], item)
+    assert wf["steps"][1]["reason_code"] == "STALE_ORGANIZE"      # 开关默认开着：仍然要处理
+
+    user.settings_json = {"ai": {"auto_enrich": False}}
+    wf = _workflow(db, wc, user_a["desktop"]["token"], item)
+    assert wf["steps"][1]["status"] == "skipped"
+    assert wf["overall_state"] == "working"
+
+
 def test_web_source_download_completes_item(wc, user_a, db):
     """网页下载原文登记后即为终态，文案说「原文已下载」，不写已发布。"""
     from kbserver.models import User

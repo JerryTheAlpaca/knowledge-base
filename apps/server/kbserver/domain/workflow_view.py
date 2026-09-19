@@ -137,8 +137,19 @@ def derive_item_workflow(
     # ---- 整理 ----
     bundle_ready = bool(bundle and bundle.processing_state == "ready")
     bundle_stale = bool(bundle_ready and bundle.source_revision != item.source_revision)
+    # 「需不需要你处理」只看现在的开关，不追溯历史：自动整理关着时整理这一步对用户不存在，
+    # 材料已经取到手的条目——包括当年开着开关时留下「等模型凭据」的、上一次自动整理失败的、
+    # 原文后来更新过的——一律按已通过显示，条目落到待发布。要整理随时可以开开关或手动重新加工，
+    # 那时它才重新变成需要你处理的事。
+    organize_off = not auto_enrich and (
+        ps in ("extracted", "waiting_key", "ready")
+        or (bundle is not None and bundle.processing_state == "failed")
+    )
     if bundle_ready and not bundle_stale:
         organize = _step("organize", "completed", "ORGANIZE_DONE", "已生成整理结果", label="整理")
+    elif organize_off:
+        organize = _step("organize", "skipped", "AUTO_ORGANIZE_OFF", "自动整理已关闭，直接取用原文",
+                         label="整理")
     elif bundle and bundle.processing_state == "failed" and bundle.source_revision == item.source_revision:
         organize = _step("organize", "failed", "ORGANIZE_FAILED", "这次整理没有成功，可以重新整理", label="整理")
     elif ps == "waiting_key":
@@ -148,11 +159,6 @@ def derive_item_workflow(
                          "暂时无法确认整理是否完成，系统正在核对结果", label="整理")
     elif ps == "enriching":
         organize = _step("organize", "running", "ORGANIZING", "正在整理内容", label="整理")
-    elif ps == "extracted" and not auto_enrich:
-        # 自动整理已关闭：整理这一步对用户不存在，节点按已通过显示（—），
-        # 不把「关了 AI 整理」当成需要处理，条目直接落到待发布
-        organize = _step("organize", "skipped", "AUTO_ORGANIZE_OFF", "自动整理已关闭，直接取用原文",
-                         label="整理")
     elif ps == "extracted":
         organize = _step("organize", "pending", "WAITING_FOR_ORGANIZE", "等待整理开始", label="整理")
     elif bundle_stale:
@@ -379,12 +385,14 @@ def build_workflow_map(db: Session, user_id: str, items: list[Item],
 
 
 # ---- 首页三视图的候选状态集合（SQL 近似 + Python 精筛）----
-# 提取未成功（needs_input / failed / waiting_key）不可能已经是终态，所以不进 published。
-# 自动整理关闭的条目停在 extracted：既可能是待发布，也可能已经下载走，两组候选都带上。
+# 提取没成功（needs_input / failed）不可能已经是终态，所以不进 published。
+# waiting_key 是「提取成功、在等模型凭据」，它归哪一组只看现在的开关：自动整理开着时是
+# 需要你处理，关着时整理这一步对用户不存在——材料直接取用原文，就是待发布，被插件取走
+# 就是已完成。三种视图都得先把它捞进候选，再由聚合状态定归属。
 VIEW_CANDIDATE_STATES = {
     "attention": ("needs_input", "waiting_key", "failed", "extracted", "ready"),
-    "working": ("queued", "extracting", "enriching", "extracted", "ready"),
-    "published": ("enriching", "extracted", "ready"),
+    "working": ("queued", "extracting", "enriching", "extracted", "ready", "waiting_key"),
+    "published": ("enriching", "extracted", "ready", "waiting_key"),
 }
 VIEW_OVERALL = {
     "attention": {"attention", "failed"},
