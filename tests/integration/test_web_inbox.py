@@ -25,6 +25,7 @@ def central(monkeypatch):
     monkeypatch.setenv("AUTH_COOKIE_NAME", AUTH_COOKIE)
     monkeypatch.setenv("AUTH_SESSION_URL", "https://auth.example.com/api/auth/session")
     monkeypatch.setenv("AUTH_LOGIN_URL", "https://auth.example.com/login")
+    monkeypatch.setenv("AUTH_REGISTER_URL", "https://auth.example.com/register")
     monkeypatch.setenv("AUTH_LOGOUT_URL", "https://auth.example.com/api/auth/logout")
     monkeypatch.setenv("AUTH_COOKIE_DOMAIN", "")  # 只接受无域属性的续期 Cookie
     monkeypatch.setenv("PUBLIC_BASE_URL", "http://testserver")
@@ -158,6 +159,18 @@ def test_login_redirect_rejects_external_next(wc, central):
     r = wc.get("/login", params={"next": "https://evil.example"}, follow_redirects=False)
     assert r.status_code == 307
     assert "evil.example" not in r.headers["location"]
+
+
+def test_register_redirect_goes_to_central_register(wc, central):
+    """点「注册」应到中心注册页，而不是绕去登录页找链接。"""
+    r = wc.get("/register", follow_redirects=False)
+    assert r.status_code == 307
+    loc = r.headers["location"]
+    assert loc.startswith("https://auth.example.com/register?return_to=")
+    assert "/login?" not in loc
+    from urllib.parse import parse_qs, urlparse
+
+    assert parse_qs(urlparse(loc).query)["return_to"][0].startswith("http://testserver/inbox")
 
 
 def test_central_unconfigured_returns_503(wc, monkeypatch):

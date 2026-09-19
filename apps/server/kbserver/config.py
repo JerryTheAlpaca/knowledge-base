@@ -76,6 +76,7 @@ class Settings:
     # 为空表示未接入中心认证：Web Cookie 通道返回 503，插件/设备 Bearer 不受影响。
     auth_session_url: str = os.environ.get("AUTH_SESSION_URL", "")
     auth_login_url: str = os.environ.get("AUTH_LOGIN_URL", "")
+    auth_register_url: str = os.environ.get("AUTH_REGISTER_URL", "")
     auth_logout_url: str = os.environ.get("AUTH_LOGOUT_URL", "")
     # 中心会话 Cookie 名称；AUTH_COOKIE_DOMAIN 用于校验续期 Cookie 的域（为空则要求无域属性）
     auth_cookie_name: str = os.environ.get("AUTH_COOKIE_NAME", "__Secure-session")
@@ -151,6 +152,7 @@ def get_settings() -> Settings:
         public_base_url=os.environ.get("PUBLIC_BASE_URL", "http://localhost:8000"),
         auth_session_url=os.environ.get("AUTH_SESSION_URL", ""),
         auth_login_url=os.environ.get("AUTH_LOGIN_URL", ""),
+        auth_register_url=os.environ.get("AUTH_REGISTER_URL", ""),
         auth_logout_url=os.environ.get("AUTH_LOGOUT_URL", ""),
         auth_cookie_name=os.environ.get("AUTH_COOKIE_NAME", "__Secure-session"),
         auth_cookie_domain=os.environ.get("AUTH_COOKIE_DOMAIN", ""),

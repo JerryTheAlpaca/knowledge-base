@@ -1,6 +1,6 @@
 """统一账号 API（docs/05 §4.1、§4.2、§4.5）。
 
-- GET  /login：302 到中心登录页（return_to 指回 KB 自身路径）。
+- GET  /login、/register：307 到中心登录/注册页（return_to 指回 KB 自身路径）。
 - GET  /v1/auth/me：当前账号（页面初始化与管理员入口依据）。
 - POST /v1/auth/logout：撤销中心会话并清理 Cookie（CSRF/Origin 校验后代理）。
 - POST /v1/auth/device/start|poll：插件端发起/轮询。
@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import secrets
 from datetime import timedelta
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import RedirectResponse
@@ -51,24 +52,32 @@ def _check_rate(request: Request) -> None:
     _rate_limiter.hit(ip, utcnow(), "尝试过于频繁，请稍后再试")
 
 
-@router.get("/login", include_in_schema=False)
-def login_redirect(request: Request):
-    """跳转中心登录：return_to 只允许指回 KB 自身路径，不接受外部地址。"""
+def _central_page_redirect(request: Request, url: str, label: str, var_name: str) -> RedirectResponse:
+    """跳转中心页面：return_to 只允许指回 KB 自身路径，不接受外部地址。"""
     settings = get_settings()
-    if not settings.auth_login_url:
-        raise ApiError("AUTH_UNAVAILABLE", "未配置中心登录地址（AUTH_LOGIN_URL）", status_code=503)
+    if not url:
+        raise ApiError("AUTH_UNAVAILABLE", f"未配置中心{label}地址（{var_name}）", status_code=503)
     next_path = request.query_params.get("next") or "/inbox"
     if not next_path.startswith("/") or next_path.startswith("//"):
         next_path = "/inbox"
     return_to = f"{settings.public_base_url}{next_path}"
-    from urllib.parse import quote
-
-    sep = "&" if "?" in settings.auth_login_url else "?"
-    # app=kb：auth 站点据此用与 kb 一致的登录页视觉；登录态仍是同一中心会话，仅换肤
+    sep = "&" if "?" in url else "?"
+    # app=kb：auth 站点据此用与 kb 一致的页面视觉；登录态仍是同一中心会话，仅换肤
     return RedirectResponse(
-        f"{settings.auth_login_url}{sep}return_to={quote(return_to, safe='')}&app=kb",
+        f"{url}{sep}return_to={quote(return_to, safe='')}&app=kb",
         status_code=307,
     )
+
+
+@router.get("/login", include_in_schema=False)
+def login_redirect(request: Request):
+    return _central_page_redirect(request, get_settings().auth_login_url, "登录", "AUTH_LOGIN_URL")
+
+
+@router.get("/register", include_in_schema=False)
+def register_redirect(request: Request):
+    """新用户直接去中心注册页（邀请码在那里填），不再绕到登录页找链接。"""
+    return _central_page_redirect(request, get_settings().auth_register_url, "注册", "AUTH_REGISTER_URL")
 
 
 @router.get("/v1/auth/me")

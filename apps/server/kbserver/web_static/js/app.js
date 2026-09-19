@@ -129,9 +129,12 @@ function wireTopbar() {
     reopenOnboarding();
   });
   $("logoutBtn").addEventListener("click", doLogout);
-  // 登录入口有右上角落与结尾 CTA 两处，指向同一个中心登录页
-  for (const el of document.querySelectorAll("[data-login-entry]")) {
-    el.addEventListener("click", () => { window.location.href = "/login?next=%2Finbox"; });
+  // 登录与注册是两个中心页面：点注册就直接到注册表单，不再让用户去登录页自己找链接
+  for (const [sel, target] of [["[data-login-entry]", "/login?next=%2Finbox"],
+                               ["[data-register-entry]", "/register?next=%2Finbox"]]) {
+    for (const el of document.querySelectorAll(sel)) {
+      el.addEventListener("click", () => { window.location.href = target; });
+    }
   }
   document.addEventListener("click", (e) => {
     if (!e.target.closest(".menuwrap")) closeMenus();

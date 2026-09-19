@@ -20,6 +20,7 @@ services:
       # 保持一致；KB Origin 需在 Ledger 的 ALLOWED_ORIGINS 与 ALLOWED_RETURN_TO 白名单内
       AUTH_SESSION_URL: https://auth.jerrythealpaca.cn/api/auth/session
       AUTH_LOGIN_URL: https://auth.jerrythealpaca.cn/login
+      AUTH_REGISTER_URL: https://auth.jerrythealpaca.cn/register
       AUTH_LOGOUT_URL: https://auth.jerrythealpaca.cn/api/auth/logout
       AUTH_COOKIE_NAME: __Secure-jerry_session
       AUTH_COOKIE_DOMAIN: jerrythealpaca.cn
