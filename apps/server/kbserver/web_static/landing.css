@@ -43,34 +43,13 @@
                  background: linear-gradient(90deg, var(--rose-deep), var(--accent) 45%, var(--rose-hi));
                  opacity: 0; transition: opacity .45s; }
 .land-top.stuck .land-progress { opacity: .85; }
-/* 品牌字平时不出现：首屏已经有那行大字，吸顶的那一份要等它让位才接管。
-   .land-brand 自己是层叠上下文（z-index:1），下面那颗胶囊底才不会躲到顶栏底衬后面。
-   进退场只走 transform / opacity / filter：胶囊从大缩小 = 那行字缩上去，反向就是它重新展开。 */
-.land-brand { position: relative; z-index: 1; transform-origin: left center;
-              font-family: var(--font-display); font-size: 19px; font-weight: 600; letter-spacing: .3em;
+.land-brand { font-family: var(--font-display); font-size: 19px; font-weight: 600; letter-spacing: .3em;
               border: none; background: transparent; padding: 0; min-height: 0; cursor: pointer;
               color: var(--rose-brand); text-shadow: 0 0 22px rgba(226, 176, 74, .28);
-              opacity: 0; transform: scale(1.26); filter: blur(2.5px); pointer-events: none;
-              transition: color .3s, text-shadow .3s, opacity .38s var(--ease),
-                          transform .5s var(--ease), filter .42s var(--ease); }
-.land-top.capsule .land-brand { opacity: 1; transform: none; filter: none; pointer-events: auto; }
-/* 描金胶囊：比 .land-cta 安静一档，它是署名不是按钮。
-   上下只放 2px、右缘比左缘收 6px：字距 .3em 在最后一个字后面也留了一份空，
-   等距内缩会让字看着偏左；这个高度正好与右边那颗注册胶囊齐平。 */
-.land-brand::before { content: ""; position: absolute; inset: -2px -10px -2px -16px; z-index: -1;
-                      border-radius: var(--radius-pill); border: 1px solid rgba(226, 176, 74, .3);
-                      background: linear-gradient(180deg, rgba(58, 40, 16, .6) 0%, rgba(21, 14, 7, .82) 100%);
-                      box-shadow: 0 6px 18px rgba(0, 0, 0, .32), inset 0 1px 0 rgba(255, 226, 150, .08);
-                      opacity: 0; transform: scale(.88);
-                      transition: opacity .4s var(--ease), transform .55s var(--ease), border-color .3s; }
-.land-top.capsule .land-brand::before { opacity: 1; transform: none; }
+              transition: color .3s, text-shadow .3s; }
 .land-brand:hover { color: var(--accent-hover); text-shadow: 0 0 26px rgba(240, 193, 105, .5); }
-.land-top.capsule .land-brand:hover::before { border-color: rgba(246, 207, 98, .62); }
 .land-brand:active { transform: none; }
-.land-nav { display: flex; align-items: center; gap: 22px; margin-left: clamp(10px, 3vw, 30px);
-            opacity: 0; pointer-events: none; transition: opacity .45s var(--ease) 90ms; }
-/* 首屏左上留白：那一份位置是留给大标题的，标题让位后胶囊和锚点一起补上来 */
-.land-top.capsule .land-nav { opacity: 1; pointer-events: auto; }
+.land-nav { display: flex; align-items: center; gap: 22px; margin-left: clamp(10px, 3vw, 30px); }
 .land-spacer { flex: 1; }
 .land-anchor { position: relative; font-size: var(--fs-small); letter-spacing: .1em;
                color: var(--text-2); text-decoration: none; padding: 6px 0; transition: color .3s; }
@@ -306,8 +285,6 @@
 @media (max-width: 420px) {
   .land-cta { padding: 0 12px; }
   .land-brand { font-size: 17px; }
-  /* 窄屏顶栏左右只留 14px，胶囊再按 16px 外扩就顶到屏幕边了 */
-  .land-brand::before { inset: -2px -6px -2px -10px; }
 }
 
 /* —— 矮视口（横放的手机、小笔记本）：首屏仍要是一整屏，只能收花冠与字号 —— */
@@ -332,6 +309,4 @@
   .landing .stem i { transform: scaleY(1); }
   .poem-word::before { transition: none; }
   .land-cue-line::after { display: none; }
-  /* 胶囊该不该在仍由滚动决定，只是不再缩放，改成直接显隐 */
-  .land-brand, .land-brand::before { transform: none; filter: none; transition: opacity .2s linear; }
 }
