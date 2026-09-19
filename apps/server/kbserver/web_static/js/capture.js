@@ -219,11 +219,11 @@ function dustToRose(rose) {
   // 花心就是 svg 方框的正中：viewBox「120 80 360 360」的中心正落在 (300,260) 的花心上
   const cx = tr.left + tr.width / 2, cy = tr.top + tr.height / 2;
   const R = tr.width * 0.3;     // 落点散布半径：压在看得见的瓣圈内（瓣只长到约 .35 宽），不撒到花外的黑底上
-  const colors = ["#ffd98e", "#f4ca72", "#e2b04a", "#fff3c9"];
-  for (let i = 0; i < 28; i++) {
+  const colors = ["#fffdf2", "#fff3d0", "#ffe4a8", "#f4ca72"];
+  for (let i = 0; i < 32; i++) {
     const p = document.createElement("i");
     p.className = "gold-spark";
-    const s = (3.5 + Math.random() * 4.5).toFixed(1);
+    const s = (1.8 + Math.random() * 2.2).toFixed(1);   // 1.8–4px：粉要细，亮度交给外发光撑
     p.style.cssText = "width:" + s + "px;height:" + s + "px;background:" +
       colors[i % colors.length] + ";left:" + fx + "px;top:" + fy + "px";
     document.body.appendChild(p);

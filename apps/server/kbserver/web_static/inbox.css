@@ -42,8 +42,9 @@
 @keyframes glowOnce { 0%, 100% { transform: scale(1); } 14% { transform: scale(1.11); } }
 
 /* —— 提交金粒：capture.js 动态生成，从发送钮喷出、沿弧线汇聚到花冠上，落定后花冠才亮 —— */
+/* 粒子本体只有 2–4px，亮不亮靠这两层发光撑：内圈近白、外圈暖金 */
 .gold-spark { position: fixed; z-index: 90; border-radius: 50%; pointer-events: none;
-              box-shadow: 0 0 9px rgba(244, 202, 114, .95), 0 0 2px rgba(255, 243, 201, .9); }
+              box-shadow: 0 0 4px rgba(255, 249, 228, .95), 0 0 11px rgba(244, 202, 114, .8); }
 
 /* ============ 基底 ============ */
 html { background: var(--bg); }
