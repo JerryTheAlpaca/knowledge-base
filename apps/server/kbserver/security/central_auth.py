@@ -3,14 +3,45 @@
 知识库只提取指定中心 Cookie 发给固定的会话校验接口，读取其真实返回的
 用户 ID；不转发整串 Cookie，不放宽抓取器的公网限制（本模块是独立、固定
 目标的认证客户端）。默认不缓存校验结果：中心会话撤销后下一次请求即失效。
+唯一记下来的是「本站已经退出过哪颗凭据」，见 remember_revoked。
 """
 from __future__ import annotations
 
+import hashlib
+import time
 from http.cookies import SimpleCookie
 
 import httpx
 
 from ..config import get_settings
+
+# 退出后在这段时间内，那颗凭据在 KB 侧一律按未登录处理。中心每次校验都会回一颗
+# 同值的滑动续期 Set-Cookie，任何在飞的请求晚到一步就把刚清掉的凭据又种回浏览器；
+# 中心偶尔撤销得慢（或这次没撤销成），返回键回去就是登录态主页。
+REVOKED_TTL_SECONDS = 300
+_revoked: dict[str, float] = {}
+
+
+def _revoked_key(cookie_value: str) -> str:
+    return hashlib.sha256(cookie_value.encode("utf-8")).hexdigest()
+
+
+def remember_revoked(cookie_value: str) -> None:
+    now = time.monotonic()
+    _revoked[_revoked_key(cookie_value)] = now + REVOKED_TTL_SECONDS
+    for key, until in list(_revoked.items()):   # 退出是低频操作，顺手回收就够
+        if until <= now:
+            _revoked.pop(key, None)
+
+
+def is_revoked(cookie_value: str) -> bool:
+    until = _revoked.get(_revoked_key(cookie_value))
+    if until is None:
+        return False
+    if until <= time.monotonic():
+        _revoked.pop(_revoked_key(cookie_value), None)
+        return False
+    return True
 
 
 class CentralAuthUnavailable(Exception):

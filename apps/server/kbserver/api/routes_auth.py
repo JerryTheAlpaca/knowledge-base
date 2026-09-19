@@ -124,6 +124,9 @@ def auth_logout(request: Request, response: Response, principal=Depends(current_
     request.state.central_renewal = None
     cookie = request.cookies.get(settings.auth_cookie_name)
     if principal.auth_method == "central_session" and cookie:
+        # 先记下这颗凭据：晚到的在飞请求会把它随续期 Cookie 种回浏览器，
+        # 中心偶尔撤销得慢（甚至没撤销成），那时返回键回去就是登录态主页。
+        central_auth.remember_revoked(cookie)
         try:
             central_auth.central_logout(cookie)
         except central_auth.CentralAuthUnavailable:

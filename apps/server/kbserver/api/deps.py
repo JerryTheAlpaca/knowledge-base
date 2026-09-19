@@ -145,6 +145,9 @@ def _load_central_principal(db: Session, request: Request) -> Principal:
     cookie = request.cookies.get(settings.auth_cookie_name)
     if not cookie:
         raise ApiError("AUTH_EXPIRED", "未登录", status_code=401)
+    # 本站退出过的凭据不再认，即使浏览器又被晚到的续期响应种回来（docs/05 §4.2）
+    if central_auth.is_revoked(cookie):
+        raise ApiError("AUTH_EXPIRED", "会话已退出", status_code=401)
     try:
         data, renewal = central_auth.validate_central_session(cookie)
     except central_auth.CentralAuthRejected as exc:

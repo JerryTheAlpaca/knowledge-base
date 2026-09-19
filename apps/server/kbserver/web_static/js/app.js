@@ -99,6 +99,9 @@ function goHome() {
 
 // ---------- 登录 / 登出 ----------
 async function doLogout() {
+  // 先停轮询：在飞与后续的认证请求都带着中心的滑动续期 Cookie，
+  // 晚到一步就把刚刚清掉的凭据原样种回浏览器（退出后按返回键仍是登录态）。
+  setListPollPaused(true);
   try { await api("/v1/auth/logout", { method: "POST" }); } catch (e) { /* 会话已无效也清理界面 */ }
   clearDraft();
   showLogin();

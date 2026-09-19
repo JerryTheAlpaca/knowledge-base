@@ -59,7 +59,13 @@ def central(monkeypatch):
 
     monkeypatch.setattr("kbserver.security.central_auth.validate_central_session", fake_validate)
     monkeypatch.setattr("kbserver.security.central_auth.central_logout", fake_logout)
-    return state
+    # 「本站退出过的凭据」这张表是进程内的：用例之间归零，
+    # 否则上一个用例的退出会让后面带同一颗 Cookie 的用例全部 401
+    from kbserver.security import central_auth as _central_auth
+
+    _central_auth._revoked.clear()
+    yield state
+    _central_auth._revoked.clear()
 
 
 @pytest.fixture()
@@ -247,6 +253,19 @@ def test_logout_expires_parent_domain_session_cookie(wc, central, monkeypatch):
     assert session and all(v == "" for v in values)
     assert any("Domain=example.com" in c for c in session)
     central["renew"] = False
+
+
+def test_logout_keeps_resurrected_credential_dead(wc, central):
+    """中心撤销慢了一步（甚至没撤销成）时，晚到的在飞请求会随滑动续期 Cookie 把同一颗
+    凭据种回浏览器：KB 仍不得认它，否则按返回键又回到登录态主页（docs/05 §4.2）。
+    """
+    _login(wc, central)
+    csrf = wc.cookies.get("kb_csrf")
+    assert wc.post("/v1/auth/logout", headers={"X-CSRF-Token": csrf}).status_code == 200
+
+    wc.cookies.set(AUTH_COOKIE, "fake-central-cookie")  # 模拟那颗 Cookie 被种回来
+    assert central["valid"] and not central["logged_out"]  # 中心那边它仍然有效
+    assert wc.get("/v1/items").status_code == 401
 
 
 def test_old_web_pairing_session_no_longer_authenticates(wc, central, db, user_a):
