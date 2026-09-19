@@ -642,3 +642,63 @@ def test_normal_web_capture_does_not_enter_asr(client, user_a, monkeypatch):
         assert db.query(worker.AsrRun).filter(worker.AsrRun.item_id == item_id).count() == 0
         assert db.query(worker.Job).filter(
             worker.Job.item_id == item_id, worker.Job.stage.like("asr%")).count() == 0
+
+
+def test_republish_replaces_stale_readable_in_manifest(client, user_a, monkeypatch):
+    """重发布必须替换同路径旧文件：清单里两份 readable.md 时读侧命中靠前的旧版，
+    转写完成后「下载原文」仍只有标题（网页壳页 → 补充正文 → 转写发布）。
+    """
+    from kbserver.db import get_session_factory
+    from kbserver.extractors import webpages
+    from kbserver.models import Item, SourceRevision
+    from kbserver.workers.publish import publish_segments_revision
+
+    token = user_a["desktop"]["token"]
+    monkeypatch.setattr(webpages, "extract", lambda url, **kw: SimpleNamespace(
+        platform="web", canonical_url="https://example.com/podcast", title="播客第 1 期",
+        author=None, published_at=None, raw_html=b"<html></html>", raw_mime="text/html",
+        segments=[{"segment_id": "s0001", "text": "播客第 1 期", "locator": {},
+                   "origin": "web_article", "confidence": None, "kind": "heading"}],
+        images=[], missing_materials=[], warnings=[], coverage="full_text"))
+    item_id = client.post("/v1/captures", json={
+        "client_capture_id": "republish-0001-1111-2222-3333-444444444444",
+        "input_kind": "url", "original_url": "https://example.com/podcast",
+    }, headers={**auth(token), "Idempotency-Key": "republish-0001"}).json()["item_id"]
+
+    sf = get_session_factory()
+    _drain(sf)
+
+    def readable() -> str:
+        r = client.get(f"/v1/items/{item_id}/reading", headers=auth(token)).json()
+        return (r["source_material"] or {})["readable_md"] or ""
+
+    assert readable().strip() == "## 播客第 1 期 ^p0001"
+
+    rev = client.get(f"/v1/items/{item_id}", headers=auth(token)).json()["source_revision"]
+    client.post(f"/v1/items/{item_id}/supplements",
+                json={"expected_source_revision": rev, "text": "人工补充的第一段。"},
+                headers=auth(token))
+    _drain(sf)
+    assert "人工补充的第一段" in readable()
+
+    # 转写完成：ASR 与提取共用这条发布路径产出全文
+    with sf() as db:
+        item = db.get(Item, item_id)
+        source = db.query(SourceRevision).filter(
+            SourceRevision.item_id == item.id,
+            SourceRevision.revision == item.source_revision).one()
+        publish_segments_revision(
+            db, ObjectStore(), None, item, source,
+            segments=[{"segment_id": "s0001", "text": "这里是机器转写的正文。",
+                       "locator": {}, "origin": "asr", "confidence": None}],
+            warnings=[], extra_files=[], meta_updates={"coverage": "full_text"})
+        db.commit()
+
+    assert "这里是机器转写的正文" in readable()
+    with sf() as db:
+        revision = db.get(Item, item_id).bundle_revision
+    paths = [f["relative_path"] for f in client.get(
+        f"/v1/items/{item_id}/bundles/{revision}/manifest", headers=auth(token)
+    ).json()["files"]]
+    for path in ("readable.md", "normalized.md", "segments.json"):
+        assert paths.count(path) == 1, (path, paths)

@@ -273,22 +273,18 @@ def _extract_plain_text(db: Session, store: ObjectStore, job: Job, item: Item,
         "paragraphs": paragraph_list,
     }
 
-    files = _bundle_files(db, item)
-    files.append(pipeline.register_file(
-        db, store, user_id=item.user_id, item_id=item.id,
-        data=normalized_md.encode("utf-8"), relative_path="normalized.md",
-        role="source_material", mime="text/markdown",
-    ))
-    files.append(pipeline.register_file(
-        db, store, user_id=item.user_id, item_id=item.id,
-        data=parafmt.paragraphs_to_readable_md(paragraph_list).encode("utf-8"),
-        relative_path="readable.md", role="source_material", mime="text/markdown",
-    ))
-    files.append(pipeline.register_file(
-        db, store, user_id=item.user_id, item_id=item.id,
-        data=pipeline.canonical_json(segments_doc), relative_path="segments.json",
-        role="source_material", mime="application/json",
-    ))
+    files = {f.relative_path: f for f in _bundle_files(db, item)}
+    for path, data, mime in (
+        ("normalized.md", normalized_md.encode("utf-8"), "text/markdown"),
+        ("readable.md", parafmt.paragraphs_to_readable_md(paragraph_list).encode("utf-8"),
+         "text/markdown"),
+        ("segments.json", pipeline.canonical_json(segments_doc), "application/json"),
+    ):
+        files[path] = pipeline.register_file(
+            db, store, user_id=item.user_id, item_id=item.id,
+            data=data, relative_path=path, role="source_material", mime=mime,
+        )
+    files = list(files.values())
     db.flush()
 
     auto_enrich = auto_enrich_enabled(db, item.user_id)

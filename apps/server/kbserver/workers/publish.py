@@ -105,7 +105,6 @@ def publish_segments_revision(db: Session, store: ObjectStore, job: Job | None, 
     merged = {f.relative_path: f for f in bundle_files(db, item)}
     for f in extra_files:
         merged[f.relative_path] = f
-    files = list(merged.values())
     # 阅读层：段落只是合并相邻片段，segments 仍是引用粒度（extractors/paragraphs.py）
     paragraph_list = parafmt.group_paragraphs(segments)
     segment_para = parafmt.segment_paragraph_map(paragraph_list)
@@ -113,25 +112,24 @@ def publish_segments_revision(db: Session, store: ObjectStore, job: Job | None, 
         dict(seg, paragraph_id=segment_para.get(seg.get("segment_id")))
         for seg in segments
     ]
-    files.append(pipeline.register_file(
-        db, store, user_id=item.user_id, item_id=item.id,
-        data=subfmt.segments_to_normalized_md(segments).encode("utf-8"),
-        relative_path="normalized.md", role="source_material", mime="text/markdown",
-    ))
-    files.append(pipeline.register_file(
-        db, store, user_id=item.user_id, item_id=item.id,
-        data=parafmt.paragraphs_to_readable_md(paragraph_list).encode("utf-8"),
-        relative_path="readable.md", role="source_material", mime="text/markdown",
-    ))
-    files.append(pipeline.register_file(
-        db, store, user_id=item.user_id, item_id=item.id,
-        data=pipeline.canonical_json({
+    # 三份产物同样按 path 覆盖：清单里同 path 出现两份旧版在前时，读侧一律取第一条，
+    # 转写正文会被上一次提取的旧版顶掉（下载原文只剩标题）
+    for path, data, mime in (
+        ("normalized.md", subfmt.segments_to_normalized_md(segments).encode("utf-8"),
+         "text/markdown"),
+        ("readable.md", parafmt.paragraphs_to_readable_md(paragraph_list).encode("utf-8"),
+         "text/markdown"),
+        ("segments.json", pipeline.canonical_json({
             "source_revision": new_revision,
             "segments": indexed_segments,
             "paragraphs": paragraph_list,
-        }),
-        relative_path="segments.json", role="source_material", mime="application/json",
-    ))
+        }), "application/json"),
+    ):
+        merged[path] = pipeline.register_file(
+            db, store, user_id=item.user_id, item_id=item.id,
+            data=data, relative_path=path, role="source_material", mime=mime,
+        )
+    files = list(merged.values())
     db.flush()
 
     auto_enrich = auto_enrich_enabled(db, item.user_id)
