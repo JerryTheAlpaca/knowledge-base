@@ -229,6 +229,7 @@ def cancel_asr(db: Session, run: AsrRun) -> None:
     if item is not None and item.pipeline_state in ("queued", "extracting"):
         item.pipeline_state = "needs_input"
         item.state_detail = "音频转写已取消；可补充字幕/正文或重新触发转写。"
+        item.state_reason = "asr_cancelled"
     pipeline.emit_event(db, run.user_id, item_id=run.item_id,
                         bundle_revision=None, event_type="asr_state_changed",
                         payload=_run_event_payload(run))
@@ -350,6 +351,7 @@ def _fail_run(db: Session, run: AsrRun, job: Job, item: Item, error: str, *,
         job.last_error = error[:200]
         item.pipeline_state = "needs_input"
         item.state_detail = f"音频转写失败：{error[:120]}"
+        item.state_reason = "asr_failed"
         pipeline.emit_event(db, item.user_id, item_id=item.id,
                             bundle_revision=item.bundle_revision,
                             event_type="item_needs_input",
@@ -522,6 +524,7 @@ def _park_for_selection(session_factory, job_id: str, lease_token: str,
         ctx.job.state = "succeeded"  # 不再自动重试，等用户选择
         ctx.item.pipeline_state = "needs_input"
         ctx.item.state_detail = "页面有多条音频，请在详情中选择要转写的一条。"
+        ctx.item.state_reason = "selection_required"
         _emit_state(db, ctx.run)
         pipeline.emit_event(
             db, ctx.item.user_id, item_id=ctx.item.id, bundle_revision=ctx.item.bundle_revision,
@@ -1075,6 +1078,7 @@ def _finish_if_complete(session_factory, job_id: str, lease_token: str,
             job.state = "cancelled"
             item.pipeline_state = "needs_input"
             item.state_detail = "音频转写结果作废：来源已更新（已有新材料或已删除）。"
+            item.state_reason = "asr_stale_result"
             _emit_state(db, run)
             db.commit()
             return

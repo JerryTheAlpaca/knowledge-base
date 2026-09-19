@@ -213,6 +213,7 @@ def _run_extract_dispatch(db: Session, store: ObjectStore, job: Job, item: Item,
         return
     item.pipeline_state = "needs_input"
     item.state_detail = "缺少正文：等待来源适配器（M4）或用户补充材料"
+    item.state_reason = "no_source"
     job.state = "succeeded"
     pipeline.emit_event(db, item.user_id, item_id=item.id, bundle_revision=item.bundle_revision,
                         event_type="item_needs_input", payload={"reason": item.state_detail})
@@ -341,10 +342,11 @@ def _bili_throttle_ok() -> bool:
 
 def _needs_input(db: Session, job: Job, item: Item, detail: str, reason: str,
                  stage: str = "extract") -> None:
-    """进入补充材料：state_detail 保留人话，事件 payload 保存机器可读的
-    stage/discovery_status（docs/05 §3.3），供 UI 给出下一步操作。"""
+    """进入补充材料：state_detail 保留人话，state_reason 与事件 payload 保存
+    机器可读的 stage/reason（docs/05 §3.3、审查 C-14），供 UI 给出下一步操作。"""
     item.pipeline_state = "needs_input"
     item.state_detail = detail[:200]
+    item.state_reason = reason[:32]
     job.state = "succeeded"
     pipeline.emit_event(db, item.user_id, item_id=item.id, bundle_revision=item.bundle_revision,
                         event_type="item_needs_input",
@@ -787,38 +789,42 @@ def retention_sweep(session_factory, store: ObjectStore) -> dict[str, int]:
         # 音频原件由 AudioAsset 持有独立引用，不随 Bundle 到期解除（docs/13 §6.3）。
         # 只查 storage_key 列，不加载整行（审查 C-08）。
         referenced: set[str] = set()
-        for bundle in db.query(BundleRevision).all():
+        for user_id, manifest_key in db.query(
+            BundleRevision.user_id, BundleRevision.manifest_key
+        ).all():
             try:
-                manifest = json.loads(store.read_object(bundle.manifest_key))
+                manifest = json.loads(store.read_object(manifest_key))
             except Exception:
                 continue  # 清单缺失按过期处理，不阻塞其他清理
             for entry in manifest.get("files", []):
                 row = db.query(StoredFile.storage_key).filter(
-                    StoredFile.user_id == bundle.user_id,
+                    StoredFile.user_id == user_id,
                     StoredFile.file_id == entry.get("file_id"),
                 ).first()
                 if row is not None:
                     referenced.add(row[0])
         # 音频原件引用（含未完成但已登记的会话原件）
-        for asset in db.query(AudioAsset).filter(AudioAsset.retention_state == "retained").all():
-            up = db.get(Upload, asset.upload_id)
+        for asset_user_id, asset_upload_id, stored_file_id in db.query(
+            AudioAsset.user_id, AudioAsset.upload_id, AudioAsset.stored_file_id
+        ).filter(AudioAsset.retention_state == "retained").all():
+            up = db.get(Upload, asset_upload_id)
             if up is not None:
                 referenced.add(up.storage_key)
-            if asset.stored_file_id:
+            if stored_file_id:
                 row = db.query(StoredFile.storage_key).filter(
-                    StoredFile.user_id == asset.user_id,
-                    StoredFile.file_id == asset.stored_file_id,
+                    StoredFile.user_id == asset_user_id,
+                    StoredFile.file_id == stored_file_id,
                 ).first()
                 if row is not None:
                     referenced.add(row[0])
         # 未完成/已完成待引用的上传会话对象
-        for up in db.query(Upload).filter(Upload.state == "completed",
-                                          Upload.expires_at.isnot(None)).all():
-            if up.expires_at > now:
-                referenced.add(up.storage_key)
+        for (key,) in db.query(Upload.storage_key).filter(
+            Upload.state == "completed", Upload.expires_at > now
+        ).all():
+            referenced.add(key)
         # 分批删除孤儿对象与登记，避免单次长事务（审查 C-08）
-        orphans = [(f.id, f.storage_key) for f in db.query(StoredFile).all()
-                   if f.storage_key not in referenced]
+        orphans = [(fid, key) for fid, key in db.query(StoredFile.id, StoredFile.storage_key).all()
+                   if key not in referenced]
         for start in range(0, len(orphans), 100):
             batch = orphans[start:start + 100]
             for _, key in batch:

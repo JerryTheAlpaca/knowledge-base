@@ -40,7 +40,7 @@ class PlatformSessionSpec:
     url_domains: tuple[str, ...]     # 条目平台归属匹配（定向重排队用）
     cookie_send_domains: tuple[str, ...]  # 登录态只允许发往的精确一方域名（docs/18 §7.2 规则 4）
     probe_url: str               # 只读会话检测地址
-    requeue_keywords: tuple[str, ...]  # state_detail 命中才重排队（登录原因等待）
+    requeue_reasons: tuple[str, ...]  # Item.state_reason 命中才重排队（登录原因等待）
     allowed_cookie_names: frozenset[str] | None  # P0 实测后收紧；None=暂保留全部解析字段
     max_secret_bytes: int
     event_type: str
@@ -49,6 +49,34 @@ class PlatformSessionSpec:
     not_configured_error: str = ""  # 未托管时发起检测的错误文案
     decrypt_error: str = ""
     stored_format_error: str = ""
+    # 条目详情页的登录墙文案（审查 C-14）：由规格出，不在 WorkflowView 里拼，
+    # 平台名带拉丁字母时（B 站）由规格自己控制空格
+    auth_hint: str = "需要连接{label}才能读取这条内容"
+    session_update_hint: str = "{label}登录态没有通过校验，更新后这条会自动重新提取"""
+
+
+# 设置页已开放登录态托管入口的平台：只有这些平台能在条目上给「连接该平台 /
+# 更新登录信息」动作；其余平台（知乎、视频号尚未放出配置入口）如实回到
+# 「需要补充正文」，不要把用户导向一个没有配置框的页面（审查 C-14）。
+# 与 settings.js 的 PLAT_SESSIONS.enabled 保持同一份口径。
+SESSION_UI_PLATFORMS = ("bilibili", "xiaohongshu")
+
+# 迁移前写入的存量 needs_input 行没有 state_reason，只能按旧文案关键词归类；
+# 这些条目下次状态变化后都会带上机器码，届时可整段删掉。
+_LEGACY_LOGIN_KEYWORDS = ("登录", "凭据", "会话", "字幕")
+
+
+def configured_platforms(db: Session, user_id: str) -> set[str]:
+    """该用户已托管活跃登录态的平台：WorkflowView 据此决定给「连接」还是「更新」。"""
+    kinds = {spec.kind: spec.platform for spec in SPECS.values()}
+    rows = (
+        db.query(ProviderProfile.kind)
+        .join(Credential, Credential.profile_id == ProviderProfile.id)
+        .filter(ProviderProfile.user_id == user_id, Credential.revoked_at.is_(None))
+        .distinct()
+        .all()
+    )
+    return {kinds[r[0]] for r in rows if r[0] in kinds}
 
 
 _STATUS_NOTE_TPL = {
@@ -64,12 +92,14 @@ _REVOKE_NOTE_TPL = {
 SPECS: dict[str, PlatformSessionSpec] = {
     "bilibili": PlatformSessionSpec(
         platform="bilibili", kind="bilibili_session", label="B 站",
+        auth_hint="需要连接 {label}才能读取这条内容",
         adapter="bilibili-web", endpoint="https://api.bilibili.com",
         model="sessdata", cookie_mode="single_value",
         url_domains=("bilibili.com", "b23.tv"),
         cookie_send_domains=("api.bilibili.com", "www.bilibili.com"),
         probe_url="https://api.bilibili.com/x/web-interface/nav",
-        requeue_keywords=("字幕", "登录", "SESSDATA", "凭据"),
+        # 登录墙与「有登录态才看得到的字幕」两类等待都在换 Cookie 后重试
+        requeue_reasons=("login_required", "no_track", "empty_subtitle"),
         allowed_cookie_names=None,  # B 站只存 SESSDATA 单值，不走 Cookie 清洗
         max_secret_bytes=8192,
         event_type="bilibili_session_updated",
@@ -93,7 +123,7 @@ SPECS: dict[str, PlatformSessionSpec] = {
         url_domains=("xiaohongshu.com", "xhslink.com", "xhslink.cn"),
         cookie_send_domains=("www.xiaohongshu.com", "xiaohongshu.com"),  # P0 实测后收紧
         probe_url="https://www.xiaohongshu.com/explore",
-        requeue_keywords=("登录", "凭据", "会话", "字幕"),
+        requeue_reasons=("login_required",),
         allowed_cookie_names=None,  # docs/18 §7.2 规则 1：P0 实测最小集合后收紧
         max_secret_bytes=8192,
         event_type="platform_session_updated",
@@ -117,7 +147,7 @@ SPECS: dict[str, PlatformSessionSpec] = {
         url_domains=("channels.weixin.qq.com",),  # 公众号 mp.weixin.qq.com 不属于视频号
         cookie_send_domains=("channels.weixin.qq.com",),  # P0 实测后收紧
         probe_url="https://channels.weixin.qq.com",
-        requeue_keywords=("登录", "凭据", "会话"),
+        requeue_reasons=("login_required",),
         allowed_cookie_names=None,  # docs/18 §7.2 规则 1：P0 实测最小集合后收紧
         max_secret_bytes=8192,
         event_type="platform_session_updated",
@@ -141,7 +171,7 @@ SPECS: dict[str, PlatformSessionSpec] = {
         url_domains=("zhihu.com",),
         cookie_send_domains=("www.zhihu.com", "zhuanlan.zhihu.com"),  # P0 实测后收紧
         probe_url="https://www.zhihu.com/",
-        requeue_keywords=("登录", "凭据", "会话", "字幕"),
+        requeue_reasons=("login_required",),
         allowed_cookie_names=None,  # docs/18 §7.2 规则 1：P0 实测最小集合后收紧
         max_secret_bytes=8192,
         event_type="platform_session_updated",
@@ -311,8 +341,13 @@ def requeue_waiting_items(db: Session, user_id: str, spec: PlatformSessionSpec) 
         if (meta.get("supplement_text") or "").strip():
             continue  # 已有人工补充正文，不覆盖
         detail = it.state_detail or ""
-        if not any(k in detail for k in spec.requeue_keywords):
-            continue  # 非登录原因的待补充条目不重排
+        reason = it.state_reason or ""
+        if reason:
+            if reason not in spec.requeue_reasons:
+                continue  # 非登录原因的待补充条目不重排（机器码判定，审查 C-14）
+        elif not any(k in detail for k in _LEGACY_LOGIN_KEYWORDS):
+            # 本列之前的存量行没有机器码，才退回旧文案匹配
+            continue
         pipeline.enqueue_stage(
             db, user_id=user_id, item_id=it.id, source_revision=it.source_revision,
             stage="extract", reset_attempt=True,

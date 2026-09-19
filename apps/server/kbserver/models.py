@@ -234,6 +234,9 @@ class Item(Base, TimestampMixin):
     bundle_revision: Mapped[int] = mapped_column(Integer, default=0)  # 最新已发布 Bundle
     pipeline_state: Mapped[str] = mapped_column(String(30), default="queued")
     state_detail: Mapped[str] = mapped_column(String(200), default="")
+    # 等待原因的机器码（login_required / deleted / blocked …）：界面动作与
+    # 定向重排队按它判定，不解析 state_detail 的中文文案（审查 C-14）
+    state_reason: Mapped[str] = mapped_column(String(32), default="")
     deleted_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
 
 

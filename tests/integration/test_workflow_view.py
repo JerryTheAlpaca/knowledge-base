@@ -31,7 +31,7 @@ def wc():
 
 
 def _seed_item(db, user_id: str, *, pipeline_state: str = "queued",
-               state_detail: str = "", source_revision: int = 1,
+               state_detail: str = "", state_reason: str = "", source_revision: int = 1,
                bundle_revision: int = 0, meta: dict | None = None) -> Item:
     capture = Capture(user_id=user_id, client_capture_id=utcnow().isoformat() + user_id[:6],
                       request_hash="0" * 64, input_json={})
@@ -39,6 +39,7 @@ def _seed_item(db, user_id: str, *, pipeline_state: str = "queued",
     db.flush()
     item = Item(user_id=user_id, capture_id=capture.id,
                 pipeline_state=pipeline_state, state_detail=state_detail,
+                state_reason=state_reason,
                 source_revision=source_revision, bundle_revision=bundle_revision)
     db.add(item)
     db.flush()
@@ -189,12 +190,56 @@ def test_needs_input_maps_to_supplement(wc, user_a, db):
     assert wf["primary_action"] == "supplement"
 
 
-def test_bilibili_needs_input_mentions_platform(wc, user_a, db):
+def test_bilibili_login_wall_offers_connect_platform(wc, user_a, db):
+    """登录墙按 state_reason 机器码判定：未托管 → 连接该平台（审查 C-14）。"""
     item = _seed_item(db, user_a["user_id"], pipeline_state="needs_input",
+                      state_reason="login_required",
                       meta={"platform": "bilibili", "media_kind": "video",
                             "missing_materials": ["main_content"]})
     wf = _workflow(db, wc, user_a["desktop"]["token"], item)
-    assert wf["steps"][0]["message"] == "需要连接 B 站才能读取这条内容"
+    step = wf["steps"][0]
+    assert step["message"] == "需要连接 B 站才能读取这条内容"
+    assert step["reason_code"] == "WAITING_PLATFORM_AUTH"
+    assert wf["primary_action"] == "connect_platform"
+    assert "connect_platform" in wf["available_actions"]
+    assert "supplement" in wf["available_actions"]  # 补充材料仍是兜底路径
+
+
+def test_hosted_session_offers_update_instead_of_connect(wc, user_a, db):
+    """已托管该平台登录态后仍撞墙：动作换成「更新登录信息」，不再让用户连接。"""
+    token = user_a["desktop"]["token"]
+    r = wc.put("/v1/platform-sessions/xiaohongshu",
+               json={"secret": "a1=abc123456; web_session=0a1b2c3d4e5f;"},
+               headers=auth(token))
+    assert r.status_code in (200, 201), r.text
+    item = _seed_item(db, user_a["user_id"], pipeline_state="needs_input",
+                      state_reason="login_required",
+                      meta={"platform": "xiaohongshu", "media_kind": "text"})
+    wf = _workflow(db, wc, token, item)
+    step = wf["steps"][0]
+    assert step["reason_code"] == "WAITING_SESSION_UPDATE"
+    assert step["message"].startswith("小红书登录态")
+    assert wf["primary_action"] == "update_session"
+
+
+def test_login_wall_on_platform_without_session_ui_needs_content(wc, user_a, db):
+    """知乎尚未开放设置页登录态入口：如实按「需要补充正文」呈现，不给死路动作。"""
+    item = _seed_item(db, user_a["user_id"], pipeline_state="needs_input",
+                      state_reason="login_required",
+                      meta={"platform": "zhihu", "media_kind": "text"})
+    wf = _workflow(db, wc, user_a["desktop"]["token"], item)
+    assert wf["steps"][0]["reason_code"] == "NEEDS_CONTENT"
+    assert wf["primary_action"] == "supplement"
+
+
+def test_non_login_needs_input_does_not_offer_connect(wc, user_a, db):
+    """同平台但不是登录原因（如内容已删除）：不出现连接/更新动作。"""
+    item = _seed_item(db, user_a["user_id"], pipeline_state="needs_input",
+                      state_reason="deleted",
+                      meta={"platform": "xiaohongshu", "media_kind": "text"})
+    wf = _workflow(db, wc, user_a["desktop"]["token"], item)
+    assert wf["steps"][0]["reason_code"] == "NEEDS_CONTENT"
+    assert "connect_platform" not in wf["available_actions"]
 
 
 # ---- 加工阶段：真实百分比（docs/17 §5.4）----

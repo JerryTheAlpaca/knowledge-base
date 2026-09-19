@@ -58,6 +58,15 @@ def test_guess_platform_new_sources():
     assert guess_platform("https://xhslink.com/abc123") == "xiaohongshu"
     # xhslink.cn：2026-09-17 真实分享链接确认的新短链域
     assert guess_platform("https://xhslink.cn/o/6ePcmGn1WVH") == "xiaohongshu"
+
+
+def test_weixin_host_only_sph_is_channels():
+    """weixin.qq.com 只有 /sph/ 是视频号；其他微信页面按普通网页提取（审查 C-17）。"""
+    assert guess_platform("https://weixin.qq.com/sph/AXMl5KcmD0") == "wechat_channels"
+    assert guess_platform("https://weixin.qq.com/cgi-bin/readtemplate?t=home") == "web"
+    assert guess_platform("https://developers.weixin.qq.com/doc/") == "web"
+    # 公众号路径不受这条规则影响
+    assert guess_platform("https://mp.weixin.qq.com/s/abc") == "wechat_mp"
     assert guess_platform("https://example.com/post") == "web"
 
 
@@ -242,9 +251,10 @@ XHS_LOGIN_URL = (
 )
 
 
-# 登录页 redirectPath 解码后的真实笔记地址（适配器实际用来重试的 URL）
+# 登录页 redirectPath 解码后的真实笔记地址（适配器实际用来重试的 URL）。
+# 平台给的是 http，适配器统一升级到 https 才允许带登录态（审查 C-02）
 XHS_DECODED_NOTE_URL = (
-    "http://www.xiaohongshu.com/discovery/item/6aaa31f80000000011036a1c"
+    "https://www.xiaohongshu.com/discovery/item/6aaa31f80000000011036a1c"
     "?xsec_token=CBs-1rVoPl58lRk41e3WLW8Y0FaezMsEJEoQrodqa13ak="
     "&xsec_source=app_share&author_share=1"
 )
@@ -257,6 +267,14 @@ def test_xhs_note_url_from_login():
     assert note == XHS_DECODED_NOTE_URL
     # 非登录页不解析
     assert _note_url_from_login("https://www.xiaohongshu.com/explore/1") is None
+    # redirectPath 指向外部主机时不采用：这个地址随后要带用户 Cookie（审查 C-02）
+    evil = ("https://www.xiaohongshu.com/login?redirectPath="
+            "http%3A%2F%2Fevil.example%2Fn%2F6aaa31f80000000011036a1c")
+    assert _note_url_from_login(evil) is None
+    # 相似后缀主机同样拒绝（精确一方域名，不是后缀包含）
+    lookalike = ("https://www.xiaohongshu.com/login?redirectPath="
+                 "https%3A%2F%2Fxiaohongshu.com.attacker.example%2Fexplore%2F1")
+    assert _note_url_from_login(lookalike) is None
 
 
 def test_load_initial_state_handles_js_map_literals():
@@ -474,3 +492,132 @@ def test_wechat_channels_api_failure_falls_back_to_shell(client, user_a, session
     assert m["source"]["coverage"] == "metadata_only"
     assert m["source"]["source_locator"]["content_id"] == "AXMl5KcmD0"
     assert any("原视频" in s for s in m["missing_materials"])
+
+
+# ---- 登录态外发白名单（审查 C-02）----
+
+def _recording_net(monkeypatch, results):
+    """替身 fetch_base.safe_fetch：记录每次调用的 URL 与 Cookie 头。"""
+    from kbserver.security.safe_fetch import FetchResult
+
+    seen: list[tuple[str, str | None]] = []
+
+    def fake(url, *, max_bytes=None, timeout=20.0, mime_prefixes=None, headers=None):
+        seen.append((url, (headers or {}).get("Cookie")))
+        status, content, final = results[len(seen) - 1]
+        return FetchResult(url=final or url, status_code=status,
+                           mime="text/html", content=content)
+
+    monkeypatch.setattr(fetch_base, "safe_fetch", fake)
+    return seen
+
+
+def test_xhs_attacker_redirect_path_never_gets_session(monkeypatch):
+    """登录页 redirectPath 指向站外主机时，Cookie 不跟过去，如实报登录墙。"""
+    from kbserver.extractors import xiaohongshu
+    from kbserver.extractors.fetch_base import PlatformError
+
+    login_url = ("https://www.xiaohongshu.com/login?redirectPath="
+                 "http%3A%2F%2Fattacker.example%2Fn%2F6aaa31f80000000011036a1c")
+    seen = _recording_net(monkeypatch, [
+        (200, "<html>请完成登录后继续</html>".encode("utf-8"), login_url),
+        (200, "<html>请完成登录后继续</html>".encode("utf-8"), login_url),
+    ])
+    with pytest.raises(PlatformError) as exc:
+        xiaohongshu.extract("https://www.xiaohongshu.com/explore/6aaa31f80000000011036a1c",
+                            cookies={"web_session": "secret-session-value"})
+    assert exc.value.status == "login_required"
+    assert [u for u, _ in seen] == [
+        "https://www.xiaohongshu.com/explore/6aaa31f80000000011036a1c", login_url]
+
+
+def test_zhihu_foreign_host_with_zhihu_path_gets_no_session(monkeypatch):
+    """路径像知乎回答、主机不是知乎的链接：不带登录态，只有一次匿名请求。"""
+    from kbserver.extractors import zhihu
+    from kbserver.extractors.fetch_base import PlatformError
+
+    seen = _recording_net(monkeypatch, [(403, b"<html>denied</html>", None)])
+    with pytest.raises(PlatformError) as exc:
+        zhihu.extract("https://attacker.example/question/1/answer/2",
+                      cookies={"dbslv": "secret-session-value"})
+    assert exc.value.status == "login_required"
+    assert seen == [("https://attacker.example/question/1/answer/2", None)]
+
+
+def test_fetch_page_sends_cookie_only_to_whitelist_and_https():
+    """fetch_page 出口闸门：精确一方域名 + https 才附 Cookie。"""
+    from kbserver.extractors.fetch_base import cookie_send_allowed
+
+    domains = ("www.zhihu.com", "zhuanlan.zhihu.com")
+    assert cookie_send_allowed("https://www.zhihu.com/question/1/answer/2", domains)
+    assert not cookie_send_allowed("http://www.zhihu.com/question/1", domains)  # 明文不外发
+    assert not cookie_send_allowed("https://attacker.example/question/1", domains)
+    assert not cookie_send_allowed("https://zhihu.com.attacker.example/x", domains)
+    assert not cookie_send_allowed("https://api.zhihu.com/x", domains)  # 精确域名，非子域通配
+
+
+# ---- 知乎成功路径（审查 C-03：缺 images/missing_materials 时归档必崩）----
+
+def _zhihu_answer_html(answer_id: str, *, paid: bool = False) -> bytes:
+    answer = {
+        "title": "知乎回答标题",
+        "content": "<p>这是回答的第一段正文。</p><p>第二段正文带<a href=\"#\">链接</a>。</p>",
+        "created": "2024-09-21T13:59:08.000Z",
+        "author": {"name": "回答作者"},
+    }
+    if paid:
+        answer["paid"] = True
+        answer["excerpt"] = "<p>盐选内容公开可见的开头。</p>"
+    state = {"initialState": {"entities": {"answers": {answer_id: answer}}}}
+    return ('<html><head><script id="js-initialData" type="text/json">'
+            + json.dumps(state, ensure_ascii=False)
+            + "</script></head><body><div>正文</div></body></html>").encode("utf-8")
+
+
+def test_zhihu_answer_success_archives_new_revision(client, user_a, session_factory,
+                                                    platform_net):
+    """知乎 200 且解析成功：worker 归档路径完整跑通，来源标记 full_text。"""
+    url = "https://www.zhihu.com/question/1/answer/2"
+    platform_net(FakeWebNet(pages={url: (200, "text/html", _zhihu_answer_html("2"))}))
+    c = _capture_url(client, user_a["phone"]["token"], "p1zhok", url=url)
+    assert c.status_code == 202
+    item_id = c.json()["item_id"]
+    _drain(session_factory)
+
+    it = _item(client, user_a["desktop"]["token"], item_id)
+    assert it["pipeline_state"] in ("extracted", "enriching", "ready", "waiting_key"), it
+    assert it["source_revision"] >= 2  # 新材料产生新来源版本
+    m = client.get(
+        f"/v1/items/{item_id}/bundles/{it['bundle_revision']}/manifest",
+        headers=auth(user_a["desktop"]["token"]),
+    ).json()
+    assert m["source"]["platform"] == "zhihu"
+    assert m["source"]["title"] == "知乎回答标题"
+    assert m["source"]["author"] == "回答作者"
+    assert m["source"]["coverage"] == "full_text"
+    reading = client.get(f"/v1/items/{item_id}/reading",
+                         headers=auth(user_a["desktop"]["token"])).json()
+    assert "第一段正文" in json.dumps(reading, ensure_ascii=False)
+
+
+def test_zhihu_paid_content_marks_partial_text(client, user_a, session_factory,
+                                               platform_net):
+    """盐选/付费：只存公开摘要，coverage=partial_text 且缺失清单如实说明（审查 C-08）。"""
+    url = "https://www.zhihu.com/question/1/answer/3"
+    platform_net(FakeWebNet(pages={url: (200, "text/html", _zhihu_answer_html("3", paid=True))}))
+    c = _capture_url(client, user_a["phone"]["token"], "p1zhpaid", url=url)
+    item_id = c.json()["item_id"]
+    _drain(session_factory)
+
+    it = _item(client, user_a["desktop"]["token"], item_id)
+    m = client.get(
+        f"/v1/items/{item_id}/bundles/{it['bundle_revision']}/manifest",
+        headers=auth(user_a["desktop"]["token"]),
+    ).json()
+    assert m["source"]["coverage"] == "partial_text"
+    assert any("付费" in s or "盐选" in s for s in m["missing_materials"])
+    reading = json.dumps(client.get(f"/v1/items/{item_id}/reading",
+                                    headers=auth(user_a["desktop"]["token"])).json(),
+                         ensure_ascii=False)
+    assert "公开可见的开头" in reading
+    assert "第二段正文" not in reading  # 付费正文不进条目

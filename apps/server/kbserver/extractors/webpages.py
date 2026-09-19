@@ -494,7 +494,8 @@ def extract(url: str | None, *, share_text: str | None = None,
     image_urls = _collect_image_urls(container, res.url, wechat=wechat)
     if include_images:
         images, missing = download_images(
-            image_urls, max_bytes_per_image=settings.max_image_bytes
+            image_urls, max_bytes_per_image=settings.max_image_bytes,
+            max_total_bytes=settings.images_total_bytes,
         )
         if len(image_urls) > len(images):
             warnings.append(

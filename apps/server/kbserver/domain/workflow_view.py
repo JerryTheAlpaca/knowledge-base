@@ -14,6 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..models import AsrRun, BundleRevision, Device, Item, Job, Receipt, SourceRevision
+from . import platform_sessions
 
 WORKFLOW_VERSION = "1.0"
 
@@ -50,6 +51,23 @@ def _asr_progress(run: AsrRun) -> int | None:
     return min(99, int(run.next_chunk_index or 0) * 100 // count)
 
 
+def _extract_attention(item: Item, platform: str, session_platforms: set[str]) -> dict:
+    """提取阶段的「需要你处理」。
+
+    登录墙按 Item.state_reason 机器码判定，不解析 state_detail 的中文文案
+    （审查 C-14）；只有设置页确实开放了该平台登录态入口时才给连接/更新动作。
+    """
+    spec = platform_sessions.SPECS.get(platform)
+    if (item.state_reason == "login_required" and spec is not None
+            and platform in platform_sessions.SESSION_UI_PLATFORMS):
+        if platform in session_platforms:
+            return _step("extract", "attention", "WAITING_SESSION_UPDATE",
+                         spec.session_update_hint.format(label=spec.label), label="提取")
+        return _step("extract", "attention", "WAITING_PLATFORM_AUTH",
+                     spec.auth_hint.format(label=spec.label), label="提取")
+    return _step("extract", "attention", "NEEDS_CONTENT", "需要补充正文或字幕", label="提取")
+
+
 def derive_item_workflow(
     *,
     item: Item,
@@ -60,6 +78,7 @@ def derive_item_workflow(
     has_device: bool,
     active_job: Job | None,
     auto_enrich: bool,
+    session_platforms: frozenset[str] = frozenset(),
 ) -> dict:
     """推导单个条目的 WorkflowView（输入均已按用户隔离批量取得）。"""
     ps = item.pipeline_state
@@ -76,11 +95,7 @@ def derive_item_workflow(
     elif ps == "extracting":
         extract = _step("extract", "running", "EXTRACTING", "正在读取网页内容", label="提取")
     elif ps == "needs_input":
-        if platform == "bilibili":
-            extract = _step("extract", "attention", "WAITING_PLATFORM_AUTH",
-                            "需要连接 B 站才能读取这条内容", label="提取")
-        else:
-            extract = _step("extract", "attention", "NEEDS_CONTENT", "需要补充正文或字幕", label="提取")
+        extract = _extract_attention(item, platform, session_platforms)
     elif ps == "failed" and not (run and run.state == "failed"):
         extract = _step("extract", "failed", "EXTRACT_FAILED", "这次提取没有成功，可以重试", label="提取")
     else:
@@ -207,6 +222,11 @@ def derive_item_workflow(
         "message": current["message"],
         "progress_percent": current["progress_percent"] if overall == "working" else None,
         "requires_user_action": overall == "attention",
+        # 是否真有任务在跑或排队：列表轮询按它决定 4s/30s（审查 C-06）。
+        # 不能用 overall_state=="working" 代替——「等待 Obsidian 下载」也是
+        # working，但那时服务器没有在干活，前台没必要每 4s 拉一次。
+        "has_active_job": bool(active_job
+                               and active_job.state in ("queued", "retry_wait", "running")),
         "primary_action": primary,
         "available_actions": available,
         "steps": steps,
@@ -218,8 +238,12 @@ def _primary_action(current: dict, extract: dict, organize: dict, delivery: dict
     """同一时间最多一个主按钮（docs/17 §2.2）：从当前阶段推导唯一动作。"""
     status = current["status"]
     if status == "attention":
-        if current["reason_code"] in ("NEEDS_CONTENT", "WAITING_PLATFORM_AUTH"):
+        if current["reason_code"] == "NEEDS_CONTENT":
             return "supplement"
+        if current["reason_code"] == "WAITING_PLATFORM_AUTH":
+            return "connect_platform"
+        if current["reason_code"] == "WAITING_SESSION_UPDATE":
+            return "update_session"
         if current["reason_code"] == "WAITING_MODEL":
             return "choose_model"
         if current["reason_code"] == "AUTO_ORGANIZE_OFF":
@@ -251,6 +275,11 @@ def _available_actions(item: Item, meta: dict, steps: dict[str, dict] | list,
         acts.append("retry_process")
     if extract["status"] == "attention":
         acts.append("supplement")
+        # 登录墙：先给连接/更新登录态，补充材料仍是兜底路径（docs/18 §7.7）
+        if extract["reason_code"] == "WAITING_PLATFORM_AUTH":
+            acts.append("connect_platform")
+        elif extract["reason_code"] == "WAITING_SESSION_UPDATE":
+            acts.append("update_session")
     if organize["reason_code"] == "WAITING_MODEL":
         acts.append("choose_model")
     if organize["reason_code"] in ("AUTO_ORGANIZE_OFF", "STALE_ORGANIZE", "ORGANIZE_FAILED"):
@@ -266,7 +295,7 @@ def collect_workflow_inputs(db: Session, user_id: str, items: list[Item]) -> dic
     out: dict = {
         "metas": {}, "runs": {}, "bundles": {}, "receipts": {},
         "jobs": {}, "has_device": False, "device_names": {},
-        "auto_enrich": True,
+        "auto_enrich": True, "session_platforms": frozenset(),
     }
     if not ids:
         return out
@@ -309,6 +338,8 @@ def collect_workflow_inputs(db: Session, user_id: str, items: list[Item]) -> dic
     )).all()
     out["has_device"] = bool(devices)
     out["device_names"] = {d.id: d.name for d in devices}
+    # 每用户一次查询：哪些平台已托管活跃登录态（决定「连接」还是「更新」动作）
+    out["session_platforms"] = platform_sessions.configured_platforms(db, user_id)
 
     from ..workers.publish import auto_enrich_enabled
     out["auto_enrich"] = auto_enrich_enabled(db, user_id)
@@ -334,6 +365,7 @@ def build_workflow_map(db: Session, user_id: str, items: list[Item],
             has_device=inputs["has_device"],
             active_job=inputs["jobs"].get(it.id),
             auto_enrich=inputs["auto_enrich"],
+            session_platforms=inputs.get("session_platforms", frozenset()),
         )
         if wf["delivery"]["device_id"]:
             wf["delivery"]["device_name"] = inputs["device_names"].get(wf["delivery"]["device_id"])

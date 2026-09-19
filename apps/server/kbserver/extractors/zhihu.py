@@ -24,15 +24,28 @@ from html.parser import HTMLParser
 from urllib.parse import urlparse
 
 from ..config import get_settings
-from .fetch_base import PlatformError, extract_first_url, fetch_page
+from ..domain.platform_sessions import SPECS
+from .fetch_base import (
+    PlatformError,
+    cookie_send_allowed,
+    download_images,
+    extract_first_url,
+    fetch_page,
+    status_error,
+)
 
-EXTRACTOR_VERSION = "zhihu_page-1.0.0"
+EXTRACTOR_VERSION = "zhihu_page-1.1.0"
 
 _ANSWER_RE = re.compile(r"/question/(\d{1,12})/answer/(\d{1,14})")
 _QUESTION_RE = re.compile(r"/question/(\d{1,12})(?:/|$)")
 _ARTICLE_RE = re.compile(r"/p/(\d{1,14})(?:/|$)")
 # JS 挑战壳：650 字节左右、只含 zh-zse-ck meta（P0 实测特征）
 _CHALLENGE_MARK = "zh-zse-ck"
+# 知乎登录/风控落点路径（结构化判定；正文里出现「请登录」不等于登录墙，审查 C-15）
+_LOGIN_PATHS = ("/account/login", "/account/unhuman", "/signin", "/login")
+
+# 登录态只发往的精确一方域名（docs/18 §7.2 规则 4，审查 C-02）
+_COOKIE_DOMAINS = SPECS["zhihu"].cookie_send_domains
 
 _INITIAL_DATA_RE = re.compile(
     r'<script[^>]+id="js-initialData"[^>]*>(.*?)</script>', re.S
@@ -76,15 +89,20 @@ class ZhihuExtraction:
     raw_mime: str
     segments: list[dict] = field(default_factory=list)
     image_urls: list[str] = field(default_factory=list)
+    images: list = field(default_factory=list)  # fetch_base.ImageDownload
+    missing_materials: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     login_state_used: bool = False
     question_only: bool = False
+    partial_body: bool = False  # 盐选/付费：只有公开可见部分
 
     @property
     def coverage(self) -> str:
-        if self.question_only:
+        # 与 webpages/xiaohongshu 同构的共同协议：images/missing_materials 必须存在，
+        # worker 归档路径无条件读它们（审查 C-03）
+        if self.question_only or not self.segments:
             return "metadata_only"
-        return "full_text" if self.segments else "metadata_only"
+        return "partial_text" if self.partial_body else "full_text"
 
     @property
     def media_kind(self) -> str:
@@ -248,17 +266,27 @@ def extract(url: str | None, *, share_text: str | None = None,
         raise PlatformError("unsupported_type", "不是可识别的知乎内容链接（支持回答、专栏文章与问题页）")
     content_type, content_id, question_id, answer_id = parsed
 
-    # 首跳匿名；登录限制且有会话 → 带会话重试一次
+    # 首跳匿名；登录限制且有会话 → 带会话重试一次。Cookie 挂在本次调用的
+    # 首跳上，所以先确认 target 的落点归属（审查 C-02）
     res = fetch_page(target, max_bytes=settings.html_download_limit)
     login_state_used = False
-    if _needs_login(res) and cookies:
-        res = fetch_page(target, cookies=cookies, max_bytes=settings.html_download_limit)
+    if (_needs_login(res) and cookies
+            and cookie_send_allowed(target, _COOKIE_DOMAINS)):
+        res = fetch_page(target, cookies=cookies, cookie_domains=_COOKIE_DOMAINS,
+                         max_bytes=settings.html_download_limit)
         login_state_used = True
     if _needs_login(res):
         raise PlatformError(
             "login_required",
             "知乎页面要求登录校验，自动读取暂不可用；链接已保存。"
             "请粘贴要保存的正文，或补充截图。",
+        )
+    if res.status_code >= 400:
+        raise status_error(
+            res.status_code,
+            deleted="该回答或文章已删除或不可见；如仍存在，可粘贴正文或补充截图。",
+            blocked="知乎暂时拒绝了这次读取（风控或限流）；链接已保存，可稍后点「重新提取」，"
+                    "也可以先粘贴正文或补充截图。",
         )
 
     body = res.content.decode("utf-8", errors="replace")
@@ -277,6 +305,7 @@ def extract(url: str | None, *, share_text: str | None = None,
     blocks: list[tuple[str, str]] = []
     image_urls: list[str] = []
     question_only = False
+    partial_body = False
     warnings: list[str] = []
 
     if ent is not None:
@@ -285,8 +314,10 @@ def extract(url: str | None, *, share_text: str | None = None,
         published_at = _ent_str(ent, "created", "updated", "published_at")
         content_html = _ent_str(ent, "content")
         if _ent_paid(ent):
-            # 盐选/付费：只保存公开可见部分（摘要），不猜测付费正文
+            # 盐选/付费：只保存公开可见部分（摘要），不猜测付费正文；
+            # coverage 必须是 partial_text，不能把摘要当全文（docs/18 §7.5 规则 4）
             content_html = _ent_str(ent, "excerpt") or content_html
+            partial_body = True
             warnings.append("该内容为盐选/付费内容，仅保存公开可见部分。")
         if content_html:
             blocks, image_urls = _parse_content_html(content_html)
@@ -332,6 +363,22 @@ def extract(url: str | None, *, share_text: str | None = None,
             "该内容没有公开可见的正文（可能已删除、折叠或需要购买）；请粘贴正文或补充截图。",
         )
 
+    images: list = []
+    missing: list[str] = []
+    if partial_body:
+        missing.append("付费/盐选正文未保存：只保留了页面公开可见的部分内容。")
+    if image_urls and include_images:
+        images, img_missing = download_images(
+            image_urls, referer="https://www.zhihu.com/",
+            max_bytes_per_image=settings.max_image_bytes,
+            max_total_bytes=settings.images_total_bytes,
+        )
+        missing.extend(img_missing)
+        if len(image_urls) > len(images):
+            warnings.append(f"已取得 {len(image_urls)} 张图片引用中的 {len(images)} 张；未取得的已列入缺失清单。")
+    elif image_urls:
+        warnings.append(f"内容含 {len(image_urls)} 张图片引用，本次未下载（默认不提取图片，需要时可在条目管理点「提取图片」重新提取）。")
+
     return ZhihuExtraction(
         content_type=content_type,
         content_id=content_id,
@@ -345,22 +392,34 @@ def extract(url: str | None, *, share_text: str | None = None,
         raw_mime=res.mime or "text/html",
         segments=segments,
         image_urls=image_urls,
+        images=images,
+        missing_materials=missing,
         warnings=warnings,
         login_state_used=login_state_used,
         question_only=question_only,
+        partial_body=partial_body,
     )
 
 
+def _is_login_landing(url: str) -> bool:
+    """最终落点是知乎的登录/人机校验页（只按 URL 结构判定，不猜正文文字）。"""
+    path = (urlparse(url).path or "").rstrip("/")
+    return any(path == p or path.startswith(p + "/") for p in _LOGIN_PATHS)
+
+
 def _needs_login(res: object) -> bool:
-    body = res.content.decode("utf-8", errors="replace")  # type: ignore[attr-defined]
+    """登录墙判定：状态码、zse 挑战壳与登录落点 URL。
+
+    不再用「请登录」+「查看全部」这类整页子串——正常回答里也会出现，
+    命中等于是把已解析到的正文丢掉（审查 C-15）。
+    """
     status = res.status_code  # type: ignore[attr-defined]
     if status in (401, 403):
         return True
-    if _is_challenge(status, body):
+    if _is_login_landing(res.url or ""):  # type: ignore[attr-defined]
         return True
-    if status == 200 and ("当前笔记暂时无法浏览" in body or "请登录" in body and "查看全部" in body):
-        return True
-    return False
+    body = res.content.decode("utf-8", errors="replace")  # type: ignore[attr-defined]
+    return _is_challenge(status, body)
 
 
 def _load_initial_data(body: str) -> dict | None:

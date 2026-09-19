@@ -28,19 +28,24 @@ from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 from ..config import get_settings
+from ..domain.platform_sessions import SPECS
 from . import fetch_base
 from .fetch_base import (
     PlatformError,
+    cookie_send_allowed,
     download_images,
     extract_first_url,
     fetch_page,
     page_slug,
+    status_error,
 )
 
-EXTRACTOR_VERSION = "wechat_channels_page-1.1.0"
+EXTRACTOR_VERSION = "wechat_channels_page-1.1.1"
 
 _CHANNEL_HOST = "channels.weixin.qq.com"
 _SHORT_HOST = "weixin.qq.com"
+# 登录态只发往这一个精确一方域名（docs/18 §7.2 规则 4，审查 C-02）
+_COOKIE_DOMAINS = SPECS["wechat_channels"].cookie_send_domains
 
 # sph 短 id：短链路径 /sph/{id}，或展开后 finder-preview/pages/sph?id={id}
 _SPH_PATH_RE = re.compile(r"/sph/([A-Za-z0-9]+)")
@@ -132,8 +137,8 @@ def extract(url: str | None, *, share_text: str | None = None,
     target = (url or "").strip() or extract_first_url(share_text)
     if not target:
         raise PlatformError("unsupported_type", "没有可处理的视频号链接")
-    host = (urlparse(target).hostname or "").lower()
-    if host != _SHORT_HOST and _CHANNEL_HOST not in host:
+    host = (urlparse(target).hostname or "").lower().rstrip(".")
+    if host not in (_SHORT_HOST, _CHANNEL_HOST):
         raise PlatformError(
             "unsupported_type",
             "不是视频号分享链接；请从微信「分享-复制链接」重新复制。",
@@ -142,19 +147,27 @@ def extract(url: str | None, *, share_text: str | None = None,
     # 首跳（分享短链在此展开）；登录/环境限制且有会话 → 带会话重试一次
     res = fetch_page(target, max_bytes=settings.html_download_limit)
     login_state_used = False
-    if _needs_retry(res) and cookies:
-        res = fetch_page(res.url if res.status_code == 200 else target,
-                         cookies=cookies, max_bytes=settings.html_download_limit)
+    retry_url = res.url if res.status_code == 200 else target
+    # 落点归属先确认：res.url 是重定向后的外部可控值，不能拿用户 Cookie 去访问
+    # 任意主机（审查 C-02）
+    if _needs_retry(res) and cookies and cookie_send_allowed(retry_url, _COOKIE_DOMAINS):
+        res = fetch_page(retry_url, cookies=cookies, cookie_domains=_COOKIE_DOMAINS,
+                         max_bytes=settings.html_download_limit)
         login_state_used = True
 
-    final_host = (urlparse(res.url).hostname or "").lower()
-    if _CHANNEL_HOST not in final_host:
+    final_host = (urlparse(res.url).hostname or "").lower().rstrip(".")
+    if final_host != _CHANNEL_HOST:
         raise PlatformError(
             "unsupported_type",
             "链接最终未落在视频号页面；请从微信「分享-复制链接」重新复制。",
         )
     if res.status_code >= 400:
-        raise PlatformError("deleted", "视频号内容已不可见；如仍存在，可补充文字摘录或截图。")
+        raise status_error(
+            res.status_code,
+            deleted="视频号内容已不可见；如仍存在，可补充文字摘录或截图。",
+            blocked="视频号暂时拒绝了这次读取（风控或限流）；链接已保存，可稍后点「重新提取」，"
+                    "也可以先补充文字摘录或截图。",
+        )
 
     body = res.content.decode("utf-8", errors="replace")
     sph_id = parse_sph_id(res.url) or parse_sph_id(target)
@@ -218,6 +231,7 @@ def extract(url: str | None, *, share_text: str | None = None,
         got, img_missing = download_images(
             [cover_url], referer=f"https://{_CHANNEL_HOST}/",
             max_bytes_per_image=settings.max_image_bytes,
+            max_total_bytes=settings.images_total_bytes,
         )
         images.extend(got)
         missing.extend(img_missing)

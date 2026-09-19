@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import time
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
@@ -49,6 +50,11 @@ URL_IN_TEXT = re.compile(r"https?://[^\s，,、）)】\]]+")
 # 单条最多下载的正文图片数；其余如实记入缺失清单
 MAX_CONTENT_IMAGES = 24
 
+# 单次提取的图片张数上限之外再加总量闸门（审查 C-09）：字节全部先攒在内存
+# 再交给 worker 落盘，24×20MB 的最坏组合在 2GB 机器上会挤垮同机服务；
+# 时长上限则保证 extract 阶段不会突破任务租约，避免同一 job 被重领二次执行。
+IMAGE_BUDGET_SECONDS = 90.0
+
 
 class PlatformError(Exception):
     """来源适配失败。status 是稳定机器码，worker 据此决定行为：
@@ -65,6 +71,20 @@ class PlatformError(Exception):
         super().__init__(message)
         self.status = status
         self.message = message
+
+
+def status_error(status_code: int, *, deleted: str, blocked: str,
+                 login: str = "页面要求登录后才能读取。") -> PlatformError:
+    """HTTP 状态码 → 失败语义（审查 C-07）。
+
+    风控/限流（429/5xx）不能终态成「内容已删除」：那会把可恢复的暂时拒绝
+    写成不可恢复的删除，用户被推去手抄正文（docs/18 §7.3 deleted/blocked 分离）。
+    """
+    if status_code in (401, 403):
+        return PlatformError("login_required", login)
+    if status_code in (404, 410):
+        return PlatformError("deleted", deleted)
+    return PlatformError("blocked", blocked)
 
 
 @dataclass
@@ -101,17 +121,32 @@ def page_slug(url: str) -> str:
     return hashlib.sha256(url.encode("utf-8")).hexdigest()[:10]
 
 
+def cookie_send_allowed(url: str, domains: tuple[str, ...]) -> bool:
+    """该 URL 能否携带用户托管登录态：精确命中本平台一方域名，且走 https。
+
+    重定向落点与登录页 redirectPath 都是站外可控值，只按主机归属判定
+    （docs/18 §7.2 规则 4，审查 C-02）。Cookie 绝不走明文 http。
+    """
+    parsed = urlparse(url)
+    if parsed.scheme != "https":
+        return False
+    host = (parsed.hostname or "").lower().rstrip(".")
+    return bool(host) and host in {d.lower() for d in domains}
+
+
 def fetch_page(url: str, *, cookies: dict[str, str] | None = None,
+               cookie_domains: tuple[str, ...] = (),
                referer: str | None = None, max_bytes: int,
                timeout: float = 20.0):
-    """受限抓取一个页面；可选携带用户托管 Cookie（仅首跳同主机有效）。
+    """受限抓取一个页面；可选携带用户托管 Cookie（只发往 cookie_domains 白名单）。
 
-    safe_fetch 对跨主机重定向自动剥离 Cookie/Authorization，登录态不会
-    跟随跳转外泄（docs/18 §7.2 规则 4）。网络失败统一转译为
-    PlatformError：NETWORK_ERROR → network_error（可重试），其余 → blocked。
+    跨主机重定向由 safe_fetch 剥离 Cookie/Authorization；首跳本身也要过
+    白名单，因此带会话重试的调用方必须先确认落点归属（审查 C-02）。
+    网络失败统一转译为 PlatformError：NETWORK_ERROR → network_error（可重试），
+    其余 → blocked。
     """
     headers = browser_headers(referer)
-    if cookies:
+    if cookies and cookie_send_allowed(url, cookie_domains):
         headers["Cookie"] = "; ".join(f"{k}={v}" for k, v in cookies.items())
     try:
         return safe_fetch(url, max_bytes=max_bytes, timeout=timeout, headers=headers)
@@ -144,27 +179,42 @@ def post_json(url: str, *, body: dict, referer: str | None = None,
 
 
 def download_images(urls: list[str], *, referer: str | None = None,
-                    max_bytes_per_image: int) -> tuple[list["ImageDownload"], list[str]]:
+                    max_bytes_per_image: int, max_total_bytes: int,
+                    budget_seconds: float = IMAGE_BUDGET_SECONDS,
+                    ) -> tuple[list["ImageDownload"], list[str]]:
     """限量下载图片，返回 ([ImageDownload...], [缺失说明...])。
 
-    单图超限/失败如实写入缺失清单，不中断其余图片。
+    单图超限/失败、以及累计张数/字节/时长超预算时如实写入缺失清单，
+    不中断其余图片，也不静默突破预算（审查 C-09：字节先全部攒在内存，
+    最坏 24×20MB 会挤垮 2GB 机器，长时间下载还会突破任务租约）。
     """
     got: list[ImageDownload] = []
     missing: list[str] = []
+    started = time.monotonic()
+    total_bytes = 0
+    stopped_by = ""
     for u in urls:
-        if len(got) >= MAX_CONTENT_IMAGES:
-            missing.append(f"正文图片未下载（超出单条 {MAX_CONTENT_IMAGES} 张上限）：{u}")
+        if not stopped_by:
+            if budget_seconds and time.monotonic() - started >= budget_seconds:
+                stopped_by = f"超出单条图片下载 {budget_seconds:.0f} 秒预算"
+            elif len(got) >= MAX_CONTENT_IMAGES:
+                stopped_by = f"超出单条 {MAX_CONTENT_IMAGES} 张上限"
+            elif total_bytes >= max_total_bytes:
+                stopped_by = f"超出单条图片总量 {max_total_bytes // (1024 * 1024)} MiB 上限"
+        if stopped_by:
+            missing.append(f"正文图片未下载（{stopped_by}）：{u}")
             continue
         headers = browser_headers(referer)
         try:
-            res = safe_fetch(u, max_bytes=max_bytes_per_image, timeout=20.0,
-                             mime_prefixes=("image/",), headers=headers)
+            res = safe_fetch(u, max_bytes=min(max_bytes_per_image, max_total_bytes - total_bytes),
+                             timeout=20.0, mime_prefixes=("image/",), headers=headers)
         except SafeFetchError as exc:
             missing.append(f"正文图片未取得：{u}（{exc}）")
             continue
         if res.status_code >= 400:
             missing.append(f"正文图片未取得：{u}（HTTP {res.status_code}）")
             continue
+        total_bytes += len(res.content)
         got.append(ImageDownload(url=u, mime=res.mime,
                                  ext=IMG_EXT.get(res.mime, "img"), data=res.content))
     return got, missing

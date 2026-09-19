@@ -242,8 +242,9 @@ def test_requeue_only_login_reason_items(client, user_a, user_b, session_factory
     _drain(session_factory)
     from kbserver.models import Item
 
+    # 登录原因等待：按机器码归类（审查 C-14），不再改中文文案
     it2 = db.get(Item, item2)
-    it2.state_detail = "页面要求登录后才能读取，请连接知乎后重试。"
+    it2.state_reason = "login_required"
     db.commit()
     # 3) 他人（用户 B）的登录等待条目：不被 A 的登录态重排
     c3 = _capture_url(client, user_b["desktop"]["token"], "ps3zhihu",
@@ -251,14 +252,14 @@ def test_requeue_only_login_reason_items(client, user_a, user_b, session_factory
     item3 = c3.json()["item_id"]
     _drain(session_factory)
     it3 = db.get(Item, item3)
-    it3.state_detail = "页面要求登录后才能读取，请连接知乎后重试。"
+    it3.state_reason = "login_required"
     db.commit()
     # 4) 公众号条目：不同平台，不因知乎登录态重排
     c4 = _capture_url(client, token, "ps4mp", "https://mp.weixin.qq.com/s/abc")
     item4 = c4.json()["item_id"]
     _drain(session_factory)
     it4 = db.get(Item, item4)
-    it4.state_detail = "页面要求登录后才能读取，请连接平台后重试。"
+    it4.state_reason = "login_required"   # 同原因但不同平台，仍不该被知乎重排
     db.commit()
 
     r = _put_session(client, token, "zhihu", ZHIHU_COOKIE)

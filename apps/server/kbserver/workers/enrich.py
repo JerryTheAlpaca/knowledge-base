@@ -76,7 +76,7 @@ class EnrichPlan:
     capabilities: dict
     operation_id: str
     # 优化文本配置（语义分段与听错词修正）；未设置时兜底填充整理配置，
-    # 思考挡位仍按优化档设置独立生效
+    # 思考档位仍按优化档设置独立生效
     optimize_profile_id: str | None = None
     optimize_endpoint: str | None = None
     optimize_model: str | None = None
@@ -94,9 +94,9 @@ class EnrichPlan:
 
 
 def _caps_with_thinking(caps: dict | None, level: str) -> dict:
-    """按用途思考挡位覆盖能力表：off=显式关思考；low/high/max=开思考并带强度。
+    """按用途思考档位覆盖能力表：off=显式关思考；low/high/max=开思考并带强度。
 
-    挡位存在设置里（digest_thinking/optimize_thinking），同一份模型配置因此可以
+    档位存在设置里（digest_thinking/optimize_thinking），同一份模型配置因此可以
     整理开思考、优化关思考，无需重复配置两遍。
     """
     out = dict(caps or {})
@@ -255,7 +255,8 @@ def prepare(session_factory, job_id: str, lease_token: str) -> EnrichPlan | None
         input_kind = (capture.input_json or {}).get("input_kind") if capture else None
         segments, paragraphs = _load_segments(db, item)
         if not segments:
-            _waiting(db, job, item, "needs_input", "缺少可加工的来源片段；请补充材料。", "item_needs_input")
+            _waiting(db, job, item, "needs_input", "缺少可加工的来源片段；请补充材料。",
+                     "item_needs_input", reason="empty_segments")
             db.commit()
             return None
 
@@ -266,7 +267,7 @@ def prepare(session_factory, job_id: str, lease_token: str) -> EnrichPlan | None
         conversation_mode = input_kind in {"conversation", "workflow"} or meta.get("platform") in {
             "ai_conversation", "agent_workflow"
         }
-        # 思考挡位按用途在设置里调（同一份配置可同时用于整理与优化）；
+        # 思考档位按用途在设置里调（同一份配置可同时用于整理与优化）；
         # 整理默认 high（DeepSeek 服务端默认一致），优化默认关闭
         caps = _caps_with_thinking(
             profile.capabilities_json, user_settings.get("digest_thinking", "high"))
@@ -313,7 +314,7 @@ def prepare(session_factory, job_id: str, lease_token: str) -> EnrichPlan | None
             capabilities=caps,
             operation_id=op.id,
             # 优化档：用设置里显式选择的配置；未设置时兜底用整理配置（同一配置），
-            # 但思考挡位仍按优化档设置独立生效
+            # 但思考档位仍按优化档设置独立生效
             optimize_profile_id=opt_profile.id if opt_profile else profile.id,
             optimize_endpoint=opt_profile.endpoint if opt_profile else profile.endpoint,
             optimize_model=opt_profile.model if opt_profile else profile.model,
@@ -372,9 +373,11 @@ def _align_subtitle_refs(segments: list[dict],
     return refs
 
 
-def _waiting(db: Session, job: Job, item: Item, state: str, detail: str, event_type: str) -> None:
+def _waiting(db: Session, job: Job, item: Item, state: str, detail: str, event_type: str,
+             reason: str = "") -> None:
     item.pipeline_state = state
     item.state_detail = detail[:200]
+    item.state_reason = reason
     job.state = "succeeded"
     pipeline.emit_event(db, item.user_id, item_id=item.id, bundle_revision=item.bundle_revision,
                         event_type=event_type)
@@ -424,7 +427,7 @@ def call_provider(session_factory, plan: EnrichPlan) -> dict:
         capabilities=plan.capabilities,
     )
     # 优化 provider：优化档未设置时用整理配置的同一份端点/密钥构造
-    # （思考挡位仍按优化档设置独立生效）；凭据不可用时回退整理配置——
+    # （思考档位仍按优化档设置独立生效）；凭据不可用时回退整理配置——
     # 分段是尽力而为的加工步骤，不应让它阻塞整条整理
     optimize_provider: OpenAICompatibleProvider | None = None
     if plan.optimize_endpoint:
@@ -481,7 +484,7 @@ def call_provider(session_factory, plan: EnrichPlan) -> dict:
     # 语义分段 + 听错词修正先于提炼：修正后的文本让提炼摘录与正文一致
     # （用户关闭「AI 语义分段」时跳过，阅读层保持本地规则分段）。
     # 分段/纠错属于「优化文本」：走优化档 provider（未设置优化档时兜底用整理配置，
-    # 思考挡位独立、通常关闭——更便宜更快）；凭据不可用时回退整理 provider。
+    # 思考档位独立、通常关闭——更便宜更快）；凭据不可用时回退整理 provider。
     text_plan = (
         _semantic_paragraph_starts(
             plan, lambda prompt, **kw: _call(prompt, via=optimize_provider, **kw))

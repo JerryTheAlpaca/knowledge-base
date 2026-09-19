@@ -24,18 +24,21 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlparse, urlunparse
 
 from ..config import get_settings
+from ..domain.platform_sessions import SPECS
 from .fetch_base import (
     PlatformError,
+    cookie_send_allowed,
     download_images,
     extract_first_url,
     fetch_page,
     page_slug,
+    status_error,
 )
 
-EXTRACTOR_VERSION = "xiaohongshu_note-1.1.1"
+EXTRACTOR_VERSION = "xiaohongshu_note-1.1.2"
 
 _NOTE_ID_RE = re.compile(r"/(?:explore|discovery/item|user/profile)/([0-9a-f]{16,32})(?:[/?#]|$)")
 _USER_NOTE_RE = re.compile(r"/user/profile/([0-9a-f]{16,32})/([0-9a-f]{16,32})")
@@ -44,9 +47,12 @@ _LOGIN_MARKS = ("当前笔记暂时无法浏览", "请完成登录后继续", "�
 # 防盗链：图片请求带页面 Referer（不带登录态）
 _IMG_HOST_MARK = "xiaohongshu.com"
 
-_INITIAL_STATE_RE = re.compile(
-    r"window\.__INITIAL_STATE__\s*=\s*(\{.*?\})(?:</script>|\Z)", re.S
-)
+# 登录态可发往、且笔记页可能落在的精确一方域名（docs/18 §7.2 规则 4）
+_COOKIE_DOMAINS = SPECS["xiaohongshu"].cookie_send_domains
+
+# 只定位赋值起点，对象边界交给 _balanced_span_end 配平：尾随 `;` 或后续脚本
+# 都会让「右括号紧跟 </script>」式正则整体失配（审查 C-16）
+_STATE_ASSIGN_RE = re.compile(r"window\.__INITIAL_STATE__\s*=\s*\{")
 
 
 def parse_note_id(url: str | None) -> str | None:
@@ -80,10 +86,16 @@ class XiaohongshuExtraction:
     missing_materials: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     login_state_used: bool = False
+    # 正文来源：note（结构化字段）| detail_desc（正文容器）| og_description | title_only
+    body_source: str = "note"
 
     @property
     def coverage(self) -> str:
-        return "full_text" if self.segments else "metadata_only"
+        # 只有命中笔记正文（结构化字段或正文容器）才算全文：标题、og 摘要
+        # 冒充 full_text 会让 AI 拿标题加工、Obsidian 显示「已取得全文」（审查 C-08）
+        if self.body_source in ("note", "detail_desc"):
+            return "full_text" if self.segments else "metadata_only"
+        return "partial_text" if self.body_source == "og_description" else "metadata_only"
 
     @property
     def extractor_name(self) -> str:
@@ -123,8 +135,11 @@ def extract(url: str | None, *, share_text: str | None = None,
     res = fetch_page(target, max_bytes=settings.html_download_limit)
     login_state_used = False
     note_url = _note_url_from_login(res.url) or res.url
-    if _needs_login(res) and cookies:
-        res = fetch_page(note_url, cookies=cookies, max_bytes=settings.html_download_limit)
+    # 带登录态前确认落点归属：redirectPath 与重定向落点都是外部可控值，
+    # 不能因为「看起来是笔记链接」就把用户 Cookie 发往任意主机（审查 C-02）
+    if _needs_login(res) and cookies and cookie_send_allowed(note_url, _COOKIE_DOMAINS):
+        res = fetch_page(note_url, cookies=cookies, cookie_domains=_COOKIE_DOMAINS,
+                         max_bytes=settings.html_download_limit)
         login_state_used = True
         note_url = _note_url_from_login(res.url) or res.url
     if _needs_login(res):
@@ -134,7 +149,12 @@ def extract(url: str | None, *, share_text: str | None = None,
             "请粘贴笔记正文，或上传笔记截图。",
         )
     if res.status_code >= 400:
-        raise PlatformError("deleted", "笔记已删除或不可见；如仍存在，可粘贴正文或补充截图。")
+        raise status_error(
+            res.status_code,
+            deleted="笔记已删除或不可见；如仍存在，可粘贴正文或补充截图。",
+            blocked="小红书暂时拒绝了这次读取（风控或限流）；链接已保存，可稍后点「重新提取」，"
+                    "也可以先粘贴正文或补充截图。",
+        )
 
     body = res.content.decode("utf-8", errors="replace")
     note_id = parse_note_id(note_url) or parse_note_id(target) or ""
@@ -143,6 +163,7 @@ def extract(url: str | None, *, share_text: str | None = None,
     note = _dig_note(state, note_id)
     title = author = published_at = None
     desc = ""
+    body_source = "title_only"
     image_urls: list[str] = []
     media_kind, content_scope = "text", "image_post"
 
@@ -168,22 +189,27 @@ def extract(url: str | None, *, share_text: str | None = None,
                     u = _s(item, "url") or _s(item, "url_default")
                     if u and u not in image_urls:
                         image_urls.append(u)
-    elif "noteList" in body or "noteDetailMap" in body:
-        # 有初始状态脚本但结构与预期不符：如实报告而不是猜测
-        raise PlatformError(
-            "structure_changed",
-            "小红书页面可访问但已知结构均未命中，无法提取笔记内容；请粘贴正文或补充截图。",
-        )
+        if desc:
+            body_source = "note"
 
-    # __INITIAL_STATE__ 缺失时退回已知的正文容器（og 元数据 + 明确容器）
-    if not desc and note is None:
-        desc, title, author = _container_fallback(body, title, author)
-        if not desc and not title:
+    # 结构未命中或没有正文时先跑容器兜底，都不命中才终态：旧实现只要 body
+    # 含 noteDetailMap 就抛 structure_changed，页面小抖动即终态且兜底永不执行
+    # （审查 C-16）
+    if not desc:
+        desc, title, author, fell_back = _container_fallback(body, title, author)
+        if desc:
+            body_source = fell_back
+    if not desc and not title:
+        if state is not None or "noteDetailMap" in body or "noteList" in body:
             raise PlatformError(
-                "empty_content",
-                "未能从笔记页提取到内容：页面可能由脚本渲染或需要登录。"
-                "可粘贴正文保存，或补充截图。",
+                "structure_changed",
+                "小红书页面可访问但已知结构与正文容器均未命中，无法提取笔记内容；请粘贴正文或补充截图。",
             )
+        raise PlatformError(
+            "empty_content",
+            "未能从笔记页提取到内容：页面可能由脚本渲染或需要登录。"
+            "可粘贴正文保存，或补充截图。",
+        )
 
     text = "\n".join(part for part in (title or "", desc) if part)
     segments = [
@@ -212,6 +238,7 @@ def extract(url: str | None, *, share_text: str | None = None,
         images, img_missing = download_images(
             image_urls, referer="https://www.xiaohongshu.com/",
             max_bytes_per_image=settings.max_image_bytes,
+            max_total_bytes=settings.images_total_bytes,
         )
         missing.extend(img_missing)
         if len(image_urls) > len(images):
@@ -219,6 +246,8 @@ def extract(url: str | None, *, share_text: str | None = None,
     elif image_urls:
         warnings.append(f"笔记含 {len(image_urls)} 张图片引用，本次未下载（默认不提取图片，需要时可在条目管理点「提取图片」重新提取）。")
     warnings.append("已留存原始 HTML 响应；页面脚本、样式与动态内容未归档，不构成完整镜像。")
+    if body_source == "title_only":
+        missing.insert(0, "笔记正文未取得：当前文字只是标题，页面正文容器与已知结构均未命中。")
     if not note_id:
         missing.insert(0, "未能从链接解析出稳定笔记 ID，归档路径使用确定性散列标识。")
 
@@ -237,6 +266,7 @@ def extract(url: str | None, *, share_text: str | None = None,
         missing_materials=missing,
         warnings=warnings,
         login_state_used=login_state_used,
+        body_source=body_source,
     )
 
 
@@ -248,13 +278,23 @@ def _is_login_page(url: str) -> bool:
 
 def _note_url_from_login(url: str) -> str | None:
     """登录页 URL 的 redirectPath 参数携带真实笔记地址（已含一层编码，
-    parse_qs 解码后 xsec_token 的尾随 = 完整保留）。"""
+    parse_qs 解码后 xsec_token 的尾随 = 完整保留）。
+
+    只接受本平台一方域名并统一升级到 https：这个地址随后可能带着用户托管
+    Cookie 去请求，既不能指向任意主机，也不能明文传输（审查 C-02）。
+    """
     if not _is_login_page(url):
         return None
     raw = (parse_qs(urlparse(url).query).get("redirectPath") or [None])[0]
-    if raw and raw.startswith("http"):
-        return raw
-    return None
+    if not raw or not raw.startswith("http"):
+        return None
+    parsed = urlparse(raw)
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if host not in _COOKIE_DOMAINS:
+        return None
+    if parsed.scheme != "https":
+        return urlunparse(parsed._replace(scheme="https"))
+    return raw
 
 
 def _needs_login(res: object) -> bool:
@@ -269,10 +309,11 @@ def _needs_login(res: object) -> bool:
 
 
 def _load_initial_state(body: str) -> dict | None:
-    m = _INITIAL_STATE_RE.search(body)
+    m = _STATE_ASSIGN_RE.search(body)
     if not m:
         return None
-    raw = m.group(1)
+    # 从赋值起点按括号配平取对象：不再要求右括号紧跟 </script>（审查 C-16）
+    raw = body[m.end() - 1:_balanced_span_end(body, m.end())]
     # __INITIAL_STATE__ 常含 undefined 字面量，JSON 不认
     raw = raw.replace("undefined", "null")
     # 2026-09-17 生产实测：字段值还可能是 JS 构造调用（noteDetailMap 等
@@ -395,16 +436,24 @@ def _ts_of(note: dict) -> str | None:
 
 
 def _container_fallback(body: str, title: str | None, author: str | None):
-    """无 __INITIAL_STATE__ 时读 og 元数据与已知正文容器。"""
+    """无 __INITIAL_STATE__ 时读 og 元数据与已知正文容器。
+
+    返回 (正文, 标题, 作者, 正文来源)；来源用于 coverage 判定，标题与 og
+    摘要不算全文（审查 C-08）。
+    """
     og_title = re.search(r'<meta[^>]+property="og:title"[^>]+content="([^"]{1,300})"', body)
     og_desc = re.search(r'<meta[^>]+property="og:description"[^>]+content="([^"]{1,2000})"', body)
     m = re.search(r'<div[^>]+id="detail-desc"[^>]*>(.*?)</div>', body, re.S)
     desc = ""
+    source = "title_only"
     if m:
         desc = re.sub(r"<[^>]+>", " ", m.group(1))
         desc = re.sub(r"\s+", " ", desc).strip()
+        if desc:
+            source = "detail_desc"
     if not desc and og_desc:
         desc = og_desc.group(1).strip()
+        source = "og_description" if desc else "title_only"
     if title is None and og_title:
         title = og_title.group(1).strip()
-    return desc, title, author
+    return desc, title, author, source

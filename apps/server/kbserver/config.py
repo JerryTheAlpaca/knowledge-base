@@ -28,6 +28,9 @@ class Settings:
     max_capture_total_bytes: int = int(os.environ.get("MAX_CAPTURE_TOTAL_BYTES", str(100 * 1024 * 1024)))
     html_download_limit: int = int(os.environ.get("HTML_DOWNLOAD_LIMIT", str(5 * 1024 * 1024)))
     subtitle_download_limit: int = int(os.environ.get("SUBTITLE_DOWNLOAD_LIMIT", str(10 * 1024 * 1024)))
+    # 单条正文图片总量（审查 C-09）：张数上限之外的字节闸门。图片字节先全部
+    # 攒在内存再落盘，2 核 2GB 机器上最坏 24×20MB 会挤垮同机服务。
+    images_total_bytes: int = int(os.environ.get("IMAGES_TOTAL_BYTES", str(40 * 1024 * 1024)))
     # 音频主体独立额度（docs/13 §7.1）：普通附件限额不放宽
     max_audio_upload_bytes: int = int(os.environ.get("MAX_AUDIO_UPLOAD_BYTES", str(8 * 1024 * 1024 * 1024)))
     audio_upload_chunk_bytes: int = int(os.environ.get("AUDIO_UPLOAD_CHUNK_BYTES", str(16 * 1024 * 1024)))
