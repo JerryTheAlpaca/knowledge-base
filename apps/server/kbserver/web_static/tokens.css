@@ -71,11 +71,12 @@
   --t-slow: 200ms;    /* 位移/显隐 */
 
   /* —— 字体 —— */
-  /* 展示字（宋体）。iOS 的 serif 关键字对中文给的是苹方，必须写到具体家族名；
-     Songti SC 在 iPhone 上要连"宋体-简""STSong"一起列，缺一个就可能整栈落空。
-     系统里没有宋体字库时（iPhone 未下载中文字体、部分安卓 ROM）只能落到 sans，
-     说明页的正文另有 landing-serif.woff2 兜底，见 landing.css。 */
-  --font-display: "Source Han Serif SC", "思源宋体", "Source Han Serif CN",
+  /* 展示字（宋体）。首选"金蔷薇宋体"：思源宋体的内嵌子集，由 web_static/fonts.css 的
+     @font-face 提供，覆盖全站固定文案，任何设备都是同一款字（fonts.css 由
+     scripts/build_display_font.py 生成，别手改）。
+     动态内容用到子集之外的字才回落下面这些系统宋体；iOS 的 serif 关键字对中文给的是
+     苹方，所以家族名得逐个写全（Songti SC / 宋体-简 / STSong 少写一个就可能整栈落空）。 */
+  --font-display: "金蔷薇宋体", "Source Han Serif SC", "思源宋体", "Source Han Serif CN",
                   "Noto Serif SC", "Noto Serif CJK SC", "Source Han Serif",
                   "Songti SC", "宋体-简", "STSong", "SimSun", "STZhongsong", "宋体", serif;
   --font-body: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;

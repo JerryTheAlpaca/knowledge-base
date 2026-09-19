@@ -84,7 +84,12 @@ def create_app() -> FastAPI:
 
     # Web 前端模块（docs/17 §11 ES modules）：/webstatic/js/app.js 等；
     # 路由在前、挂载在后，/inbox、/tokens.css 等显式路由优先
+    import mimetypes
+
     from fastapi.staticfiles import StaticFiles
+
+    # 内嵌展示字：mimetypes 表里没有 .woff2，不补会按 application/octet-stream 发出去
+    mimetypes.add_type("font/woff2", ".woff2")
 
     from .api.routes_web import WEB_STATIC_DIR
 
