@@ -161,7 +161,8 @@ def cmd_reparagraph(args) -> None:
                 skipped += 1
                 continue
             manifest = json.loads(store.read_object(bundle.manifest_key).decode("utf-8"))
-            entries = manifest.get("files") or []
+            # 按路径归并：旧格式清单同路径有两份时取最新登记，别拿旧正文回填段落
+            entries = list(pipeline.manifest_files_by_path(manifest).values())
             has_readable = any(f.get("relative_path") == "readable.md" for f in entries)
             if has_readable and not args.refresh:
                 skipped += 1  # 已有段落版

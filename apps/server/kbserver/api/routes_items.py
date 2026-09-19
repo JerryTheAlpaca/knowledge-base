@@ -382,22 +382,12 @@ def _bundle_manifest(db: Session, item: Item, revision: int) -> dict | None:
         return None
 
 
-def _manifest_files_by_path(manifest: dict) -> dict[str, dict]:
-    """清单按路径归并：同路径重复登记时以最后一条（最新登记）为准。
-
-    写侧已改为按路径覆盖，但线上仍存有旧格式清单——同路径两份、旧版在前，
-    命中靠前的话转写正文会被上一次提取的旧版顶掉，这里让历史条目自愈。
-    """
-    return {f["relative_path"]: f for f in manifest.get("files", [])
-            if isinstance(f, dict) and f.get("relative_path")}
-
-
 def _read_bundle_text(db: Session, item: Item, revision: int, relative_path: str) -> str | None:
     """按清单读取 Bundle 内某个已登记文件的文本；只接受清单里存在的路径。"""
     manifest = _bundle_manifest(db, item, revision)
     if manifest is None:
         return None
-    entry = _manifest_files_by_path(manifest).get(relative_path)
+    entry = pipeline.manifest_files_by_path(manifest).get(relative_path)
     if entry is None:
         return None
     f = repo.get_file(db, item.user_id, entry["file_id"], item_id=item.id)
@@ -462,7 +452,7 @@ def _source_material(db: Session, item: Item) -> SourceMaterialOut | None:
         return None
     normalized = _read_bundle_text(db, item, revision, "normalized.md")
     readable = _read_bundle_text(db, item, revision, "readable.md")
-    by_path = _manifest_files_by_path(manifest)
+    by_path = pipeline.manifest_files_by_path(manifest)
     entry = by_path.get("normalized.md")
     too_large = bool(entry and entry.get("bytes", 0) > MAX_INLINE_READ_BYTES)
     return SourceMaterialOut(

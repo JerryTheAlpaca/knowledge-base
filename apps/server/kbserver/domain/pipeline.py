@@ -193,6 +193,16 @@ def latest_files_per_path(rows: list[StoredFile]) -> list[StoredFile]:
     return list(latest.values())
 
 
+def manifest_files_by_path(manifest: dict) -> dict[str, dict]:
+    """清单条目按路径归并：同路径重复登记时以最后一条（最新登记）为准。
+
+    写侧已统一按路径覆盖，但线上仍存有旧格式清单——同路径两份、旧版在前，
+    命中靠前的话转写正文会被上一次提取的旧版顶掉，读侧一律按这里的最新登记。
+    """
+    return {f["relative_path"]: f for f in manifest.get("files", [])
+            if isinstance(f, dict) and f.get("relative_path")}
+
+
 def publish_bundle(
     db: Session,
     store: ObjectStore,
