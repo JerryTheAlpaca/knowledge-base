@@ -120,7 +120,7 @@ class OpenAICompatibleProvider:
         if self.thinking_mode is not None:
             # DeepSeek 思考模式开关（api-docs.deepseek.com/guides/thinking_mode）：
             # {"thinking": {"type": "enabled"|"disabled"}}，默认 enabled/effort=high；
-            # 开思考且配置了挡位时再带 reasoning_effort（low/high/max）
+            # 开思考且配置了档位时再带 reasoning_effort（low/high/max）
             body["thinking"] = {"type": "enabled" if self.thinking_mode else "disabled"}
             if self.thinking_mode and self.thinking_effort:
                 body["reasoning_effort"] = self.thinking_effort

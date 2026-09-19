@@ -716,7 +716,7 @@ def test_profile(profile_id: str, principal=Depends(require_scope("profiles:mana
 
 # ---- 设置 ----
 
-# 思考挡位（DeepSeek reasoning_effort）：off=关闭思考；low/high/max=开思考并指定强度
+# 思考档位（DeepSeek reasoning_effort）：off=关闭思考；low/high/max=开思考并指定强度
 ALLOWED_THINKING_LEVELS = {"off", "low", "high", "max"}
 
 
@@ -725,7 +725,7 @@ class SettingsOut(BaseModel):
     default_profile_id: str | None
     # 优化档使用的配置；未设置时 enrich 兜底用整理配置（分段是尽力而为的步骤，不阻塞整理）
     optimize_profile_id: str | None = None
-    # 思考挡位按用途设置（同一份配置可两处复用）：整理默认 high，优化默认关闭
+    # 思考档位按用途设置（同一份配置可两处复用）：整理默认 high，优化默认关闭
     digest_thinking: str = "high"
     optimize_thinking: str = "off"
     auto_enrich: bool = True
@@ -781,7 +781,7 @@ def update_settings(body: SettingsUpdate, principal=Depends(require_scope("profi
         value = getattr(body, field)
         if value is not None:
             if value not in ALLOWED_THINKING_LEVELS:
-                raise ApiError("SCHEMA_INVALID", f"思考挡位仅支持 {sorted(ALLOWED_THINKING_LEVELS)}")
+                raise ApiError("SCHEMA_INVALID", f"思考档位仅支持 {sorted(ALLOWED_THINKING_LEVELS)}")
             s[field] = value
     if body.auto_enrich is not None:
         ai = dict(s.get("ai") or {}) if isinstance(s.get("ai"), dict) else {}

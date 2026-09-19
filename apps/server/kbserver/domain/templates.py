@@ -217,7 +217,7 @@ def build_chunk_user_prompt(
             f"evidence_ids 必须来自本段输入片段；每条最多 {MAX_EVIDENCE_IDS} 个。",
             *EXCERPT_RULES,
             "insights 的 kind 固定为 ai_suggestion。",
-            "每类最多 5 条；本段没有就给空数组。",
+            _limits_rule() + "本段没有的类别给空数组。",
         ],
     }
     return json.dumps(payload, ensure_ascii=False)
