@@ -10,6 +10,7 @@
   旧版本保留，按用户「AI 自动加工」开关决定是否重新提炼。
 - DELETE /v1/items/{id}：标记 tombstone，取消后续发布。
 - POST /v1/items/{id}/reprocess：基于已有材料重新排队，不默认重新抓站点。
+- POST /v1/items/{id}/source-download：登记用户在网页下载了当前版本原文。
 - POST /v1/items/{id}/refetch：显式重新提取来源；限频，保留旧版本，内容无变化不新增版本。
 """
 from __future__ import annotations
@@ -795,6 +796,25 @@ def edit_source_text(item_id: str, body: SourceTextInput,
     db.commit()
     db.refresh(item)
     return _item_out(item, source2, db)
+
+
+@router.post("/{item_id}/source-download", response_model=ItemOut)
+def mark_source_download(item_id: str,
+                         principal=Depends(require_scope("items:edit")),
+                         db: Session = Depends(get_db)) -> ItemOut:
+    """登记「用户在网页下载了原文」：与插件回执一样进入终态（docs/17 §5.2）。
+
+    记下当时的 Bundle 版本：原文随后更新时旧的下载不算新版本已完成。
+    """
+    user = principal.user
+    item = _require_item(db, user.id, item_id)
+    if not item.bundle_revision:
+        raise ApiError("SCHEMA_INVALID", "该条目还没有可下载的原文", status_code=422)
+    if item.original_download_bundle != item.bundle_revision:
+        item.original_download_bundle = item.bundle_revision
+        db.commit()
+        db.refresh(item)
+    return _item_out(item, _latest_source(db, item), db)
 
 
 @router.post("/{item_id}/reprocess", response_model=ItemOut, status_code=202)

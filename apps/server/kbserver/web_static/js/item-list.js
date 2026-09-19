@@ -1,7 +1,7 @@
 // item-list.js — 首页条目流（docs/17 §4.5、§6.4）
 //
-// 单一时间流：全部条目按 created_at 倒序（最新在最上），「需要你处理」的条目右上角标圆点。
-// 状态文案与进度全部来自服务端 WorkflowView；本模块不做业务状态推断。
+// 三组归类：需要你处理 / 待发布 / 已完成，组内按 created_at 倒序（最新在最上）。
+// 归哪一组只看服务端 workflow.overall_state，本模块不推断业务状态。
 // 刷新按 item_id 做 DOM diff，只更新变化行，保护滚动位置（§6.4）。
 
 import { $, api, esc, fmtShort, showErr, isModalOpen } from "./api.js";
@@ -106,9 +106,7 @@ function rowJSON(it) {
 function rowInner(it) {
   const display = it.title || (it.original_url || "").replace(/^https?:\/\/(www\.)?/, "").slice(0, 60) || "文字 / 文件采集";
   const aux = listRowAux(it.workflow, it);
-  const attention = it.workflow && it.workflow.overall_state === "attention";
-  return (attention ? '<span class="item-dot" title="需要你处理"></span>' : "") +
-    '<div class="item-main"><span class="item-title">' + esc(display) + "</span>" +
+  return '<div class="item-main"><span class="item-title">' + esc(display) + "</span>" +
     '<span class="item-time num" title="' + esc(new Date(it.created_at).toLocaleString("zh-CN", { hour12: false })) + '">' +
     esc(fmtShort(it.created_at)) + "</span></div>" +
     '<div class="item-aux">' + aux + "</div>";
@@ -155,6 +153,43 @@ function searchQuery() {
   return searchOpen ? $("searchBox").value.trim() : "";
 }
 
+// —— 三组归类：只映射服务端 overall_state，空组不占位 ——
+const GROUPS = [
+  { key: "attention", group: "groupAttention", list: "listAttention", count: "countAttention" },
+  { key: "pending", group: "groupPending", list: "listPending", count: "countPending" },
+  { key: "done", group: "groupDone", list: "listDone", count: "countDone" },
+];
+const DONE_SHOWN = 3;  // 已完成默认只露最新三条，其余折叠
+
+function bucketOf(it) {
+  const st = (it.workflow || {}).overall_state;
+  if (st === "attention" || st === "failed") return "attention";
+  if (st === "published") return "done";
+  return "pending";
+}
+
+function updateDoneToggle(total) {
+  const list = $("listDone");
+  const btn = $("doneToggle");
+  const extra = total - DONE_SHOWN;
+  if (extra <= 0) list.classList.add("collapsed");  // 没什么可展开的就回到折叠位
+  btn.hidden = extra <= 0;
+  if (!btn.hidden) {
+    btn.textContent = list.classList.contains("collapsed") ? "展开其余 " + extra + " 条" : "收起";
+  }
+}
+
+function renderGroups(items) {
+  const buckets = { attention: [], pending: [], done: [] };
+  for (const it of items) buckets[bucketOf(it)].push(it);
+  for (const g of GROUPS) {
+    fillList($(g.list), buckets[g.key]);
+    $(g.group).hidden = buckets[g.key].length === 0;
+    $(g.count).textContent = buckets[g.key].length ? String(buckets[g.key].length) : "";
+  }
+  updateDoneToggle(buckets.done.length);
+}
+
 function updateEmptyState(items) {
   const searching = !!searchQuery();
   const empty = items.length === 0;
@@ -192,15 +227,15 @@ export async function refreshItems() {
     const q = searchQuery();
     let items;
     if (q) {
-      $("itemList").hidden = true;
+      // 搜索时三组让位给结果列表；组的 DOM 原样留着，退出搜索直接复用
+      for (const g of GROUPS) $(g.group).hidden = true;
       items = await fetchSearch(q);
       fillList($("searchList"), items);
       $("groupSearch").hidden = items.length === 0;
     } else {
       $("groupSearch").hidden = true;
-      $("itemList").hidden = false;
       items = await fetchAll();
-      fillList($("itemList"), items);
+      renderGroups(items);
     }
     // 「有任务在跑」由服务端给（workflow.has_active_job），前端不猜状态
     workingActive = items.some((it) => it.workflow && it.workflow.has_active_job);
@@ -336,6 +371,10 @@ export function initItemList() {
     if (searchOpen) $("searchRow").style.width = searchSlotMax() + "px";
   });
   $("searchToggle").addEventListener("click", () => setSearchOpen(!searchOpen));
+  $("doneToggle").addEventListener("click", () => {
+    $("listDone").classList.toggle("collapsed");
+    updateDoneToggle($("listDone").children.length);
+  });
   $("searchBox").addEventListener("input", () => {
     clearTimeout(searchTimer);
     searchTimer = setTimeout(refreshItems, 300);

@@ -392,7 +392,10 @@ async function openRecords() {
     if (t.asr.chunk_count) line("转写进度", t.asr.done_chunks + "/" + t.asr.chunk_count);
     if (t.asr.last_error) line("转写错误", t.asr.last_error);
   }
-  if (t.delivery) line("发布回执", t.delivery.receipt_received ? "已收到" : "尚未收到");
+  if (t.delivery) {
+    line("发布回执", t.delivery.receipt_received ? "已收到" : "尚未收到");
+    if (t.delivery.source_download_bundle) line("网页下载原文", "整理结果版本 " + t.delivery.source_download_bundle);
+  }
   openModalHTML(
     '<div class="modal-title">处理记录</div>' +
     '<div class="modal-body"><div class="record-summary">' + summary + "</div>" +
@@ -492,6 +495,13 @@ async function downloadSourceMd() {
   a.href = url; a.download = name;
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+  toast("已下载原文文件", { type: "ok" });
+  // 下载走的是本地 Blob，服务器只能靠这次登记把条目判为已下载（docs/17 §5.2）
+  try {
+    await api("/v1/items/" + encodeURIComponent(it.item_id) + "/source-download", { method: "POST" });
+    await refreshDetailStatus();
+  } catch (e) { showErr(e); }
+  refreshList();
 }
 
 // ---------- 补充内容（唯一主按钮 supplement 的弹窗形态） ----------

@@ -4,7 +4,7 @@
 // - steps：节点集合按条目动态（提取/语音识别/整理/发布）；「语音识别」节点只在
 //   会用到 ASR 的条目出现（录音、网页音轨、B 站无字幕转写），其余条目三节点直达整理
 //   每步的 label 由服务端生成，前端直接渲染
-// - delivery.status：not_ready | waiting_obsidian | connect_obsidian | published
+// - delivery.status：not_ready | waiting_obsidian | connect_obsidian | published | downloaded
 // - reason_code 是机器码，本模块绝不显示它，只显示 message。
 
 import { esc } from "./api.js";
@@ -61,8 +61,8 @@ export function stepperHTML(wf) {
       '<span class="slabel">' + esc(s.label || STAGE_LABELS[s.id] || s.id) + "</span>" +
       '<span class="sline" aria-hidden="true"></span></div>';
   });
-  // 已发布：最后一个节点完成时一次缩放淡入（§6.2，不做持续庆祝动画）
-  if (wf && wf.delivery && wf.delivery.status === "published") {
+  // 已完成（回执到达或原文下载走）：最后一个节点完成时一次缩放淡入（§6.2）
+  if (wf && wf.overall_state === "published") {
     html = html.replace(/class="step done"(?!.*class="step done")/, 'class="step done published-flash"');
   }
   html += "</div>";

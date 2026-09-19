@@ -97,7 +97,7 @@ def test_receipt_lights_publish(wc, user_a, db):
                    manifest_sha256=bundle.manifest_sha256))
     wf = _workflow(db, wc, user_a["desktop"]["token"], item)
     assert wf["steps"][2]["status"] == "completed"
-    assert wf["steps"][2]["message"] == "已发布到 Obsidian"
+    assert wf["steps"][2]["message"] == "已下载到 Obsidian"
     assert wf["delivery"]["status"] == "published"
     assert wf["delivery"]["received_at"]
     assert wf["overall_state"] == "published"
@@ -138,6 +138,60 @@ def test_receipt_not_shared_across_users(wc, user_a, user_b, db):
     assert wf["steps"][2]["status"] == "waiting"
 
 
+# ---- 已下载的两种来路（docs/17 §5.2）----
+
+def test_auto_enrich_off_skips_organize_step(wc, user_a, db):
+    """关了 AI 自动整理：整理节点按已通过显示，条目落在待发布而不是需要你处理。"""
+    from kbserver.models import User
+
+    db.get(User, user_a["user_id"]).settings_json = {"ai": {"auto_enrich": False}}
+    item = _seed_item(db, user_a["user_id"], pipeline_state="extracted", bundle_revision=1)
+    _add_bundle(db, item, 1, processing_state="original_only")
+    wf = _workflow(db, wc, user_a["desktop"]["token"], item)
+
+    org = wf["steps"][1]
+    assert org["status"] == "skipped" and org["reason_code"] == "AUTO_ORGANIZE_OFF"
+    assert wf["overall_state"] == "working"          # 首页分组：待发布
+    assert wf["requires_user_action"] is False
+    assert wf["primary_action"] is None
+    assert "start_organize" in wf["available_actions"]  # 手动整理仍在「更多操作」里
+
+
+def test_web_source_download_completes_item(wc, user_a, db):
+    """网页下载原文登记后即为终态，文案说「原文已下载」，不写已发布。"""
+    from kbserver.models import User
+
+    db.get(User, user_a["user_id"]).settings_json = {"ai": {"auto_enrich": False}}
+    item = _seed_item(db, user_a["user_id"], pipeline_state="extracted", bundle_revision=1)
+    _add_bundle(db, item, 1, processing_state="original_only")
+    token = user_a["desktop"]["token"]
+    db.commit()
+    assert _get_item(wc, token, item.id)["workflow"]["overall_state"] == "working"
+
+    r = wc.post(f"/v1/items/{item.id}/source-download", headers=auth(token))
+    assert r.status_code == 200
+    wf = _get_item(wc, token, item.id)["workflow"]
+    assert wf["steps"][2]["status"] == "completed"
+    assert wf["steps"][2]["message"] == "原文已下载"
+    assert wf["delivery"]["status"] == "downloaded"
+    assert wf["overall_state"] == "published"        # 首页分组：已完成
+
+
+def test_source_download_does_not_cover_newer_bundle(wc, user_a, db):
+    """下载之后原文又更新出新版本：旧版本的下载不算新版本已经拿到手。"""
+    item = _seed_item(db, user_a["user_id"], pipeline_state="ready", bundle_revision=1)
+    _add_bundle(db, item, 1, processing_state="ready")
+    token = user_a["desktop"]["token"]
+    db.commit()
+    assert wc.post(f"/v1/items/{item.id}/source-download", headers=auth(token)).status_code == 200
+
+    _add_bundle(db, item, 2, processing_state="ready")
+    item.bundle_revision = 2
+    wf = _workflow(db, wc, token, item)
+    assert wf["steps"][2]["status"] == "waiting"
+    assert wf["delivery"]["status"] == "waiting_obsidian"
+
+
 def test_no_device_asks_to_connect_obsidian(db):
     """没有桌面设备且无回执：发布步骤提示连接 Obsidian（推导单测；设备令牌随撤销失效，
     故直接验证推导函数，与线上 Web 通道读取同一视图）。"""
@@ -149,6 +203,7 @@ def test_no_device_asks_to_connect_obsidian(db):
         source_revision = 1
         bundle_revision = 1
         pipeline_state = "ready"
+        original_download_bundle = 0
 
     class _Bundle:
         revision = 1

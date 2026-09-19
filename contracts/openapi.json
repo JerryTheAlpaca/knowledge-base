@@ -1100,6 +1100,49 @@
         }
       }
     },
+    "/v1/items/{item_id}/source-download": {
+      "post": {
+        "tags": [
+          "items"
+        ],
+        "summary": "Mark Source Download",
+        "description": "登记「用户在网页下载了原文」：与插件回执一样进入终态（docs/17 §5.2）。\n\n记下当时的 Bundle 版本：原文随后更新时旧的下载不算新版本已完成。",
+        "operationId": "mark_source_download_v1_items__item_id__source_download_post",
+        "parameters": [
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Item Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ItemOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/items/{item_id}/reprocess": {
       "post": {
         "tags": [

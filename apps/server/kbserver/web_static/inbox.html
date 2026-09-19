@@ -427,7 +427,21 @@
             </button>
           </div>
           <div class="drawer-scroll">
-            <ul class="items" id="itemList"></ul>
+            <!-- 首页三组：需要你处理 / 待发布 / 已完成（docs/17 §4.5）。
+                 组内按时间倒序，空组不占位；已完成默认只露三条。 -->
+            <div class="itemgroup" id="groupAttention" hidden>
+              <h3 class="grouptitle">需要你处理 <span class="small num" id="countAttention"></span></h3>
+              <ul class="items" id="listAttention"></ul>
+            </div>
+            <div class="itemgroup" id="groupPending" hidden>
+              <h3 class="grouptitle">待发布 <span class="small num" id="countPending"></span></h3>
+              <ul class="items" id="listPending"></ul>
+            </div>
+            <div class="itemgroup" id="groupDone" hidden>
+              <h3 class="grouptitle">已完成 <span class="small num" id="countDone"></span></h3>
+              <ul class="items collapsed" id="listDone"></ul>
+              <button class="ghost small grouptoggle" id="doneToggle" hidden></button>
+            </div>
             <div id="groupSearch" class="itemgroup" hidden>
               <h3 class="grouptitle">搜索结果 <span class="small num" id="searchCount"></span></h3>
               <ul class="items" id="searchList"></ul>

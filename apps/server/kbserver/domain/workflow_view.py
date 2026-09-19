@@ -5,7 +5,8 @@ organize（整理）→ publish（发布）。节点数量按条目动态：非 
 - 列表页与详情页共用同一转换；前端只渲染本视图，不再手写状态映射。
 - reason_code 是稳定机器码，前端不得直接显示；message 是按 reason_code
   生成的用户文案，不透传 state_detail、异常字符串或第三方响应。
-- 发布步骤只认当前最新 Bundle 的有效 Receipt；云端生成 Bundle 不等于已发布。
+- 发布步骤认两种完成：当前最新 Bundle 的有效 Receipt（已落到 Obsidian），
+  或用户在网页把当前版本的原文下载走。云端生成 Bundle 本身不等于已完成。
 - 所有查询按条目集合批量执行，禁止逐条目查询（docs/17 §10.4）。
 """
 from __future__ import annotations
@@ -148,8 +149,10 @@ def derive_item_workflow(
     elif ps == "enriching":
         organize = _step("organize", "running", "ORGANIZING", "正在整理内容", label="整理")
     elif ps == "extracted" and not auto_enrich:
-        organize = _step("organize", "attention", "AUTO_ORGANIZE_OFF",
-                         "原文已就绪，自动整理已关闭", label="整理")
+        # 自动整理已关闭：整理这一步对用户不存在，节点按已通过显示（—），
+        # 不把「关了 AI 整理」当成需要处理，条目直接落到待发布
+        organize = _step("organize", "skipped", "AUTO_ORGANIZE_OFF", "自动整理已关闭，直接取用原文",
+                         label="整理")
     elif ps == "extracted":
         organize = _step("organize", "pending", "WAITING_FOR_ORGANIZE", "等待整理开始", label="整理")
     elif bundle_stale:
@@ -178,10 +181,16 @@ def derive_item_workflow(
         delivery = {"status": "not_ready", "bundle_revision": None,
                     "received_at": None, "device_id": None, "device_name": None}
     elif receipt_valid:
-        publish = _step("publish", "completed", "PUBLISHED", "已发布到 Obsidian", 100, label="发布")
+        # 文案只说发生了什么：材料到了本机就是「已下载」，不写「已发布」
+        publish = _step("publish", "completed", "PUBLISHED", "已下载到 Obsidian", 100, label="发布")
         delivery = {"status": "published", "bundle_revision": bundle.revision,
                     "received_at": receipt.received_at.isoformat(),
                     "device_id": receipt.device_id, "device_name": None}
+    elif bundle.revision == item.original_download_bundle:
+        # 用户在网页把原文下载走了：同样算拿到手，但没有经过 Obsidian
+        publish = _step("publish", "completed", "SOURCE_DOWNLOADED", "原文已下载", 100, label="发布")
+        delivery = {"status": "downloaded", "bundle_revision": bundle.revision,
+                    "received_at": None, "device_id": None, "device_name": None}
     elif has_device:
         publish = _step("publish", "waiting", "WAITING_OBSIDIAN", "等待 Obsidian 下载", label="发布")
         delivery = {"status": "waiting_obsidian", "bundle_revision": bundle.revision,
@@ -194,9 +203,9 @@ def derive_item_workflow(
     steps = [extract] + ([process] if process is not None else []) + [organize, publish]
 
     # ---- 聚合状态（docs/17 §5.2）----
-    order = {"pending": 0, "skipped": 0, "completed": 0, "waiting": 1,
-             "running": 1, "attention": 2, "failed": 3}
-    overall = "published"
+    # skipped 与 pending 都不算需要处理，也不把条目停在原地：聚合按
+    # failed > attention > working > published 取第一个命中的档位。
+    overall = "working"
     if any(s["status"] == "failed" for s in steps):
         overall = "failed"
     elif any(s["status"] == "attention" for s in steps):
@@ -205,8 +214,6 @@ def derive_item_workflow(
         overall = "working"
     elif publish["status"] == "completed":
         overall = "published"
-    else:
-        overall = "working"
 
     current = next((s for s in steps if s["status"] in ("running", "waiting", "attention", "failed")),
                    publish)
@@ -246,8 +253,6 @@ def _primary_action(current: dict, extract: dict, organize: dict, delivery: dict
             return "update_session"
         if current["reason_code"] == "WAITING_MODEL":
             return "choose_model"
-        if current["reason_code"] == "AUTO_ORGANIZE_OFF":
-            return "start_organize"
         if current["reason_code"] == "STALE_ORGANIZE":
             return "start_organize"
         if current["reason_code"] == "CONNECT_OBSIDIAN":
@@ -374,11 +379,12 @@ def build_workflow_map(db: Session, user_id: str, items: list[Item],
 
 
 # ---- 首页三视图的候选状态集合（SQL 近似 + Python 精筛）----
-# attention：需要用户处理（含 extracted=自动整理已关闭；ready 候选交给精筛剔除已发布）
+# 提取未成功（needs_input / failed / waiting_key）不可能已经是终态，所以不进 published。
+# 自动整理关闭的条目停在 extracted：既可能是待发布，也可能已经下载走，两组候选都带上。
 VIEW_CANDIDATE_STATES = {
     "attention": ("needs_input", "waiting_key", "failed", "extracted", "ready"),
-    "working": ("queued", "extracting", "enriching", "ready"),
-    "published": ("ready",),
+    "working": ("queued", "extracting", "enriching", "extracted", "ready"),
+    "published": ("enriching", "extracted", "ready"),
 }
 VIEW_OVERALL = {
     "attention": {"attention", "failed"},
@@ -420,6 +426,7 @@ def build_diagnostics(db: Session, user_id: str, item: Item,
             "bundle_revision": wf["delivery"]["bundle_revision"],
             "receipt_received": wf["delivery"]["status"] == "published",
             "received_at": wf["delivery"]["received_at"],
+            "source_download_bundle": item.original_download_bundle or None,
         },
     }
     if job is not None:

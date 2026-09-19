@@ -237,6 +237,9 @@ class Item(Base, TimestampMixin):
     # 等待原因的机器码（login_required / deleted / blocked …）：界面动作与
     # 定向重排队按它判定，不解析 state_detail 的中文文案（审查 C-14）
     state_reason: Mapped[str] = mapped_column(String(32), default="")
+    # 用户在网页下载原文文件时的 Bundle 版本；0 表示没有下载过。
+    # 与 Obsidian 回执同样算作已经拿到手（docs/17 §5.2 的终态）。
+    original_download_bundle: Mapped[int] = mapped_column(Integer, default=0)
     deleted_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
 
 
