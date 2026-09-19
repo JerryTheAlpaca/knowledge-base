@@ -32,6 +32,28 @@ class HostSample:
     idle: float                  # 累计 idle jiffies（不含 iowait；iowait/steal 算忙碌）
     total: float                 # 累计总 jiffies
     mem_available_mib: float | None
+    own_usec: float | None = None  # 本容器累计 CPU 用量（µs）；读不到为 None
+
+
+def _own_cpu_usec() -> float | None:
+    """本容器自己用掉的 CPU（累计 µs）。
+
+    cgroup v2 在 /sys/fs/cgroup 根上就是本容器的私有视图；v1 回退到 cpuacct。
+    """
+    try:
+        with open("/sys/fs/cgroup/cpu.stat", "r", encoding="ascii") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) == 2 and parts[0] == "usage_usec":
+                    return float(parts[1])
+    except (OSError, ValueError):
+        pass
+    try:
+        with open("/sys/fs/cgroup/cpu,cpuacct/cpuacct.usage", "r", encoding="ascii") as f:
+            return float(f.read()) / 1000.0  # v1 是 ns
+    except (OSError, ValueError):
+        return None
+    return None
 
 
 def sample_host(now: float | None = None) -> HostSample | None:
@@ -58,7 +80,8 @@ def sample_host(now: float | None = None) -> HostSample | None:
                 if line.startswith("MemAvailable:"):
                     mem_mib = float(line.split()[1]) / 1024.0
                     break
-        return HostSample(t=t, idle=idle, total=total, mem_available_mib=mem_mib)
+        return HostSample(t=t, idle=idle, total=total, mem_available_mib=mem_mib,
+                          own_usec=_own_cpu_usec())
     except (OSError, ValueError):
         return None
 
@@ -100,6 +123,39 @@ class AsrGate:
             return None
         return max(0.0, min(1.0, 1.0 - idle / total))
 
+    def _span(self) -> float:
+        if len(self._samples) < 2:
+            return 0.0
+        return self._samples[-1].t - self._samples[0].t
+
+    def _own_ratio(self, span_s: float) -> float:
+        """本容器这段时间占掉的总算力比例（1.0 = 吃满整机）。
+
+        读不到自己的 cgroup 时返回 0，即什么都不扣、退回旧的整机口径：宁可保守
+        也不要在无法自证「忙的不是我」的时候抢跑。
+        """
+        if span_s <= 0 or len(self._samples) < 2:
+            return 0.0
+        first, last = self._samples[0], self._samples[-1]
+        if first.own_usec is None or last.own_usec is None:
+            return 0.0
+        cores = os.cpu_count() or 1
+        used = (last.own_usec - first.own_usec) / 1_000_000.0
+        return max(0.0, min(1.0, used / (span_s * cores)))
+
+    def _foreign_busy_ratio(self, window_s: float) -> float | None:
+        """除本容器以外的整机忙碌比例。
+
+        原先门禁拿整机忙碌比例直接和阈值比，而 Worker 容器自己有 0.75 核配额
+        （2 核机上正好是 37.5%）：ASR 只要跑过一段，60 秒滑动平均就被自己顶过
+        开工线，等于自己把下一段的许可破坏掉。自己的用量已经由 cgroup 配额硬
+        封顶，门禁真正该问的是「邻居有多忙」。
+        """
+        ratio = self._busy_ratio(window_s)
+        if ratio is None:
+            return None
+        return max(0.0, ratio - self._own_ratio(self._span()))
+
     # ---- 启动判定 ----
 
     def can_start(self, settings, *, normal_busy: bool) -> tuple[bool, str]:
@@ -114,7 +170,7 @@ class AsrGate:
             if os.environ.get(IGNORE_GATE_ENV) == "1":
                 return True, "gate_ignored"  # 显式跳过空闲门禁（仅限本地开发）
             return False, "metrics_unavailable"
-        ratio = self._busy_ratio(settings.asr_idle_hold_seconds)
+        ratio = self._foreign_busy_ratio(settings.asr_idle_hold_seconds)
         if ratio is None:
             return False, "idle_window_filling"  # 空闲窗口尚未积累满
         if ratio >= settings.asr_idle_cpu_start:
@@ -158,14 +214,15 @@ class AsrGate:
     def check_running(self, settings) -> bool:
         """运行中约每 5s 调用一次；返回 False 表示应终止当前段让出资源。
 
-        CPU 忙碌阈值包含 ASR 自身占用，因此停止阈值高于启动阈值，
-        避免自己在无其他负载时触发自己（docs/11 §6.2）。
+        看的是邻居负载（见 _foreign_busy_ratio）：本容器的用量由 cpus 配额封顶，
+        不再参与「是不是该让」的判断，否则 ASR 自己就能把自己掐停。停止阈值仍
+        高于启动阈值，留出差回（docs/11 §6.2）。
         """
         sample = self._take_sample()
         if sample is None:
             return True  # 指标暂时读不到：不打断，保持保守
         abort = False
-        ratio = self._busy_ratio(20.0)
+        ratio = self._foreign_busy_ratio(20.0)
         if ratio is not None and ratio > settings.asr_idle_cpu_stop:
             self._cpu_busy_streak += 1
             if self._cpu_busy_streak >= 4:  # ~20s 连续忙碌

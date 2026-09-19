@@ -52,9 +52,11 @@ class Settings:
     asr_max_input_bytes: int = int(os.environ.get("ASR_MAX_INPUT_BYTES", str(8 * 1024 * 1024 * 1024)))
     asr_tmp_ttl_hours: int = int(os.environ.get("ASR_TMP_TTL_HOURS", "24"))
     asr_chunk_timeout_seconds: int = int(os.environ.get("ASR_CHUNK_TIMEOUT_SECONDS", "900"))
-    # 服务器空闲准入（docs/11 §6.2）：整机 CPU 忙碌比例阈值与可用内存（MiB）
-    asr_idle_cpu_start: float = float(os.environ.get("ASR_IDLE_CPU_START", "0.25"))
-    asr_idle_cpu_stop: float = float(os.environ.get("ASR_IDLE_CPU_STOP", "0.70"))
+    # 服务器空闲准入（docs/11 §6.2）：CPU 阈值看的是「除本容器以外」的整机忙碌
+    # 比例（本容器用量由 compose 的 cpus 配额封顶，不计进来，否则 ASR 自己把
+    # 自己下一段的许可破坏掉）；内存是宿主机 MemAvailable（MiB）
+    asr_idle_cpu_start: float = float(os.environ.get("ASR_IDLE_CPU_START", "0.60"))
+    asr_idle_cpu_stop: float = float(os.environ.get("ASR_IDLE_CPU_STOP", "0.80"))
     asr_idle_hold_seconds: int = int(os.environ.get("ASR_IDLE_HOLD_SECONDS", "60"))
     asr_busy_cooldown_seconds: int = int(os.environ.get("ASR_BUSY_COOLDOWN_SECONDS", "120"))
     asr_idle_min_available_mib: int = int(os.environ.get("ASR_IDLE_MIN_AVAILABLE_MIB", "800"))
@@ -172,8 +174,8 @@ def get_settings() -> Settings:
         audio_upload_session_ttl_hours=int(os.environ.get("AUDIO_UPLOAD_SESSION_TTL_HOURS", "24")),
         asr_tmp_ttl_hours=int(os.environ.get("ASR_TMP_TTL_HOURS", "24")),
         asr_chunk_timeout_seconds=int(os.environ.get("ASR_CHUNK_TIMEOUT_SECONDS", "900")),
-        asr_idle_cpu_start=float(os.environ.get("ASR_IDLE_CPU_START", "0.25")),
-        asr_idle_cpu_stop=float(os.environ.get("ASR_IDLE_CPU_STOP", "0.70")),
+        asr_idle_cpu_start=float(os.environ.get("ASR_IDLE_CPU_START", "0.60")),
+        asr_idle_cpu_stop=float(os.environ.get("ASR_IDLE_CPU_STOP", "0.80")),
         asr_idle_hold_seconds=int(os.environ.get("ASR_IDLE_HOLD_SECONDS", "60")),
         asr_busy_cooldown_seconds=int(os.environ.get("ASR_BUSY_COOLDOWN_SECONDS", "120")),
         asr_idle_min_available_mib=int(os.environ.get("ASR_IDLE_MIN_AVAILABLE_MIB", "800")),

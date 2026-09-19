@@ -75,8 +75,12 @@ services:
       ASR_ENGINE_BIN: /opt/sherpa/bin/sherpa-onnx-offline
       # 引擎为动态链接（sherpa-onnx v1.13.7 linux-x64 shared-no-tts），运行时库在同包 lib/ 下
       LD_LIBRARY_PATH: /opt/sherpa/lib
-      ASR_IDLE_CPU_START: "0.25"
-      ASR_IDLE_CPU_STOP: "0.70"
+      # 空闲准入（docs/11 §6.2）：CPU 阈值按「除本容器以外」的整机忙碌比例判断，
+      # 本容器用量由下面的 cpus 配额硬封顶、不计进来——否则 ASR 跑一段就把 60 秒
+      # 滑动平均顶过开工线，自己把自己下一段的许可破坏掉（0.75 核配额在 2 核机上
+      # 正好是 37.5%，而旧阈值是 25%，实测因此每段要空等 180–320 秒）。
+      ASR_IDLE_CPU_START: "0.60"
+      ASR_IDLE_CPU_STOP: "0.80"
       # 宿主机 2GB 实测 MemAvailable 常态约 700MiB；按 docs/11 §9.3 的 800 会让自动转写永远排队
       ASR_IDLE_MIN_AVAILABLE_MIB: "512"
       # docs/13 §7.1：统一支持 10 小时（含恰好 36000 秒）；音频输入上限 8GiB。

@@ -888,6 +888,8 @@ def run_once(session_factory, gate: idle_mod.AsrGate | None = None) -> bool:
                 job = claim_job(session_factory, ASR_TRANSCRIBE_STAGES)
             elif reason != _last_gate_reason:
                 _last_gate_reason = reason
+                # 原因变化时打一行：没有它，「在等」和「在干活」在日志里长得一样
+                print(f"[asr-perf] gate_hold reason={reason} normal_busy={int(normal_busy)}")
                 _note_asr_gate_reason(session_factory, reason)  # 审查 C-26：原因变化时暴露到状态
     if job is None:
         return False
@@ -961,7 +963,7 @@ def _normal_jobs_active(session_factory) -> bool:
 _GATE_REASON_DETAIL = {
     "idle_window_filling": "等待空闲采样窗口（启动观察期约 1 分钟）",
     "metrics_unavailable": "读不到宿主机负载指标，保持排队",
-    "cpu_busy": "服务器忙碌，等待空闲",
+    "cpu_busy": "服务器上有其他程序在忙，等待空闲",
     "memory_low": "服务器可用内存不足，等待恢复",
     "normal_jobs_active": "普通任务执行中，转写让行",
 }
