@@ -124,7 +124,36 @@ class AsrGate:
             return False, "memory_low"
         return True, ""
 
+    def can_start_io(self, settings, *, normal_busy: bool) -> tuple[bool, str]:
+        """I/O 密集 ASR 阶段（asr_prepare）的准入：不要求 CPU 空闲窗口。
+
+        prepare 是一条连接 + 一个解码线程，本就不是抢 CPU 的那一步；让它等满
+        连续空闲窗口，只是把远程音频的读取再往后推 ≥60s。保留的两项都有实义：
+        normal_busy 是普通任务的唯一屏障（Worker 单进程同步执行，领取后要跑到
+        结束），内存下限避免在低可用内存时再堆一份解码产物。忙碌让出的冷却期不
+        检查——本阶段不因 CPU 让出（见 check_running_io）。
+        """
+        if normal_busy:
+            return False, "normal_jobs_active"
+        sample = self._take_sample()
+        if sample is None:
+            if os.environ.get(IGNORE_GATE_ENV) == "1":
+                return True, "gate_ignored"
+            return False, "metrics_unavailable"
+        mem = sample.mem_available_mib
+        if mem is not None and mem < settings.asr_idle_min_available_mib:
+            return False, "memory_low"
+        return True, ""
+
     # ---- 运行中检查 ----
+
+    def _mem_abort(self, sample: HostSample, settings) -> bool:
+        mem = sample.mem_available_mib
+        if mem is not None and mem < settings.asr_busy_min_available_mib:
+            self._mem_low_streak += 1
+            return self._mem_low_streak >= 2  # 连续两次 5s 采样过低
+        self._mem_low_streak = 0
+        return False
 
     def check_running(self, settings) -> bool:
         """运行中约每 5s 调用一次；返回 False 表示应终止当前段让出资源。
@@ -143,14 +172,21 @@ class AsrGate:
                 abort = True
         else:
             self._cpu_busy_streak = 0
-        mem = sample.mem_available_mib
-        if mem is not None and mem < settings.asr_busy_min_available_mib:
-            self._mem_low_streak += 1
-            if self._mem_low_streak >= 2:  # 连续两次 5s 采样过低
-                abort = True
-        else:
-            self._mem_low_streak = 0
+        if self._mem_abort(sample, settings):
+            abort = True
         return not abort
+
+    def check_running_io(self, settings) -> bool:
+        """准备阶段的运行中检查：只看内存，不看 CPU。
+
+        远程输入不做断点续传，作废一次就是从零重下（docs/11 §5.3）；一次 CPU
+        抖动作废一条已在飞的下载，代价是整条重下 + 冷却 + 重新过门禁，比它省下
+        的 CPU 大得多。内存仍要让，因为解码产物落在盘上、页缓存走同一份预算。
+        """
+        sample = self._take_sample()
+        if sample is None:
+            return True
+        return not self._mem_abort(sample, settings)
 
     def note_busy(self) -> None:
         """因资源忙碌让出：进入冷却期，之后需重新满足连续空闲条件。"""

@@ -13,12 +13,14 @@
 - 音频 CDN 不携带 Cookie（docs/05 §3.2 同规则）；下载需要 UA + Referer 防盗链。
 
 失败状态区分（不统一标 no_track，docs/11 §5.3）：
-- audio_stream_unsupported：无普通独立音轨，或该格式无法经不可 seek 的管道解码。
+- audio_stream_unsupported：无普通独立音轨，或该音轨的编码 FFmpeg 解不了。
 - video_truncated：接口音频时长明显短于视频（试看截断）。
 - duration_mismatch：解码总时长与接口时长不符（静默截断）。
 - login_required / blocked / network_error：与字幕适配器同语义。
 
-准备阶段不做任意字节 Range 断点：中断后由调用方删除 attempt 目录重做（§5.3）。
+准备阶段把整条音轨落到本次 attempt 的临时文件后再解码（输入可 seek），但不做
+任意字节 Range 断点续传：签名地址每次重新解析，拼接两次获取的字节有把两份不同
+音频缝在一起的风险。中断后由调用方删除 attempt 目录重做（§5.3）。
 """
 from __future__ import annotations
 

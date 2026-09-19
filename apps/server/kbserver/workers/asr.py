@@ -244,6 +244,18 @@ def _remove_work_dir(settings, run: AsrRun) -> None:
         shutil.rmtree(base, ignore_errors=True)
 
 
+def _prune_previous_attempts(work_dir: Path) -> None:
+    """新一轮准备开始前回收被取代的 attempt 目录。
+
+    清单只引用一个 attempt，其余必然来自已失败的那次获取；一整套 16k PCM 约
+    115MB/小时，而时长上限是 10 小时，留着会把盘写满（docs/11 §5.3 要求失败
+    准备用独立目录，是为了不混用两次获取的 PCM，不要求保留旧目录）。
+    """
+    for stale in work_dir.glob("attempt-*"):
+        if stale.is_dir():
+            shutil.rmtree(stale, ignore_errors=True)
+
+
 # ---- 共享小工具 ----
 
 @dataclass
@@ -352,6 +364,9 @@ def _fail_run(db: Session, run: AsrRun, job: Job, item: Item, error: str, *,
         item.pipeline_state = "needs_input"
         item.state_detail = f"音频转写失败：{error[:120]}"
         item.state_reason = "asr_failed"
+        # 终态后这批 PCM 再也用不上（重跑走 start_asr，本来就先清目录）；
+        # 不清的话最长尾的那类失败会把整小时级的解码产物永久留在盘上。
+        _remove_work_dir(get_settings(), run)
         pipeline.emit_event(db, item.user_id, item_id=item.id,
                             bundle_revision=item.bundle_revision,
                             event_type="item_needs_input",
@@ -361,6 +376,10 @@ def _fail_run(db: Session, run: AsrRun, job: Job, item: Item, error: str, *,
         job.state = "retry_wait"
         job.last_error = error[:200]
         job.not_before = utcnow() + timedelta(seconds=backoff)
+        # 未终态只把任务放回 retry_wait，state_detail 不变；标一下让 WorkflowView
+        # 能区分「正在读取音频」和「一直在失败、正在退避」（docs/17 §10）
+        run.pause_reason = ("retry_prepare" if job.stage == "asr_prepare"
+                            else "retry_transcribe")
     _emit_state(db, run)
 
 
@@ -375,10 +394,17 @@ def _user_sessdata(db: Session, user_id: str) -> tuple[str | None, str | None]:
 
 
 def _make_monitor(session_factory, job_id: str, lease_token: str,
-                  gate: idle_mod.AsrGate | None):
-    """进度回调工厂：节流执行续租、空闲检查与归属检查；返回 "yield"/"cancel"/None。"""
+                  gate: idle_mod.AsrGate | None, *, abort_on_cpu: bool = True):
+    """进度回调工厂：节流执行续租、空闲检查与归属检查；返回 "yield"/"cancel"/None。
+
+    abort_on_cpu=False 用于准备阶段：作废一次已在飞的远程下载等于从零重下，
+    CPU 抖动不该触发它（内存仍然要中止）。
+    """
     settings = get_settings()
     state = {"last_check": 0.0, "last_lease": 0.0}
+    running_check = None
+    if gate is not None:
+        running_check = gate.check_running if abort_on_cpu else gate.check_running_io
 
     def monitor(bytes_read: int):
         now = time.monotonic()
@@ -389,7 +415,7 @@ def _make_monitor(session_factory, job_id: str, lease_token: str,
             state["last_lease"] = now
             if not _lease_refresh(session_factory, job_id, lease_token):
                 return "cancel"
-        if gate is not None and not gate.check_running(settings):
+        if running_check is not None and not running_check(settings):
             gate.note_busy()
             return "yield"
         if not _still_owned(session_factory, job_id, lease_token):
@@ -435,26 +461,35 @@ def execute_prepare(session_factory, job_id: str, lease_token: str,
         ctx.item.state_detail = "正在读取音频（服务器空闲时执行）"
         _emit_state(db, ctx.run)
         db.commit()
+        due_wait = ((utcnow() - ctx.job.not_before).total_seconds()
+                    if ctx.job.not_before is not None else 0.0)
         plan = {
             "user_id": ctx.item.user_id,
             "work_dir": ctx.run.work_dir,
             "item_id": ctx.item.id,
             "selection": (ctx.run.input_json or {}).get("selection"),
+            "attempt_no": ctx.job.attempt,
+            "failures": ctx.run.failed_count,
+            "due_wait_s": max(0.0, due_wait),
         }
 
     # Phase B：事务外完成来源解析、网络与解码
+    started = time.monotonic()
     try:
         prepared, attempt_name, resolved = _prepare_outside(
             session_factory, job_id, lease_token, plan, gate, settings)
     except AudioPrepareAborted as exc:
+        _log_prepare(plan, time.monotonic() - started, error=exc)
         _abort_ctx(session_factory, job_id, lease_token, exc.reason)
         return
     except audio_sources.AudioSourceSelectionRequired as exc:
         _park_for_selection(session_factory, job_id, lease_token, exc.candidates)
         return
     except (AudioSourceError, AudioPrepareError, bili.BilibiliError) as exc:
+        _log_prepare(plan, time.monotonic() - started, error=exc)
         _handle_prepare_failure(session_factory, job_id, lease_token, exc)
         return
+    _log_prepare(plan, time.monotonic() - started, prepared)
 
     # Phase C：原子提交清单（docs/11 §5.3）
     with session_factory() as db:
@@ -477,15 +512,18 @@ def _prepare_outside(session_factory, job_id: str, lease_token: str, plan: dict,
 
     来源解析（B 站/直链/网页/上传原件）在 audio_sources 分发，识别阶段不感知网站。
     """
-    monitor = _make_monitor(session_factory, job_id, lease_token, gate)
+    monitor = _make_monitor(session_factory, job_id, lease_token, gate, abort_on_cpu=False)
+    resolve_started = time.monotonic()
     with session_factory() as db:
         item = db.get(Item, plan["item_id"])
         if item is None:
             raise AudioSourceError("network_error", "条目不存在，无法准备音频。")
         resolved = audio_sources.resolve_audio_source(db, item, selection=plan.get("selection"))
+    resolve_s = time.monotonic() - resolve_started
 
     work_dir = settings.tmp_dir / plan["work_dir"]
     work_dir.mkdir(parents=True, exist_ok=True)
+    _prune_previous_attempts(work_dir)
     attempt_name = f"attempt-{int(time.time() * 1000)}"
     attempt_dir = work_dir / attempt_name
     attempt_dir.mkdir(parents=True, exist_ok=True)
@@ -506,7 +544,41 @@ def _prepare_outside(session_factory, job_id: str, lease_token: str, plan: dict,
     if isinstance(resolved.input, RemoteAudioInput):
         meta.update(resolved.input.stream_meta)
     prepared.meta = meta
+    prepared.timings["resolve_s"] = resolve_s
     return prepared, attempt_name, resolved
+
+
+def _log_prepare(plan: dict, wall_s: float, prepared: PreparedAudio | None = None,
+                 error: Exception | None = None) -> None:
+    """一条 [asr-perf] 说清这次准备的时间去哪了。
+
+    「链接音频比上传文件慢在哪」目前无法回答：单连接下载速率、门禁/退避造成的
+    到点等待、以及让出造成的整条重下，在用户侧看起来都是同一句「正在读取音频」。
+    调 ASR 空闲门禁阈值也要这些数。只打时长与字节数，不打地址与凭据。
+    """
+    t = prepared.timings if prepared is not None else {}
+    download_s = float(t.get("download_s") or 0.0)
+    kb_s = prepared.source_bytes / 1024.0 / download_s if prepared is not None and download_s else 0.0
+    parts = [
+        f"item={plan['item_id'][:8]}",
+        f"kind={t.get('input_kind', '?')}",
+        f"attempt={plan['attempt_no']}",
+        f"failures={plan['failures']}",
+        f"due_wait_s={plan['due_wait_s']:.0f}",
+        f"resolve_s={float(t.get('resolve_s') or 0.0):.1f}",
+        f"download_s={download_s:.1f}",
+        f"decode_s={float(t.get('decode_s') or 0.0):.1f}",
+        f"finalize_s={float(t.get('finalize_s') or 0.0):.1f}",
+        f"wall_s={wall_s:.1f}",
+    ]
+    if prepared is not None:
+        parts += [f"bytes={prepared.source_bytes}", f"kb_s={kb_s:.0f}",
+                  f"audio_s={prepared.total_duration:.0f}"]
+    else:
+        detail = (f"aborted:{error.reason}" if isinstance(error, AudioPrepareAborted)
+                  else getattr(error, "status", None) or type(error).__name__)
+        parts.append(f"error={detail}")
+    print("[asr-perf] prepare " + " ".join(parts))
 
 
 def _park_for_selection(session_factory, job_id: str, lease_token: str,
@@ -638,6 +710,23 @@ def _load_manifest(run: AsrRun, settings) -> dict | None:
 
 # ---- transcribe（docs/11 §6.1：一次领取识别一段）----
 
+def _log_chunk(item_id: str, index: int, count: int, wall_s: float, due_wait_s: float,
+               failures: int, error: Exception | None = None) -> None:
+    """一段的识别耗时与到点等待：转写被门禁还是被引擎拖住，看得见的唯一办法。
+
+    `due_wait_s` 是从「任务到点可领」到「真的被领取」的间隔，正常接近 0；持续
+    变大就是在等空闲门禁或退避。不打印音频文本内容。
+    """
+    parts = [f"item={item_id[:8]}", f"chunk={index}/{count}",
+             f"due_wait_s={due_wait_s:.0f}", f"failures={failures}",
+             f"wall_s={wall_s:.1f}"]
+    if error is not None:
+        detail = (f"aborted:{error.reason}" if isinstance(error, AudioPrepareAborted)
+                  else f"{type(error).__name__}: {str(error)[:80]}")
+        parts.append(f"error={detail}")
+    print("[asr-perf] transcribe " + " ".join(parts))
+
+
 def execute_transcribe(session_factory, job_id: str, lease_token: str,
                        gate: idle_mod.AsrGate | None) -> None:
     settings = get_settings()
@@ -666,6 +755,9 @@ def execute_transcribe(session_factory, job_id: str, lease_token: str,
         run_id = ctx.run.id
         work_dir_rel = ctx.run.work_dir
         model_alias = ctx.run.model_alias
+        failures = ctx.run.failed_count
+        due_wait_s = max(0.0, (utcnow() - ctx.job.not_before).total_seconds()
+                         if ctx.job.not_before is not None else 0.0)
         if index >= chunk_count:
             ctx.item.state_detail = "转写收尾中"
             db.commit()
@@ -695,20 +787,26 @@ def execute_transcribe(session_factory, job_id: str, lease_token: str,
         db.commit()
 
     # Phase B：事务外识别一段
+    started = time.monotonic()
     try:
         result = _transcribe_one(session_factory, job_id, lease_token, gate, settings,
                                  work_dir_rel=work_dir_rel, manifest=manifest,
                                  index=index, model_alias=model_alias)
     except AudioPrepareAborted as exc:
+        _log_chunk(run_id, index, chunk_count, time.monotonic() - started,
+                   due_wait_s, failures, exc)
         _abort_ctx(session_factory, job_id, lease_token, exc.reason)
         return
     except AsrEngineError as exc:
+        _log_chunk(run_id, index, chunk_count, time.monotonic() - started,
+                   due_wait_s, failures, exc)
         with session_factory() as db:
             ctx = _load_context(db, job_id, lease_token)
             if ctx is not None:
                 _fail_run(db, ctx.run, ctx.job, ctx.item, str(exc), final=False)
                 db.commit()
         return
+    _log_chunk(run_id, index, chunk_count, time.monotonic() - started, due_wait_s, failures)
 
     # Phase C：短事务推进检查点；同一段未提交前崩溃只重算该段
     with session_factory() as db:
@@ -1105,7 +1203,6 @@ def _finish_if_complete(session_factory, job_id: str, lease_token: str,
             # 全片无有效语音：进待补充，不用标题生成正文（docs/11 §7）
             _fail_run(db, run, job, item, "音频中没有识别到有效语音内容。", final=True)
             db.commit()
-            _remove_work_dir(settings, run)
             return
 
         warnings = list(warnings) + [

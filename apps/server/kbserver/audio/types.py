@@ -154,3 +154,5 @@ class PreparedAudio:
     expected_duration: float
     source_bytes: int
     meta: dict = field(default_factory=dict)  # 归属信息（来源定位/音轨标识等）
+    # 本次准备各阶段耗时（秒），只用于服务器上调参，不进清单也不进投递
+    timings: dict = field(default_factory=dict)

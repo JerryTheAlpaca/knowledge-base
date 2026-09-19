@@ -64,6 +64,8 @@ from .publish import publish_segments_revision as _publish_segments_revision
 
 NORMAL_STAGES = ("extract", "enrich")
 ASR_STAGES = ("asr_prepare", "asr_transcribe")
+ASR_PREPARE_STAGES = ("asr_prepare",)
+ASR_TRANSCRIBE_STAGES = ("asr_transcribe",)
 
 
 def claim_job(session_factory, stages: tuple[str, ...] | None = None) -> Job | None:
@@ -762,7 +764,7 @@ def retention_sweep(session_factory, store: ObjectStore) -> dict[str, int]:
     settings = get_settings()
     now = utcnow()
     stats = {"expired_uploads": 0, "expired_bundles": 0, "orphan_files": 0, "events": 0,
-             "idempotency": 0, "device_auth": 0, "audio_sessions": 0}
+             "idempotency": 0, "device_auth": 0, "audio_sessions": 0, "asr_work_dirs": 0}
     with session_factory() as db:
         # 未引用上传（24h 过期，docs/02 §14.3）与音频上传会话（docs/13 §6.2）
         stats["expired_uploads"] = cleanup_expired_uploads(db, store)
@@ -846,6 +848,16 @@ def retention_sweep(session_factory, store: ObjectStore) -> dict[str, int]:
         stats["device_auth"] = db.query(DeviceAuthRequest).filter(
             DeviceAuthRequest.expires_at < now - timedelta(days=1)
         ).delete(synchronize_session=False)
+        # ASR 工作目录（PCM 与临时输入）：发布、终态失败都就地清理，这里兜住
+        # 清理前进程被杀、以及取消后不再重跑的条目。活动与可恢复的 run 保持
+        # 引用，不按 TTL 删进度（docs/13 §8）。
+        asr_cutoff = now - timedelta(hours=settings.asr_tmp_ttl_hours)
+        for (work_dir_rel,) in db.query(AsrRun.work_dir).filter(
+            AsrRun.state.in_(("failed", "cancelled", "succeeded")),
+            AsrRun.updated_at < asr_cutoff, AsrRun.work_dir != "",
+        ).all():
+            asr_stage._cleanup_by_work_dir(settings, work_dir_rel)
+            stats["asr_work_dirs"] += 1
         db.commit()
     return stats
 
@@ -866,13 +878,21 @@ def run_once(session_factory, gate: idle_mod.AsrGate | None = None) -> bool:
     job = claim_job(session_factory, NORMAL_STAGES)
     if job is None and gate is not None:
         global _last_gate_reason
-        allowed, reason = gate.can_start(
-            get_settings(), normal_busy=_normal_jobs_active(session_factory))
-        if allowed:
-            job = claim_job(session_factory, ASR_STAGES)
-        elif reason != _last_gate_reason:
-            _last_gate_reason = reason
-            _note_asr_gate_reason(session_factory, reason)  # 审查 C-26：原因变化时暴露到状态
+        settings = get_settings()
+        normal_busy = _normal_jobs_active(session_factory)
+        # 准备阶段是 I/O 密集（一条连接 + 一个解码线程），按 CPU 空闲门禁排队只是
+        # 让远程音频白等一个连续空闲窗口；门禁的本意是防 ONNX 推理抢 CPU（docs/11
+        # §6.2）。两个门禁都保留 normal_busy——Worker 单进程同步执行，领取后要跑到
+        # 结束，它是普通任务不被 ASR 抢走的唯一屏障。
+        if gate.can_start_io(settings, normal_busy=normal_busy)[0]:
+            job = claim_job(session_factory, ASR_PREPARE_STAGES)
+        if job is None:
+            allowed, reason = gate.can_start(settings, normal_busy=normal_busy)
+            if allowed:
+                job = claim_job(session_factory, ASR_TRANSCRIBE_STAGES)
+            elif reason != _last_gate_reason:
+                _last_gate_reason = reason
+                _note_asr_gate_reason(session_factory, reason)  # 审查 C-26：原因变化时暴露到状态
     if job is None:
         return False
     job_id = job.id

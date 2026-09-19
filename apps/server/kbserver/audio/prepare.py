@@ -1,9 +1,13 @@
 """通用音频准备（docs/13 §3、§7）：远程流与本地对象 → 磁盘短 WAV 段。
 
-- 远程输入：受限 HTTP → FFmpeg stdin 管道（不可 seek，B 站 DASH 独立音轨）。
-- 对象输入：已授权的本地对象文件路径 → FFmpeg 直接读取（可 seek，兼容
-  moov 在尾部的常见 M4A）；不把整文件读成 bytes，也不经自身 HTTP 下载绕行。
-- 两种输入只在「如何提供音频字节」处不同，输出 PreparedAudio 完全一致。
+- 远程输入：受限 HTTP 整条落到本次 attempt 的临时文件 → FFmpeg 读取该文件。
+- 对象输入：已授权的本地对象文件路径 → FFmpeg 直接读取。
+- 两者只在「音频字节怎样变成本地文件」处不同，解码路径与输出 PreparedAudio
+  完全一致；都不把整文件读成 bytes，也不经自身 HTTP 下载绕行。
+
+先落盘再解码，是为了让输入可 seek：moov 在尾部的常见 M4A 不再因为管道不可
+seek 而被判成不可解码（那一类失败原先是终态、不重试）。远程输入不做断点续传
+（docs/11 §5.3）：中断即整条作废重下。
 
 时长约束三层落实（docs/13 §7.1）：
 1. 已知可信 duration_hint 提前拒绝；
@@ -18,6 +22,7 @@ import math
 import os
 import subprocess
 import threading
+import time
 import wave
 from collections import deque
 from dataclasses import dataclass
@@ -35,9 +40,12 @@ from .types import (
 
 # 时长上限的绝对容差（秒）：吸收 WAV 段边界对齐误差，不放大成百分比容差
 DURATION_EPSILON_S = 0.5
-# 对象输入无字节回调：轮询子进程以持续响应取消/续租/让出
-OBJECT_POLL_INTERVAL_S = 2.0
+# 解码期间轮询子进程以持续响应取消/续租/让出
+DECODE_POLL_INTERVAL_S = 2.0
 _FFMPEG_WAIT_S = 60
+# 远程输入落到本次 attempt 目录的临时文件名；解码产物齐全后立即删除。
+# 不带容器后缀，让 FFmpeg 按内容探测格式（与原先读管道时的行为一致）。
+REMOTE_INPUT_FILE = "input.bin"
 
 
 @dataclass
@@ -87,16 +95,6 @@ def _file_sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-def _write_or_die(proc: subprocess.Popen, chunk: bytes) -> None:
-    """写 FFmpeg stdin；进程已死时抛 BrokenPipeError 由上层归类。"""
-    try:
-        proc.stdin.write(chunk)
-    except BrokenPipeError:
-        raise
-    except (AttributeError, ValueError) as exc:  # stdin 已关闭
-        raise BrokenPipeError("FFmpeg stdin 已关闭") from exc
-
-
 def _drain_stderr(proc: subprocess.Popen, tail: deque) -> None:
     """持续消费 stderr，防管道死锁；只保留尾部若干行（脱敏后使用）。"""
     try:
@@ -125,13 +123,13 @@ def _ffmpeg_command(limits: AudioLimits, chunks_dir: Path, source_arg: str) -> l
     ]
 
 
-def _spawn(command: list[str], *, use_stdin: bool) -> subprocess.Popen:
+def _spawn(command: list[str]) -> subprocess.Popen:
     popen_kwargs: dict = {}
     if os.name == "posix":
         popen_kwargs["start_new_session"] = True  # 独立进程组，便于整组回收
     return subprocess.Popen(
         command,
-        stdin=subprocess.PIPE if use_stdin else subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
         **popen_kwargs,
@@ -168,18 +166,16 @@ def prepare_audio(audio_input, attempt_dir: Path, *, limits: AudioLimits,
 
 
 def _finalize(attempt_dir: Path, chunks_dir: Path, limits: AudioLimits,
-              source_bytes: int, expected: float, stream_error: Exception | None,
-              stderr_tail: deque, returncode: int,
+              source_bytes: int, expected: float, stderr_tail: deque, returncode: int,
               *, strict_duration: bool) -> PreparedAudio:
     if returncode != 0:
-        tail = _stderr_text(stderr_tail)
-        if stream_error is None:
-            # 输入完整送达但解码失败：按不可管道解码处理，绝不回退整文件下载
-            raise AudioPrepareError(
-                "audio_stream_unsupported",
-                f"FFmpeg 无法解码该音频（exit {returncode}）：{tail[:200]}",
-            )
-        raise AudioPrepareError("network_error", f"音频流读取失败：{stream_error}")
+        # 输入已完整落到本地文件，解码仍失败就是容器/编码本身不支持；
+        # 原先「管道不可 seek」造成的那一类误判已经不存在
+        raise AudioPrepareError(
+            "audio_stream_unsupported",
+            f"FFmpeg 无法解码该音频（exit {returncode}）："
+            f"{_stderr_text(stderr_tail)[:200]}",
+        )
 
     chunk_paths = sorted(chunks_dir.glob("chunk-*.wav"))
     if not chunk_paths:
@@ -219,83 +215,56 @@ def _finalize(attempt_dir: Path, chunks_dir: Path, limits: AudioLimits,
     )
 
 
-def _prepare_remote(inp: RemoteAudioInput, attempt_dir: Path, limits: AudioLimits,
-                    monitor, probe_limit: int) -> PreparedAudio:
-    chunks_dir = attempt_dir / "chunks"
-    proc = _spawn(_ffmpeg_command(limits, chunks_dir, "pipe:0"), use_stdin=True)
-    stderr_tail: deque = deque(maxlen=40)
-    stderr_thread = threading.Thread(target=_drain_stderr, args=(proc, stderr_tail), daemon=True)
-    stderr_thread.start()
+def _download_guard(monitor):
+    """下载进度回调：只做续租/让出/取消检查；超限判断在解码阶段按产出段数做。"""
 
-    state = {"abort": None}
+    def on_progress(bytes_read: int) -> None:
+        if monitor is None:
+            return
+        verdict = monitor(bytes_read)
+        if verdict in ("yield", "cancel"):
+            raise AudioPrepareAborted(verdict)
 
-    def _check(bytes_read: int):
-        produced = len(list(chunks_dir.glob("chunk-*.wav")))
-        if produced > probe_limit:
-            state["abort"] = AudioPrepareError(
-                "audio_too_long",
-                f"音频超过单条上限（{limits.max_duration_s / 60:.0f} 分钟），已停止解码。",
-            )
-            _terminate(proc)
-            raise state["abort"]
-        if monitor is not None:
-            verdict = monitor(bytes_read)
-            if verdict in ("yield", "cancel"):
-                _terminate(proc)
-                raise AudioPrepareAborted(verdict)
+    return on_progress
 
-    source_bytes = 0
+
+def _download_to_file(inp: RemoteAudioInput, path: Path, limits: AudioLimits,
+                      monitor) -> int:
+    """受限 HTTP 把整条音频写进本地文件；返回实际字节数。
+
+    不做断点续传：备选地址、以及重新解析出来的签名地址都可能是新的，按字节拼接
+    两次获取的结果有把两份不同音频缝在一起的风险。中断即整条作废重下（docs/11
+    §5.3）。主地址失败只依序尝试同一音轨的备选地址。
+    """
     stream_error: SafeFetchError | None = None
-    try:
+    with open(path, "wb") as fh:
         for url in inp.urls:
             try:
-                # FFmpeg stdin 满时 write 阻塞 → HTTP 读取暂停：管道背压限流
                 result = stream_to_sink(
                     url,
-                    sink=lambda chunk: _write_or_die(proc, chunk),
+                    sink=fh.write,
                     max_bytes=limits.max_bytes,
                     timeout=30.0,
                     headers=inp.headers or None,
                     should_cancel=lambda: False,  # 取消统一走 monitor（顺带续租）
-                    on_progress=_check,
+                    on_progress=_download_guard(monitor),
                 )
-                source_bytes = result.bytes_read
-                stream_error = None
-                break
-            except BrokenPipeError:
-                # FFmpeg 提前退出：按不可管道解码处理，不换地址重试
-                _terminate(proc)
-                if state["abort"] is not None:
-                    raise state["abort"]
-                tail = _stderr_text(stderr_tail)
-                raise AudioPrepareError(
-                    "audio_stream_unsupported",
-                    f"FFmpeg 管道提前退出：{tail[:200] or '(无 stderr)'}",
-                ) from None
+                return result.bytes_read
             except SafeFetchError as exc:
                 stream_error = exc
                 if exc.code == "CANCELLED":
                     raise AudioPrepareAborted("cancel") from exc
-                continue  # 只试同一音频的备选地址
-        if stream_error is not None:
-            # 统一成通用准备错误：调用方按 status=network_error 做有限退避
-            raise AudioPrepareError("network_error", f"音频流读取失败：{stream_error}")
-    finally:
-        _close_stdin(proc)
-        _drain_and_wait(proc, stderr_thread)
-
-    return _finalize(attempt_dir, chunks_dir, limits, source_bytes,
-                     inp.duration_hint or 0.0, stream_error, stderr_tail, proc.returncode,
-                     strict_duration=inp.strict_duration)
+                fh.seek(0)  # 换地址从头再写，不拼接两次获取的字节
+                fh.truncate()
+                continue
+    raise AudioPrepareError("network_error", f"音频下载失败：{stream_error}")
 
 
-def _prepare_object(inp: ObjectAudioInput, attempt_dir: Path, limits: AudioLimits,
-                    monitor, probe_limit: int) -> PreparedAudio:
-    """本地对象 → FFmpeg（可 seek）；无字节回调，轮询子进程响应取消/让出。"""
+def _decode_file(source_path: Path, attempt_dir: Path, limits: AudioLimits,
+                 monitor, probe_limit: int) -> tuple[int, deque]:
+    """本地音频文件 → FFmpeg 短 WAV 段（输入可 seek）；轮询子进程响应取消/让出。"""
     chunks_dir = attempt_dir / "chunks"
-    if not Path(inp.path).exists():
-        raise AudioPrepareError("network_error", "上传原件在对象存储中缺失，需重新上传。")
-    proc = _spawn(_ffmpeg_command(limits, chunks_dir, str(inp.path)), use_stdin=False)
+    proc = _spawn(_ffmpeg_command(limits, chunks_dir, str(source_path)))
     stderr_tail: deque = deque(maxlen=40)
     stderr_thread = threading.Thread(target=_drain_stderr, args=(proc, stderr_tail), daemon=True)
     stderr_thread.start()
@@ -317,26 +286,63 @@ def _prepare_object(inp: ObjectAudioInput, attempt_dir: Path, limits: AudioLimit
                     _terminate(proc)
                     raise AudioPrepareAborted(verdict)
             try:
-                proc.wait(timeout=OBJECT_POLL_INTERVAL_S)
+                proc.wait(timeout=DECODE_POLL_INTERVAL_S)
             except subprocess.TimeoutExpired:
                 pass
     finally:
-        _close_stdin(proc)
         _drain_and_wait(proc, stderr_thread)
 
     if too_long is not None:
         raise too_long
-    return _finalize(attempt_dir, chunks_dir, limits, inp.size_bytes,
-                     inp.duration_hint or 0.0, None, stderr_tail, proc.returncode,
-                     strict_duration=False)
+    return proc.returncode, stderr_tail
 
 
-def _close_stdin(proc: subprocess.Popen) -> None:
+def _prepare_remote(inp: RemoteAudioInput, attempt_dir: Path, limits: AudioLimits,
+                    monitor, probe_limit: int) -> PreparedAudio:
+    """远程输入：整条落到本次 attempt 的临时文件 → 解码 → 立即删掉临时文件。
+
+    临时文件活不过本次准备：解码产物已经在 chunks/ 里，留着只是多占一份盘。
+    """
+    input_path = attempt_dir / REMOTE_INPUT_FILE
+    chunks_dir = attempt_dir / "chunks"
+    started = time.monotonic()
     try:
-        if proc.stdin and not proc.stdin.closed:
-            proc.stdin.close()
-    except OSError:
-        pass
+        source_bytes = _download_to_file(inp, input_path, limits, monitor)
+        downloaded = time.monotonic()
+        returncode, stderr_tail = _decode_file(
+            input_path, attempt_dir, limits, monitor, probe_limit)
+    finally:
+        try:
+            input_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+    decoded = time.monotonic()
+    prepared = _finalize(attempt_dir, chunks_dir, limits, source_bytes,
+                         inp.duration_hint or 0.0, stderr_tail, returncode,
+                         strict_duration=inp.strict_duration)
+    prepared.timings = {"input_kind": "remote",
+                        "download_s": downloaded - started,
+                        "decode_s": decoded - downloaded,
+                        "finalize_s": time.monotonic() - decoded}
+    return prepared
+
+
+def _prepare_object(inp: ObjectAudioInput, attempt_dir: Path, limits: AudioLimits,
+                    monitor, probe_limit: int) -> PreparedAudio:
+    """上传原件：服务端解析出的已授权路径直接交给 FFmpeg；原件本身不动。"""
+    if not Path(inp.path).exists():
+        raise AudioPrepareError("network_error", "上传原件在对象存储中缺失，需重新上传。")
+    started = time.monotonic()
+    returncode, stderr_tail = _decode_file(
+        Path(inp.path), attempt_dir, limits, monitor, probe_limit)
+    decoded = time.monotonic()
+    prepared = _finalize(attempt_dir, attempt_dir / "chunks", limits, inp.size_bytes,
+                         inp.duration_hint or 0.0, stderr_tail, returncode,
+                         strict_duration=False)
+    prepared.timings = {"input_kind": "object",
+                        "decode_s": decoded - started,
+                        "finalize_s": time.monotonic() - decoded}
+    return prepared
 
 
 def _drain_and_wait(proc: subprocess.Popen, stderr_thread: threading.Thread) -> None:

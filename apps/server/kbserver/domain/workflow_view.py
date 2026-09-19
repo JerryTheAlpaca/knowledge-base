@@ -123,11 +123,26 @@ def derive_item_workflow(
             process = _step("process", "waiting", "TRANSCRIBE_PAUSED",
                             "等待服务器空闲后继续", _asr_progress(run), label="语音识别")
         elif run is not None and run.state == "preparing":
-            process = _step("process", "running", "PREPARING_AUDIO", "正在准备音频", label="语音识别")
+            # 非终态失败只把任务放回 retry_wait，run 仍停在 preparing，看起来就是
+            # 「一直卡在同一步」；retry_prepare 由 _fail_run 置位、下一次真正
+            # 开始执行时清掉，用它区分「正在读取」和「读但一直失败」。
+            if run.pause_reason == "retry_prepare":
+                process = _step("process", "running", "PREPARING_RETRY",
+                                f"读取音频没成功，正在第 {run.failed_count + 1} 次重试",
+                                label="语音识别")
+            else:
+                process = _step("process", "running", "PREPARING_AUDIO", "正在准备音频",
+                                label="语音识别")
         elif run is not None and run.state == "transcribing":
             progress = _asr_progress(run)
-            message = "正在语音识别" if progress is None else f"正在语音识别 {progress}%"
-            process = _step("process", "running", "TRANSCRIBING", message, progress, label="语音识别")
+            if run.pause_reason == "retry_transcribe":
+                process = _step("process", "running", "TRANSCRIBING_RETRY",
+                                f"这一段识别没成功，正在第 {run.failed_count + 1} 次重试",
+                                progress, label="语音识别")
+            else:
+                message = "正在语音识别" if progress is None else f"正在语音识别 {progress}%"
+                process = _step("process", "running", "TRANSCRIBING", message, progress,
+                                label="语音识别")
         elif run is not None:  # queued：排队等待执行
             process = _step("process", "running", "TRANSCRIBE_QUEUED", "语音识别排队中", label="语音识别")
         else:

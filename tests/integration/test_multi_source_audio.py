@@ -274,7 +274,13 @@ class AlwaysAllowGate:
     def can_start(self, settings, *, normal_busy=False):
         return True, ""
 
+    def can_start_io(self, settings, *, normal_busy=False):
+        return True, ""
+
     def check_running(self, settings):
+        return True
+
+    def check_running_io(self, settings):
         return True
 
     def note_busy(self):
@@ -487,6 +493,31 @@ class _FakeSink:
         if on_progress:
             on_progress(4096)
         return StreamResult(url=url, status_code=200, bytes_read=4096)
+
+
+def test_remote_input_decodes_from_a_seekable_local_file(tmp_path, monkeypatch):
+    """远程音频先整条落盘，再让 FFmpeg 读本地文件。
+
+    直连管道时输入不可 seek，moov 在尾部的常见 M4A 会被判成
+    audio_stream_unsupported —— 那类失败是终态、一次都不重试，等于网页音频
+    白传一趟。临时文件在解码产物齐全后必须消失，不然多占一份盘。
+    """
+    seen: dict = {}
+    real_command = audio_prepare._ffmpeg_command
+
+    def spy(limits, chunks_dir, source_arg):
+        seen["source_arg"] = source_arg
+        seen["is_file"] = os.path.isfile(source_arg)
+        seen["bytes"] = os.path.getsize(source_arg) if seen["is_file"] else -1
+        return real_command(limits, chunks_dir, source_arg)
+
+    monkeypatch.setattr(audio_prepare, "_ffmpeg_command", spy)
+    prepared = _prepare_with_seconds(tmp_path, monkeypatch, 40)
+
+    assert seen["is_file"], f"解码输入应是本地文件，实际是 {seen['source_arg']}"
+    assert seen["bytes"] == prepared.source_bytes == 4096
+    assert not (tmp_path / audio_prepare.REMOTE_INPUT_FILE).exists()
+    assert prepared.timings["download_s"] >= 0
 
 
 def test_duration_boundary_accepts_exactly_36000(tmp_path, monkeypatch):

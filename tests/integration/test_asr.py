@@ -51,7 +51,13 @@ class AlwaysAllowGate:
     def can_start(self, settings, *, normal_busy=False):
         return True, ""
 
+    def can_start_io(self, settings, *, normal_busy=False):
+        return True, ""
+
     def check_running(self, settings):
+        return True
+
+    def check_running_io(self, settings):
         return True
 
     def note_busy(self):
@@ -413,6 +419,30 @@ def test_prepare_chunk_tamper_fails_final(client, user_a, monkeypatch, asr_env, 
         run = _get_run(s, item_id)
         assert run.state == "failed"
         assert _item_job(s, item_id, "asr_transcribe").state == "failed"
+        work_dir = get_settings().tmp_dir / run.work_dir
+    assert not work_dir.exists()  # 终态之后这批 PCM 再也用不上，留着就是泄漏
+
+
+def test_terminal_prepare_failure_leaves_no_pcm(client, user_a, asr_env, fresh_queue):
+    """解码跑完才发现时长对不上：此刻盘上已经是一整套 PCM。
+
+    16k 单声道约 115MB/小时、单条上限 10 小时，终态失败不回收就会随每次失败
+    累积到写满盘（retention sweep 只管对象存储，不管 tmp 工作目录）。
+    """
+    asr_env.install(stream=_fake_audio_stream(duration_s=3600.0))  # 声明 1 小时，假 FFmpeg 只出 40s
+    item_id = _capture_bili_url(client, user_a["phone"]["token"], "asrdiscard").json()["item_id"]
+    client.post(f"/v1/items/{item_id}/asr", json={},
+                headers=auth(user_a["desktop"]["token"]))
+    sf = _session_factory()
+    worker.run_once(sf, AlwaysAllowGate())  # extract（no_track → needs_input）
+    with sf() as s:
+        work_dir = get_settings().tmp_dir / _get_run(s, item_id).work_dir
+    worker.run_once(sf, AlwaysAllowGate())  # prepare → duration_mismatch 终态
+    with sf() as s:
+        run = _get_run(s, item_id)
+        assert run.state == "failed"
+        assert run.last_error and "时长" in run.last_error
+    assert not work_dir.exists()
 
 
 def test_busy_yield_preserves_attempt_and_resumes(client, user_a, monkeypatch, asr_env, fresh_queue):

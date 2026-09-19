@@ -338,12 +338,12 @@ def test_non_login_needs_input_does_not_offer_connect(wc, user_a, db):
 # ---- 加工阶段：真实百分比（docs/17 §5.4）----
 
 def _add_run(db, item: Item, *, state: str, pause_reason: str = "",
-             done: int = 0, count: int = 0) -> AsrRun:
+             done: int = 0, count: int = 0, failures: int = 0) -> AsrRun:
     run = AsrRun(
         user_id=item.user_id, item_id=item.id, source_revision=1,
         recipe_hash="x", model_alias="sense_voice", model_id="m",
         state=state, pause_reason=pause_reason,
-        next_chunk_index=done, chunk_count=count,
+        next_chunk_index=done, chunk_count=count, failed_count=failures,
     )
     db.add(run)
     return run
@@ -385,6 +385,30 @@ def test_paused_run_freezes_percent_and_says_waiting(wc, user_a, db):
     assert proc["status"] == "waiting"
     assert proc["message"] == "等待服务器空闲后继续"
     assert proc["progress_percent"] == 63
+
+
+def test_prepare_retry_reads_differently_from_first_try(wc, user_a, db):
+    """非终态失败只把任务放回 retry_wait，run 仍停在 preparing：「正在读取」和
+    「一直在失败、正在退避」必须能区分开，否则用户只能对着不动的文案干等。
+    列表页渲染的是 WorkflowView.message，不是 Item.state_detail。"""
+    item = _seed_item(db, user_a["user_id"], pipeline_state="extracting",
+                      meta={"media_kind": "audio"})
+    _add_run(db, item, state="preparing", pause_reason="retry_prepare", failures=1)
+    wf = _workflow(db, wc, user_a["desktop"]["token"], item)
+    proc = wf["steps"][1]
+    assert proc["status"] == "running"  # 仍在推进，不算「需要你处理」
+    assert proc["reason_code"] == "PREPARING_RETRY"
+    assert proc["message"] == "读取音频没成功，正在第 2 次重试"
+    assert wf["message"] == proc["message"]
+
+
+def test_prepare_first_try_does_not_claim_retry(wc, user_a, db):
+    """下一次真正开始执行时标记会被清掉：正在下载不等于正在重试。"""
+    item = _seed_item(db, user_a["user_id"], pipeline_state="extracting",
+                      meta={"media_kind": "audio"})
+    _add_run(db, item, state="preparing", failures=1)
+    wf = _workflow(db, wc, user_a["desktop"]["token"], item)
+    assert wf["steps"][1]["reason_code"] == "PREPARING_AUDIO"
 
 
 def test_non_audio_item_omits_process_step(wc, user_a, db):
