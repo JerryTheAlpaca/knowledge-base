@@ -792,3 +792,59 @@ def test_remerge_cli_skips_unchanged_then_republishes(client, user_a, asr_env, f
     assert "重算 1 条" in capsys.readouterr().out
     with _session_factory()() as db:
         assert db.get(worker.Item, item_id).source_revision == cur_rev + 2
+
+
+# ---- 空闲门禁：该看邻居有多忙，不是整机有多忙 ----
+
+class _CpuSampler:
+    """按固定步长喂宿主机样本：busy = 整机忙碌比例，own = 本容器占掉的算力比例。
+
+    换算不依赖核数（_own_ratio 用同一个核数除回去），本机核数是多少都能跑。
+    own=None 表示读不到本容器 cgroup。
+    """
+
+    def __init__(self, busy: float, own: float | None, step_s: float = 5.0):
+        self.busy, self.own, self.step_s = busy, own, step_s
+        self.n = 0
+
+    def __call__(self):
+        from kbserver.workers.idle import HostSample
+
+        cores = os.cpu_count() or 1
+        t = self.n * self.step_s
+        self.n += 1
+        return HostSample(t=t, idle=t * cores * (1 - self.busy), total=t * cores,
+                          mem_available_mib=1500.0,
+                          own_usec=None if self.own is None else t * self.own * cores * 1e6)
+
+
+def _gate_verdict(busy: float, own: float | None):
+    from kbserver.workers.idle import AsrGate
+
+    gate = AsrGate(sampler=_CpuSampler(busy, own))
+    for _ in range(16):   # 5 秒一步 × 16 = 75 秒，跨过 60 秒空闲窗口
+        out = gate.can_start(get_settings(), normal_busy=False)
+    return out
+
+
+def test_gate_does_not_block_on_our_own_cpu():
+    """自己占的 CPU 不该挡住自己开工。
+
+    Worker 容器有 cpus 0.75 配额，2 核机上正好占整机 37.5%；旧口径拿整机忙碌比例
+    和 25% 比，ASR 跑完一段就把自己下一段的许可破坏掉。线上实测每段识别只要 6 秒，
+    却要空等 180-320 秒（[asr-perf] transcribe 的 due_wait_s）。
+    """
+    allowed, reason = _gate_verdict(0.40, 0.375)
+    assert allowed, f"邻居合计只占 2.5%，仍被挡住：{reason}"
+
+
+def test_gate_still_yields_to_neighbours():
+    """扣掉自己之后仍然忙——那是同机别的项目在用，转写该让。"""
+    allowed, reason = _gate_verdict(0.75, 0.0)
+    assert not allowed and reason == "cpu_busy"
+
+
+def test_gate_is_conservative_without_cgroup():
+    """读不到本容器 cgroup 就什么都不扣：无法自证「忙的不是我」时不抢跑。"""
+    allowed, reason = _gate_verdict(0.65, None)
+    assert not allowed and reason == "cpu_busy"
