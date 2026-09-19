@@ -848,3 +848,55 @@ def test_gate_is_conservative_without_cgroup():
     """读不到本容器 cgroup 就什么都不扣：无法自证「忙的不是我」时不抢跑。"""
     allowed, reason = _gate_verdict(0.65, None)
     assert not allowed and reason == "cpu_busy"
+
+
+# ---- 任务空转：条目没了要把任务判掉 ----
+
+def test_deleted_item_prepare_job_is_settled(client, user_a, asr_env, fresh_queue):
+    """条目已删除时，准备任务要被判成取消，不能留在 running 等租约恢复反复重领。
+
+    线上有个这样的 asr_prepare 空转了 6000 多次：每次领取都拿不到上下文就原样
+    return，120 秒后租约过期被捡回队列，再被领取、再 return。
+    """
+    asr_env.install()
+    item_id = _capture_bili_url(client, user_a["phone"]["token"], "asrdead").json()["item_id"]
+    client.post(f"/v1/items/{item_id}/asr", json={},
+                headers=auth(user_a["desktop"]["token"]))
+    sf = _session_factory()
+    worker.run_once(sf, AlwaysAllowGate())  # extract（no_track → needs_input）
+    with sf() as s:
+        s.get(worker.Item, item_id).deleted_at = worker.utcnow()
+        s.commit()
+    worker.run_once(sf, AlwaysAllowGate())  # prepare：条目已删 → 就地作废
+    with sf() as s:
+        job = _item_job(s, item_id, "asr_prepare")
+        assert job.state == "cancelled"
+        assert job.lease_token is None and job.lease_until is None
+        assert _get_run(s, item_id).state == "cancelled"
+    # 关键：不该再被领起来——这就是原来那个圈
+    assert worker.claim_job(sf, worker.ASR_PREPARE_STAGES) is None
+
+
+def test_stale_holder_must_not_cancel_a_taken_over_job(client, user_a, asr_env, fresh_queue):
+    """租约已被别的 attempt 接管时，旧的那一份不许把任务判成取消。
+
+    否则一次续租失败就会让两个 attempt 互相把对方的任务写成终态。这里连条目都
+    删了（两个条件同时成立），仍然只该由持有当前租约的那一方来定结果。
+    """
+    asr_env.install()
+    item_id = _capture_bili_url(client, user_a["phone"]["token"], "asrstale").json()["item_id"]
+    client.post(f"/v1/items/{item_id}/asr", json={},
+                headers=auth(user_a["desktop"]["token"]))
+    sf = _session_factory()
+    worker.run_once(sf, AlwaysAllowGate())  # extract（no_track → needs_input）
+    with sf() as s:
+        s.get(worker.Item, item_id).deleted_at = worker.utcnow()
+        job = _item_job(s, item_id, "asr_prepare")
+        job.state = "running"
+        job.lease_token = "someone-else"
+        s.commit()
+        job_id = job.id
+    with sf() as s:
+        assert asr_mod._load_context(s, job_id, "stale-token", settle_orphan=True) is None
+    with sf() as s:
+        assert s.get(worker.Job, job_id).state == "running"

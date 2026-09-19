@@ -275,23 +275,48 @@ def _load_run_for_job(db: Session, job: Job) -> AsrRun | None:
     ).one_or_none()
 
 
-def _load_context(db: Session, job_id: str, lease_token: str) -> RunContext | None:
-    """短事务内校验任务租约与检查点归属；失效返回 None（任务已被接管/取消）。"""
+def _cancel_orphan(db: Session, job: Job, run: AsrRun | None) -> None:
+    """把「数据已经不成立」的任务就地判成取消。
+
+    这类情况以前一律静默 return：任务留在 running，120 秒后被 recover_expired_leases
+    捡回队列，再被领取、再 return。线上有个条目被删除后的 asr_prepare 这样空转了
+    6000 多次，每两轮就报一次「周期恢复过期租约」。
+    """
+    job.state = "cancelled"
+    job.last_error = "条目或转写任务已不存在，任务作废"
+    job.lease_token = None
+    job.lease_until = None
+    if run is not None and run.state not in ("succeeded", "failed", "cancelled"):
+        run.state = "cancelled"
+        run.pause_reason = ""
+        run.updated_at = utcnow()
+    db.commit()
+
+
+def _load_context(db: Session, job_id: str, lease_token: str, *,
+                  settle_orphan: bool = False) -> RunContext | None:
+    """短事务内校验任务租约与检查点归属；失效返回 None（任务已被接管/取消）。
+
+    settle_orphan 给「刚领取任务」的那一处用：租约仍属于我们、但条目/来源/run 已经
+    对不上时，直接把任务判掉。少了这一步，领取方拿不到上下文就原样返回，任务永远
+    停在 running 等着被反复重领。
+    """
     job = db.get(Job, job_id)
     if job is None or job.lease_token != lease_token or job.state != "running":
-        return None
+        return None  # 已被别的 attempt 接管或已取消：结果不由我们定
     run = _load_run_for_job(db, job)
-    if run is None:
-        return None
     item = db.get(Item, job.item_id)
-    if item is None or item.deleted_at is not None:
-        return None
-    source = (
-        db.query(SourceRevision)
-        .filter(SourceRevision.item_id == item.id, SourceRevision.revision == job.source_revision)
-        .one_or_none()
-    )
-    if source is None:
+    source = None
+    if item is not None and item.deleted_at is None:
+        source = (
+            db.query(SourceRevision)
+            .filter(SourceRevision.item_id == item.id,
+                    SourceRevision.revision == job.source_revision)
+            .one_or_none()
+        )
+    if run is None or item is None or item.deleted_at is not None or source is None:
+        if settle_orphan:
+            _cancel_orphan(db, job, run)
         return None
     return RunContext(job=job, run=run, item=item, source=source)
 
@@ -447,7 +472,7 @@ def execute_prepare(session_factory, job_id: str, lease_token: str,
     settings = get_settings()
     # Phase A：短事务校验并落 preparing
     with session_factory() as db:
-        ctx = _load_context(db, job_id, lease_token)
+        ctx = _load_context(db, job_id, lease_token, settle_orphan=True)
         if ctx is None:
             return
         if not asr_enabled(settings):
@@ -731,7 +756,7 @@ def execute_transcribe(session_factory, job_id: str, lease_token: str,
                        gate: idle_mod.AsrGate | None) -> None:
     settings = get_settings()
     with session_factory() as db:
-        ctx = _load_context(db, job_id, lease_token)
+        ctx = _load_context(db, job_id, lease_token, settle_orphan=True)
         if ctx is None:
             return
         if not asr_enabled(settings):
