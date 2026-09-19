@@ -240,7 +240,7 @@ function finale() {
 
 // ---------- 指针跟随的高光 ----------
 function ctaGlow() {
-  for (const btn of view.querySelectorAll(".land-cta")) {
+  for (const btn of view.querySelectorAll(".land-cta:not(.plain)")) {
     let box = null;
     btn.addEventListener("pointerenter", (e) => {
       if (e.pointerType !== "mouse") return;

@@ -93,15 +93,6 @@
               transition: color .3s, text-shadow .3s; }
 .land-brand:hover { color: var(--accent-hover); text-shadow: 0 0 26px rgba(240, 193, 105, .5); }
 .land-brand:active { transform: none; }
-/* 「怎么用」是品牌的附属，收拢后要贴着品牌，别跟右边两个入口等距 */
-.land-nav { display: flex; align-items: center; gap: 22px; margin-left: clamp(8px, 1.6vw, 16px); }
-.land-anchor { position: relative; font-size: var(--fs-small); letter-spacing: .1em;
-               color: var(--text-2); text-decoration: none; padding: 6px 0; transition: color .3s; }
-.land-anchor::after { content: ""; position: absolute; left: 0; right: 0; bottom: 2px; height: 1px;
-                      background: linear-gradient(90deg, var(--accent), var(--rose-hi));
-                      transform: scaleX(0); transform-origin: left; transition: transform .4s var(--ease); }
-.land-anchor:hover { color: var(--text); }
-.land-anchor:hover::after { transform: scaleX(1); }
 .land-signin { font-size: var(--fs-small); letter-spacing: .08em; color: var(--text-2);
                border: none; background: transparent; min-height: 38px; padding: 0 8px;
                transition: color .3s; }
@@ -124,6 +115,12 @@
                               inset 0 1px 0 rgba(255, 232, 170, .16); }
 .land-cta:hover::before { opacity: 1; }
 .land-cta.big { min-height: 48px; padding: 0 28px; font-size: 15px; }
+/* 顶栏那颗注册不再自己描一圈：整行已经是一颗胶囊，里面再套一颗就成了两个框。
+   只留金色字，比「登录」亮一档，仍然是主入口。 */
+.land-cta.plain { border-color: transparent; background: none; box-shadow: none;
+                  padding: 0 8px; font-size: var(--fs-small); letter-spacing: .08em; }
+.land-cta.plain::before { display: none; }
+.land-cta.plain:hover { border-color: transparent; background: none; box-shadow: none; }
 
 /* 503（认证服务不可用）时才有内容：浮在顶栏下方，不占版面——
    它在流里会把整屏首屏往下推 66px，正好把首屏底部挤出折叠线 */
@@ -316,7 +313,6 @@
 
 /* ============ 窄屏 ============ */
 @media (max-width: 760px) {
-  .land-nav { display: none; }
   .landing .n-br { display: inline; }
   .land-hero { padding-top: calc(56px + env(safe-area-inset-top)); }
   .land-rose { width: clamp(180px, min(36svh, 72vw), 300px); }
