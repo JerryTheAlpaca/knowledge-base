@@ -190,7 +190,7 @@ export function setSubmittedHandler(fn) { onSubmitted = fn; }
 // —— 金蔷薇回馈：金粉从发送钮喷出来，沿弧线汇聚到花冠上；粉落定的那一刻整朵点亮一下。
 //    顺序感全靠 DUST_RISE 这个延时：点亮动画（inbox.css 的 .rose.play）在多数粉落定时挂上。
 const DUST_RISE = 760;   // 金粉从发送钮汇聚到花冠所需时间，与下面的飞行时长+错峰相配
-const LIT_HOLD = 2700;   // 点亮序列总长，略大于最晚结束的 sway(2.2s)
+const LIT_HOLD = 2900;   // 点亮序列总长，略大于最晚结束的 sway(2.6s)
 let litTimer = null, holdTimer = null, settleTimer = null;
 
 // 手机上键盘把整页顶起来，提交后键盘收起、版面要往下走两三百毫秒。这中间量到的花冠
