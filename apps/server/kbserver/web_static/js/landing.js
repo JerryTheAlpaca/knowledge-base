@@ -180,8 +180,8 @@ function topBar() {
     const c = pill.getBoundingClientRect().width;
     if (!w || !c) return;              // 登录视图还 hidden：矩形全是 0，量了个假结论
     pill.classList.add("notrans");
-    pill.style.setProperty("--g", Math.max(0, (c - w) / 2).toFixed(1) + "px");
-    pill.style.setProperty("--w", w.toFixed(1) + "px");
+    top.style.setProperty("--g", Math.max(0, (c - w) / 2).toFixed(1) + "px");
+    top.style.setProperty("--w", w.toFixed(1) + "px");   // 写在顶栏上：那条栏的形变与两组位移共用
     void pill.offsetWidth;             // 新位置先在无过渡的情况下落定
     pill.classList.remove("notrans");
   };
