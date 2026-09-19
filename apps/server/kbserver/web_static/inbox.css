@@ -6,7 +6,7 @@
    三页统一恒暗，不再在本文件覆写 :root），本文件只写收件箱独有的
    结构与装饰：
    - 花冠金蔷薇（inline SVG）作为首页主视觉：平时完全静止，
-     提交时金粒从提交钮飘向花冠，粉落定后花冠亮一次
+     提交时金粒从发送钮汇聚到花冠，粉落定后花冠整朵点亮一下
    - 采集框初始为胶囊型：左上传符号、右箭头提交
    - 组件类名与 DOM 钩子不变，纯视觉层重构
    ============================================================ */
@@ -20,36 +20,28 @@
 }
 
 /* ============ 金蔷薇（inline SVG）：静态为主，提交后亮一下 ============ */
-/* 平时完全静止。提交时 capture.js 先撒金粉，等粉升到花冠再给 svg.rose 加 .play，
-   于是顺序是「金粉飘上去 → 花冠被点亮」：一道光带自下而上扫过花瓣，整朵提亮一次，
-   配一点摇曳、一道斜掠的流光和一圈呼吸的光晕。
-   点亮两层都掩膜在花冠轮廓内（#gdSil），只提亮花瓣，不在背景上留出方块。
+/* 平时完全静止。提交时 capture.js 先撒金粉，等粉汇聚到花冠再给 svg.rose 加 .play，
+   于是顺序是「金粉汇到花上 → 整朵点亮一下」。点亮只有两层：花瓣走 screen 加光、
+   花外一圈光晕，都按 litFlash 快起慢落，配一点摇曳——不安排任何扫过画面的亮条。
+   花瓣那层掩膜在花冠轮廓内（#gdSil），只亮花瓣，不在背景上留出方块。
    .plant 自身不带 transform 属性（位移在内层那个 g），所以摇曳的 rotate 不会把花推出画布。 */
-.rose .sheenRect { transform: translateX(-700px); }  /* 流光平时停在花冠外 */
-.rose .litGlow { opacity: 0; }
-.rose .litBand { opacity: 0; transform: translateY(200px); }
+.rose .litGlow, .rose .litHalo { opacity: 0; }
 
 .rose.play .plant { transform-box: view-box; transform-origin: 50% 50%;
                     animation: swayOnce 2.2s ease-in-out 1 both; }
 @keyframes swayOnce { 0% { transform: rotate(0deg); } 30% { transform: rotate(-1.5deg); }
                       66% { transform: rotate(1.1deg); } 100% { transform: rotate(0deg); } }
-/* 光带与金粉同向：由下往上穿过花冠，这是「点亮」的主动作 */
-.rose.play .litBand { animation: litRise 1.5s cubic-bezier(.42, .01, .32, 1) 1 both; }
-@keyframes litRise { 0% { opacity: 0; transform: translateY(200px); }
-                     18% { opacity: 1; } 64% { opacity: .9; }
-                     100% { opacity: 0; transform: translateY(-200px); } }
-/* 整朵提亮：亮得快、落得慢，落回原来的明度，不留一层白。
-   峰值刻意压在 .58 上下——再高就把金色洗成奶油色，不像发光像褪色 */
-.rose.play .litGlow { animation: litFlash 1.7s ease-out 1 both; }
-@keyframes litFlash { 0% { opacity: 0; } 20% { opacity: .58; } 48% { opacity: .26; }
+/* 点亮一下：约 165ms 亮到顶，再慢慢落回原来的明度，不留一层白。
+   花瓣那层走 screen 加光，峰值压在 .62——再高就把金色洗成奶油色，不像发光像褪色 */
+.rose.play .litGlow, .rose.play .litHalo { animation: litFlash 1.5s ease-out 1 both; }
+@keyframes litFlash { 0% { opacity: 0; } 11% { opacity: .62; } 32% { opacity: .42; }
                       100% { opacity: 0; } }
-.rose.play .sheenRect { animation: sheenOnce 1.6s ease-in-out .3s 1 both; }
-@keyframes sheenOnce { from { transform: translateX(-700px); } to { transform: translateX(700px); } }
+/* 花外那圈光晕同步胀一次，让「亮了」不止发生在花瓣里 */
 .rose.play .glowPulse { transform-box: fill-box; transform-origin: center;
-                        animation: glowOnce 2s ease-in-out 1 both; }
-@keyframes glowOnce { 0%, 100% { transform: scale(1); } 32% { transform: scale(1.09); } }
+                        animation: glowOnce 1.7s ease-out 1 both; }
+@keyframes glowOnce { 0%, 100% { transform: scale(1); } 14% { transform: scale(1.11); } }
 
-/* —— 提交金粒：capture.js 动态生成，从提交钮飘向花冠，落定后花冠才亮 —— */
+/* —— 提交金粒：capture.js 动态生成，从发送钮喷出、沿弧线汇聚到花冠上，落定后花冠才亮 —— */
 .gold-spark { position: fixed; z-index: 90; border-radius: 50%; pointer-events: none;
               box-shadow: 0 0 9px rgba(244, 202, 114, .95), 0 0 2px rgba(255, 243, 201, .9); }
 
@@ -192,6 +184,8 @@ label { display: block; font-size: var(--fs-small); color: var(--text-2); margin
                padding: 0; margin: 0; }
 .rose-wrap { display: flex; justify-content: center; }
 .rose { display: block; width: clamp(260px, 40vh, 420px); height: auto;
+        /* 点亮用的光晕比 viewBox 宽，允许溢出到页面里，否则花外那圈光会被方框切平 */
+        overflow: visible;
         filter: drop-shadow(0 0 30px rgba(232, 169, 60, .13)); }
 
 /* 胶囊采集框：常态为单行胶囊（上传｜输入｜发送 同排）；
@@ -586,8 +580,7 @@ details.disclosure.slim .disclosure-body { padding: 0 8px 8px; }
   .smartbox.multi { border-radius: 24px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .rose .plant, .rose .sheenRect, .rose .glowPulse,
-  .rose .litGlow, .rose .litBand { animation: none !important; }
+  .rose .plant, .rose .glowPulse, .rose .litGlow, .rose .litHalo { animation: none !important; }
   .step.running .sline { animation: none; background: var(--accent); }
   .itembar.indeterminate > i, .stagepanel .panelbar.indeterminate > i { animation: none; left: 30%; }
   ul.items > li.enter, .detail { animation: none; }

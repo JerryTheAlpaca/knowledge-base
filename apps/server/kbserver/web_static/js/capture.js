@@ -187,10 +187,10 @@ let submitting = false;
 let onSubmitted = null;
 export function setSubmittedHandler(fn) { onSubmitted = fn; }
 
-// —— 金蔷薇回馈：金粉先飘向花冠，等粉到位花冠再亮一下。
-//    顺序感全靠 DUST_RISE 这个延时：点亮动画（inbox.css 的 .rose.play）在粉落下时才挂上。
-const DUST_RISE = 720;   // 金粉从采集钮飘到花冠下沿
-const LIT_HOLD = 2700;   // 点亮序列总长，略大于最晚结束的 litGlow(1.7s)/sway(2.2s)
+// —— 金蔷薇回馈：金粉从发送钮喷出来，沿弧线汇聚到花冠上；粉落定的那一刻整朵点亮一下。
+//    顺序感全靠 DUST_RISE 这个延时：点亮动画（inbox.css 的 .rose.play）在多数粉落定时挂上。
+const DUST_RISE = 760;   // 金粉从发送钮汇聚到花冠所需时间，与下面的飞行时长+错峰相配
+const LIT_HOLD = 2700;   // 点亮序列总长，略大于最晚结束的 sway(2.2s)
 let litTimer = null, holdTimer = null;
 function roseCelebrate() {
   const wrap = document.querySelector(".rose-wrap");
@@ -202,24 +202,33 @@ function roseCelebrate() {
     const tr = rose.getBoundingClientRect();
     const fr = $("capSubmit").getBoundingClientRect();
     const fx = fr.left + fr.width / 2, fy = fr.top + fr.height / 2;
-    const tx = tr.left + tr.width / 2, ty = tr.top + tr.height * 0.5;
+    // 花心就是 svg 方框的正中：viewBox「120 80 360 360」的中心正落在 (300,260) 的花心上
+    const cx = tr.left + tr.width / 2, cy = tr.top + tr.height / 2;
+    const R = tr.width * 0.3;     // 落点散布半径：压在看得见的瓣圈内（瓣只长到约 .35 宽），不撒到花外的黑底上
     const colors = ["#ffd98e", "#f4ca72", "#e2b04a", "#fff3c9"];
-    for (let i = 0; i < 22; i++) {
+    for (let i = 0; i < 28; i++) {
       const p = document.createElement("i");
       p.className = "gold-spark";
-      const s = (4 + Math.random() * 5).toFixed(1);
+      const s = (3.5 + Math.random() * 4.5).toFixed(1);
       p.style.cssText = "width:" + s + "px;height:" + s + "px;background:" +
         colors[i % colors.length] + ";left:" + fx + "px;top:" + fy + "px";
       document.body.appendChild(p);
-      const dx = (tx - fx) * (0.7 + Math.random() * 0.55) + (Math.random() - 0.5) * tr.width * 0.5;
-      const dy = (ty - fy) * (0.7 + Math.random() * 0.55) + (Math.random() - 0.5) * tr.height * 0.16;
+      // 落点均匀撒满瓣圈（sqrt 才不往圆心堆），最后收在这一点上
+      const a = Math.random() * Math.PI * 2;
+      const r = Math.sqrt(Math.random()) * R;
+      const dx = cx + Math.cos(a) * r - fx;
+      const dy = cy + Math.sin(a) * r * 0.94 - fy;
+      // 中途沿切向鼓一点，走弧线汇进花里，而不是直愣愣四散开
+      const bow = (Math.random() - 0.5) * 0.26;
+      const mx = dx * 0.5 - dy * bow, my = dy * 0.5 + dx * bow;
       p.animate([
-        { transform: "translate(0,0) scale(1)", opacity: 0 },
-        { opacity: 1, offset: 0.16 },
-        { transform: "translate(" + dx * 0.55 + "px," + dy * 0.5 + "px) scale(.95)", opacity: 1, offset: 0.62 },
-        { transform: "translate(" + dx + "px," + dy + "px) scale(.35)", opacity: 0 },
-      ], { duration: 900 + Math.random() * 600, delay: i * 32,
-           easing: "cubic-bezier(.3,.6,.3,1)", fill: "forwards" })
+        { transform: "translate(0,0) scale(.5)", opacity: 0 },
+        { transform: "translate(" + dx * 0.12 + "px," + dy * 0.14 + "px) scale(1)", opacity: 1, offset: 0.18 },
+        { transform: "translate(" + mx + "px," + my + "px) scale(.9)", opacity: 1, offset: 0.58 },
+        { transform: "translate(" + dx + "px," + dy + "px) scale(.5)", opacity: 1, offset: 0.9 },
+        { transform: "translate(" + dx + "px," + dy + "px) scale(0)", opacity: 0 },
+      ], { duration: 520 + Math.random() * 190, delay: i * 13,
+           easing: "cubic-bezier(.34,.56,.28,1)", fill: "forwards" })
         .addEventListener("finish", () => p.remove());
     }
   }

@@ -511,14 +511,6 @@
       <stop offset="1" stop-color="#b8862f" stop-opacity="0"/>
     </radialGradient>
 
-    <linearGradient id="gdSheen" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#fff" stop-opacity="0"/>
-      <stop offset=".45" stop-color="#fff5df" stop-opacity=".02"/>
-      <stop offset=".5" stop-color="#fff8e9" stop-opacity=".3"/>
-      <stop offset=".55" stop-color="#fff5df" stop-opacity=".02"/>
-      <stop offset="1" stop-color="#fff" stop-opacity="0"/>
-    </linearGradient>
-
     <!-- 世界空间方向光：光从左上。画在未旋转的矩形上，方向固定在世界坐标里，
          再用花冠轮廓掩膜只让花冠内部受益，不会在背景上留边。
          亮部只用很窄一段暖白，暗部沿用层间投影的 #2b190e，不往棕色走。 -->
@@ -552,8 +544,6 @@
     <filter id="gdFlatten" x="-6%" y="-6%" width="112%" height="112%">
       <feColorMatrix type="matrix" values="0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 1 0"/>
     </filter>
-
-    <clipPath id="gdBloomClip"><circle cx="300" cy="260" r="166"/></clipPath>
 
     <path id="gdOuter" d="M0 5 C-20-3-40-21-48-49 C-55-74-46-95-28-102 C-19-106-11-102-6-94 C-2-88 2-88 6-94 C11-102 19-106 28-102 C46-95 55-74 48-49 C40-21 20-3 0 5Z"/>
     <path id="gdOuterRim" fill="none" d="M-28-102 C-19-106-11-102-6-94 C-2-88 2-88 6-94 C11-102 19-106 28-102"/>
@@ -669,22 +659,24 @@
       </g>
     </mask>
 
-    <!-- 点亮用的两层渐变：整朵提亮 + 自下而上扫过花冠的光带。
-         都掩膜到花冠轮廓内，所以只提亮花瓣，不会在背景上留出一个方块 -->
+    <!-- 点亮用的提亮层渐变：整朵提亮，不做扫过花冠的光带。
+         提亮层用 screen 混合叠在花瓣上（加光，不是盖一层白），掩膜到花冠轮廓内，
+         所以只亮花瓣，不会在背景上留出一个方块；光晕画在花外，负责「亮」的溢出感 -->
     <radialGradient id="gdLit" cx="50%" cy="50%" r="60%">
-      <stop offset="0" stop-color="#ffedbb" stop-opacity=".5"/>
-      <stop offset=".55" stop-color="#ffe3a8" stop-opacity=".22"/>
+      <stop offset="0" stop-color="#fff3cf" stop-opacity=".55"/>
+      <stop offset=".5" stop-color="#ffe0a0" stop-opacity=".26"/>
       <stop offset="1" stop-color="#e2b04a" stop-opacity="0"/>
     </radialGradient>
-    <linearGradient id="gdLitBand" x1="0" y1="1" x2="0" y2="0">
-      <stop offset="0" stop-color="#fff3cf" stop-opacity="0"/>
-      <stop offset=".5" stop-color="#fff8e6" stop-opacity=".9"/>
-      <stop offset="1" stop-color="#fff3cf" stop-opacity="0"/>
-    </linearGradient>
+    <radialGradient id="gdLitHalo" cx="50%" cy="50%" r="50%">
+      <stop offset="0" stop-color="#ffeec6" stop-opacity=".4"/>
+      <stop offset=".55" stop-color="#f0c67c" stop-opacity=".28"/>
+      <stop offset="1" stop-color="#e2b04a" stop-opacity="0"/>
+    </radialGradient>
   </defs>
 
 
   <circle class="glowPulse" cx="288" cy="248" r="176" fill="url(#gdGlow)"/>
+  <circle class="litHalo" cx="288" cy="248" r="226" fill="url(#gdLitHalo)"/>
 
   <!-- .plant 自身不带 transform：摇曳动画会覆写 transform，位移放在内层 -->
   <g class="plant" filter="url(#gdPlantShadow)">
@@ -707,16 +699,13 @@
       <rect x="-128" y="-128" width="256" height="256" fill="url(#gdSunShade)"/>
     </g>
    </g>
-   <!-- 点亮两层单独一层，不带磨砂：提交那两秒里噪点不必每帧重算。
-        仍掩膜在花冠轮廓内，所以只有花瓣变亮，背景不留方块 -->
-   <g mask="url(#gdSil)">
-      <rect class="litGlow" x="-128" y="-128" width="256" height="256" fill="url(#gdLit)"/>
-      <rect class="litBand" x="-128" y="-38" width="256" height="76" fill="url(#gdLitBand)"/>
-   </g>
+   <!-- 提亮层单独一层，不带磨砂：点亮那两秒里噪点不必每帧重算。
+        screen 混合叠在花瓣上是加光，不像盖白那样把金色洗成奶油色；
+        掩膜写在 rect 自己身上（套一层 g 会让它跟花瓣隔离，混合就失效了） -->
+   <rect class="litGlow" mask="url(#gdSil)" style="mix-blend-mode:screen"
+         x="-128" y="-128" width="256" height="256" fill="url(#gdLit)"/>
    </g>
   </g>
-
-  <g clip-path="url(#gdBloomClip)"><g transform="rotate(18 300 260)"><rect class="sheenRect" x="244" y="94" width="112" height="332" fill="url(#gdSheen)"/></g></g>
 </svg>
 
         </div>
