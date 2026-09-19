@@ -260,7 +260,8 @@
 .land-cta.big { margin-top: 30px; }
 .join-note { max-width: 540px; margin: 26px auto 0; font-size: var(--fs-small); line-height: 1.95; color: var(--text-2); }
 
-.land-foot { display: flex; flex-direction: column; align-items: center; gap: 9px;
+.land-foot { display: flex; flex-direction: column; align-items: center;
+             gap: calc(var(--fs-caption) * 1.6);  /* 约一行正文高：备案号与上面空开一行 */
              padding: 0 22px calc(46px + env(safe-area-inset-bottom));
              font-size: var(--fs-caption); letter-spacing: .1em; color: rgba(177, 156, 124, .7); }
 .land-foot-row { display: flex; flex-wrap: wrap; justify-content: center; align-items: baseline; gap: 6px 14px; }
