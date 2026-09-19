@@ -187,8 +187,11 @@ let submitting = false;
 let onSubmitted = null;
 export function setSubmittedHandler(fn) { onSubmitted = fn; }
 
-// —— 金蔷薇回馈：金粒从提交钮飞向花冠，花冠播一次摇曳+流光（平时页面完全静止） ——
-let rosePlayTimer = null;
+// —— 金蔷薇回馈：金粉先飘向花冠，等粉到位花冠再亮一下。
+//    顺序感全靠 DUST_RISE 这个延时：点亮动画（inbox.css 的 .rose.play）在粉落下时才挂上。
+const DUST_RISE = 720;   // 金粉从采集钮飘到花冠下沿
+const LIT_HOLD = 2700;   // 点亮序列总长，略大于最晚结束的 litGlow(1.7s)/sway(2.2s)
+let litTimer = null, holdTimer = null;
 function roseCelebrate() {
   const wrap = document.querySelector(".rose-wrap");
   const rose = document.querySelector("svg.rose");
@@ -220,11 +223,13 @@ function roseCelebrate() {
         .addEventListener("finish", () => p.remove());
     }
   }
+  clearTimeout(litTimer);
+  clearTimeout(holdTimer);
   rose.classList.remove("play");
-  void rose.getBoundingClientRect();  // 强制重排，连续提交也能重播
-  rose.classList.add("play");
-  clearTimeout(rosePlayTimer);
-  rosePlayTimer = setTimeout(() => rose.classList.remove("play"), 2200);
+  litTimer = setTimeout(() => {
+    rose.classList.add("play");
+    holdTimer = setTimeout(() => rose.classList.remove("play"), LIT_HOLD);
+  }, reduce ? 0 : DUST_RISE);
 }
 
 export async function submitCapture() {

@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>金蔷薇 · 方案对比</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { background: #0a0705; }
+  body {
+    min-height: 100dvh;
+    font-family: "Songti SC", "Noto Serif SC", Georgia, serif;
+    background: radial-gradient(1100px 760px at 50% 30%, #241a09 0%, #150f07 48%, #0a0705 100%);
+    color: #f3e9d2;
+    display: flex; align-items: center; justify-content: center; gap: 64px;
+    padding: 40px 24px; flex-wrap: wrap;
+  }
+  .col { display: flex; flex-direction: column; align-items: center; gap: 16px; }
+  .col img { display: block; width: clamp(280px, 44vh, 420px); height: auto;
+             filter: drop-shadow(0 0 30px rgba(232, 169, 60, .13)); }
+  .name { font-size: 15px; letter-spacing: 3px; color: #b19c7c; }
+</style>
+</head>
+<body>
+  <div class="col"><img src="./golden-rose-regular.svg" alt="现状"><div class="name">现状</div></div>
+  <div class="col"><img src="./golden-rose-gilded.svg?v=4" alt="鎏金"><div class="name">鎏金 · 新方案</div></div>
+</body>
+</html>

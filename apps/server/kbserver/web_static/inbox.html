@@ -7,16 +7,17 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="知识收件箱">
-<title>知识收件箱</title>
+<meta name="apple-mobile-web-app-title" content="金蔷薇">
+<title>金蔷薇</title>
 <link rel="stylesheet" href="/tokens.css">
 <link rel="stylesheet" href="/webstatic/inbox.css">
+<link rel="stylesheet" href="/webstatic/landing.css">
 </head>
 <body>
 
 <header id="topbar" hidden>
   <div class="topbar-inner">
-    <button class="brand brandbtn" id="brandHome" title="返回主页">知识收件箱</button>
+    <button class="brand brandbtn" id="brandHome" title="返回主页">金蔷薇</button>
     <div class="spacer"></div>
     <div class="menuwrap">
       <button class="icon gear" id="gearBtn" aria-label="设置" title="设置">
@@ -41,14 +42,346 @@
   </div>
 </header>
 
-<main id="loginView" hidden>
-  <div class="login-hero">
-    <div class="brand-display">知识收件箱</div>
-    <p class="login-sub">把公众号、B 站、网页与你随手记下的内容，安静地整理进自己的知识库。关机也不停。</p>
-    <div id="loginError"></div>
-    <button class="primary" id="loginBtn">前往登录 / 注册</button>
-    <p class="small" style="margin-top:18px">使用 jerrythealpaca.cn 统一账号。新用户需持邀请码注册。</p>
-  </div>
+<main id="loginView" class="landing" hidden>
+  <canvas id="dustCanvas" class="dust" aria-hidden="true"></canvas>
+
+  <header class="land-top" id="landTop">
+    <button class="land-brand" id="landBrand" type="button" title="回到首屏">金蔷薇</button>
+    <nav class="land-nav">
+      <a class="land-anchor" href="#landHow">怎么用</a>
+    </nav>
+    <span class="land-spacer"></span>
+    <button class="land-signin" type="button" data-login-entry>登录</button>
+    <button class="land-cta" type="button" data-login-entry>注册</button>
+    <i class="land-progress" id="landProgress" aria-hidden="true"></i>
+  </header>
+
+  <div id="loginError"></div>
+
+  <!-- ============ 首屏：金粉浮游，花冠自内向外绽开 ============ -->
+  <section class="land-hero">
+    <div class="land-rose">
+      <svg class="rose-bloom" viewBox="120 80 360 360" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">
+  <defs>
+    <radialGradient id="lgGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0" stop-color="#e5c289" stop-opacity=".2"/>
+      <stop offset=".5" stop-color="#c99c62" stop-opacity=".08"/>
+      <stop offset="1" stop-color="#a97942" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- 形体渐变：只描述花瓣自己的卷曲，不描述光从哪来。
+         所以四条都沿花瓣对称轴（x1=x2），顶端亮、花心侧暗，左右对称；
+         这类明暗跟着 rotate 一起转是对的，世界方向光见下面 lgSunLit/lgSunShade。
+         A/B 中间调、C 亮档、D 暗档，只作花色错落，不承担方向。 -->
+    <linearGradient id="lgGoldA" x1=".5" y1="0" x2=".5" y2="1">
+      <stop offset="0" stop-color="#ffedaa"/>
+      <stop offset=".12" stop-color="#e2b04a"/>
+      <stop offset=".42" stop-color="#b8862f"/>
+      <stop offset=".62" stop-color="#a97942"/>
+      <stop offset=".8" stop-color="#c99c62"/>
+      <stop offset="1" stop-color="#b8862f"/>
+    </linearGradient>
+    <linearGradient id="lgGoldB" x1=".5" y1="0" x2=".5" y2="1">
+      <stop offset="0" stop-color="#e2b04a"/>
+      <stop offset=".14" stop-color="#ffedaa"/>
+      <stop offset=".38" stop-color="#b8862f"/>
+      <stop offset=".66" stop-color="#a97942"/>
+      <stop offset=".86" stop-color="#c99c62"/>
+      <stop offset="1" stop-color="#b8862f"/>
+    </linearGradient>
+    <linearGradient id="lgGoldC" x1=".5" y1="0" x2=".5" y2="1">
+      <stop offset="0" stop-color="#fff1d1"/>
+      <stop offset=".14" stop-color="#ffedaa"/>
+      <stop offset=".4" stop-color="#e2b04a"/>
+      <stop offset=".66" stop-color="#dfbd88"/>
+      <stop offset=".86" stop-color="#b8862f"/>
+      <stop offset="1" stop-color="#c99c62"/>
+    </linearGradient>
+    <linearGradient id="lgGoldD" x1=".5" y1="0" x2=".5" y2="1">
+      <stop offset="0" stop-color="#c99c62"/>
+      <stop offset=".24" stop-color="#b8862f"/>
+      <stop offset=".5" stop-color="#a97942"/>
+      <stop offset=".76" stop-color="#b8862f"/>
+      <stop offset="1" stop-color="#c99c62"/>
+    </linearGradient>
+
+    <!-- 卷边与边缘高光同理：以花瓣自身中线为轴左右对称，不预设侧光 -->
+    <linearGradient id="lgRoll" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#b8862f" stop-opacity=".22"/>
+      <stop offset=".14" stop-color="#c99c62" stop-opacity=".06"/>
+      <stop offset=".3" stop-color="#ffedaa" stop-opacity=".12"/>
+      <stop offset=".5" stop-color="#ffedaa" stop-opacity="0"/>
+      <stop offset=".7" stop-color="#ffedaa" stop-opacity=".12"/>
+      <stop offset=".86" stop-color="#c99c62" stop-opacity=".06"/>
+      <stop offset="1" stop-color="#b8862f" stop-opacity=".22"/>
+    </linearGradient>
+    <linearGradient id="lgRim" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#e2b04a" stop-opacity=".3"/>
+      <stop offset=".22" stop-color="#fff1d1" stop-opacity=".7"/>
+      <stop offset=".5" stop-color="#fff1d1" stop-opacity=".95"/>
+      <stop offset=".78" stop-color="#fff1d1" stop-opacity=".7"/>
+      <stop offset="1" stop-color="#e2b04a" stop-opacity=".3"/>
+    </linearGradient>
+    <linearGradient id="lgFold" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffedaa" stop-opacity="0"/>
+      <stop offset=".35" stop-color="#fff1d1" stop-opacity=".45"/>
+      <stop offset="1" stop-color="#b8862f" stop-opacity=".35"/>
+    </linearGradient>
+
+    <!-- 花心是凹陷：暗部压到背光（右下）一侧 -->
+    <radialGradient id="lgCore" cx="57%" cy="61%" r="56%">
+      <stop offset="0" stop-color="#a97942"/>
+      <stop offset=".6" stop-color="#b8862f"/>
+      <stop offset="1" stop-color="#b8862f" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- 世界空间方向光：光从左上。画在未旋转的矩形上，方向固定在世界坐标里，
+         再用花冠轮廓掩膜只让花冠内部受益，不会在背景上留边。
+         亮部只用很窄一段暖白，暗部沿用层间投影的 #2b190e，不往棕色走。 -->
+    <linearGradient id="lgSunLit" x1="0" y1="0" x2=".78" y2=".78">
+      <stop offset="0" stop-color="#fff6e4" stop-opacity=".26"/>
+      <stop offset=".3" stop-color="#ffeecb" stop-opacity=".11"/>
+      <stop offset=".56" stop-color="#ffe9c2" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="lgSunShade" x1=".22" y1=".22" x2="1" y2="1">
+      <stop offset=".4" stop-color="#2b190e" stop-opacity="0"/>
+      <stop offset=".72" stop-color="#2b190e" stop-opacity=".12"/>
+      <stop offset="1" stop-color="#2b190e" stop-opacity=".22"/>
+    </linearGradient>
+
+    <!-- 光从左上：投影一律往右下落 -->
+    <filter id="lgPlantShadow" x="-24%" y="-22%" width="150%" height="150%">
+      <feDropShadow dx="5" dy="8" stdDeviation="8" flood-color="#2b190e" flood-opacity=".28"/>
+    </filter>
+    <filter id="lgLayer" x="-24%" y="-22%" width="150%" height="150%">
+      <feDropShadow dx="3" dy="4" stdDeviation="4" flood-color="#2b190e" flood-opacity=".22"/>
+    </filter>
+    <!-- 铸造磨砂只留在主页那朵：首屏这朵常年带绽开循环，噪点每帧重算会掉帧 -->
+    <!-- 把花冠压成纯白剪影（保留 alpha），供 lgSil 当掩膜用 -->
+    <filter id="lgFlatten" x="-6%" y="-6%" width="112%" height="112%">
+      <feColorMatrix type="matrix" values="0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 1 0"/>
+    </filter>
+
+    <path id="lgOuter" d="M0 5 C-20-3-40-21-48-49 C-55-74-46-95-28-102 C-19-106-11-102-6-94 C-2-88 2-88 6-94 C11-102 19-106 28-102 C46-95 55-74 48-49 C40-21 20-3 0 5Z"/>
+    <path id="lgOuterRim" fill="none" d="M-28-102 C-19-106-11-102-6-94 C-2-88 2-88 6-94 C11-102 19-106 28-102"/>
+    <path id="lgStd" d="M0 4 C-17-3-33-20-39-46 C-45-70-37-90-22-98 C-16-101-9-99-5-92 C-2-87 2-87 5-92 C9-99 16-101 22-98 C37-90 45-70 39-46 C33-20 17-3 0 4Z"/>
+    <path id="lgStdRim" fill="none" d="M-22-98 C-16-101-9-99-5-92 C-2-87 2-87 5-92 C9-99 16-101 22-98"/>
+    <path id="lgInr" d="M0 3 C-13-3-25-17-28-36 C-31-55-24-72-13-79 C-7-83-3-80-1-74 C1-80 6-83 12-79 C23-72 30-55 27-36 C24-17 12-3 0 3Z"/>
+    <path id="lgInrRim" fill="none" d="M-13-79 C-7-83-3-80-1-74 C1-80 6-83 12-79"/>
+    <path id="lgFoldDark" fill="none" stroke="#b8862f" stroke-opacity=".22" stroke-width="2.2" stroke-linecap="round"
+          d="M-14-86 C-19-56-11-26-1-2 M14-86 C19-56 11-26 1-2 M0-90 C-2-60-1-30 0-2"/>
+    <path id="lgFoldLite" fill="none" stroke="url(#lgFold)" stroke-width="1.4" stroke-linecap="round"
+          d="M-10-86 C-15-56-7-26 2-4 M11-85 C16-55 8-26-1-4"/>
+
+    <g id="lgPetalO">
+      <use href="#lgOuter"/>
+      <use href="#lgOuter" fill="url(#lgRoll)"/>
+      <use href="#lgOuter" fill="none" stroke="#b8862f" stroke-opacity=".3" stroke-width=".9"/>
+      <use href="#lgFoldDark"/>
+      <use href="#lgFoldLite"/>
+      <use href="#lgOuterRim" stroke="url(#lgRim)" stroke-width="3" stroke-linecap="round"/>
+    </g>
+    <g id="lgPetalS">
+      <use href="#lgStd"/>
+      <use href="#lgStd" fill="url(#lgRoll)"/>
+      <use href="#lgStd" fill="none" stroke="#b8862f" stroke-opacity=".28" stroke-width=".85"/>
+      <use href="#lgFoldDark" transform="scale(.94)"/>
+      <use href="#lgFoldLite" transform="scale(.94)"/>
+      <use href="#lgStdRim" stroke="url(#lgRim)" stroke-width="2.6" stroke-linecap="round"/>
+    </g>
+    <g id="lgPetalI">
+      <use href="#lgInr"/>
+      <use href="#lgInr" fill="url(#lgRoll)"/>
+      <use href="#lgInr" fill="none" stroke="#b8862f" stroke-opacity=".26" stroke-width=".8"/>
+      <use href="#lgFoldLite" transform="scale(.6)"/>
+      <use href="#lgInrRim" stroke="url(#lgRim)" stroke-width="2.1" stroke-linecap="round"/>
+    </g>
+
+    <!-- 各层花瓣只列几何，不带 lgLayer 投影：绘制树和剪影掩膜共用同一份。
+         角度是刻意不等间隔的（每片在 ±3° 内扰动，各圈平均间隔仍为 40/45/51/51/60/60/72），
+         等间隔的环形阵列一眼就看得出是假的，别"顺手对齐"回去。 -->
+    <g id="lgRing1">
+      <use href="#lgPetalO" fill="url(#lgGoldA)" transform="rotate(2) skewX(6) scale(1.08 1.06)"/>
+      <use href="#lgPetalO" fill="url(#lgGoldB)" transform="rotate(39) skewX(6) scale(1.02 1.08)"/>
+      <use href="#lgPetalO" fill="url(#lgGoldB)" transform="rotate(82) skewX(7) scale(1.1 1.03)"/>
+      <use href="#lgPetalO" fill="url(#lgGoldD)" transform="rotate(124) skewX(6) scale(1.04 1.07)"/>
+      <use href="#lgPetalO" fill="url(#lgGoldD)" transform="rotate(158) skewX(7) scale(1.09 1.04)"/>
+      <use href="#lgPetalO" fill="url(#lgGoldB)" transform="rotate(200) skewX(6) scale(1.03 1.08)"/>
+      <use href="#lgPetalO" fill="url(#lgGoldA)" transform="rotate(243) skewX(7) scale(1.08 1.03)"/>
+      <use href="#lgPetalO" fill="url(#lgGoldC)" transform="rotate(277) skewX(6) scale(1.02 1.07)"/>
+      <use href="#lgPetalO" fill="url(#lgGoldC)" transform="rotate(321) skewX(7) scale(1.07 1.04)"/>
+    </g>
+    <g id="lgRing2">
+      <use href="#lgPetalS" fill="url(#lgGoldA)" transform="rotate(19) skewX(8) scale(.9 .9)"/>
+      <use href="#lgPetalS" fill="url(#lgGoldB)" transform="rotate(68) skewX(8) scale(.95 .88)"/>
+      <use href="#lgPetalS" fill="url(#lgGoldB)" transform="rotate(111) skewX(9) scale(.88 .93)"/>
+      <use href="#lgPetalS" fill="url(#lgGoldD)" transform="rotate(160) skewX(8) scale(.94 .89)"/>
+      <use href="#lgPetalS" fill="url(#lgGoldB)" transform="rotate(200) skewX(9) scale(.89 .93)"/>
+      <use href="#lgPetalS" fill="url(#lgGoldA)" transform="rotate(248) skewX(8) scale(.95 .9)"/>
+      <use href="#lgPetalS" fill="url(#lgGoldC)" transform="rotate(289) skewX(9) scale(.88 .92)"/>
+      <use href="#lgPetalS" fill="url(#lgGoldC)" transform="rotate(339) skewX(8) scale(.93 .9)"/>
+    </g>
+    <g id="lgRing3">
+      <use href="#lgPetalS" fill="url(#lgGoldA)" transform="rotate(11) skewX(10) scale(.64 .66)"/>
+      <use href="#lgPetalS" fill="url(#lgGoldB)" transform="rotate(58) skewX(10) scale(.67 .63)"/>
+      <use href="#lgPetalS" fill="url(#lgGoldD)" transform="rotate(113) skewX(11) scale(.63 .66)"/>
+      <use href="#lgPetalS" fill="url(#lgGoldD)" transform="rotate(160) skewX(10) scale(.66 .64)"/>
+      <use href="#lgPetalS" fill="url(#lgGoldB)" transform="rotate(217) skewX(11) scale(.64 .67)"/>
+      <use href="#lgPetalS" fill="url(#lgGoldA)" transform="rotate(265) skewX(10) scale(.67 .63)"/>
+      <use href="#lgPetalS" fill="url(#lgGoldC)" transform="rotate(321) skewX(10) scale(.63 .66)"/>
+    </g>
+    <g id="lgRing4">
+      <use href="#lgPetalI" fill="url(#lgGoldA)" transform="rotate(31) skewX(11) scale(.58 .6)"/>
+      <use href="#lgPetalI" fill="url(#lgGoldD)" transform="rotate(88) skewX(12) scale(.6 .57)"/>
+      <use href="#lgPetalI" fill="url(#lgGoldD)" transform="rotate(136) skewX(11) scale(.57 .6)"/>
+      <use href="#lgPetalI" fill="url(#lgGoldB)" transform="rotate(190) skewX(12) scale(.6 .58)"/>
+      <use href="#lgPetalI" fill="url(#lgGoldA)" transform="rotate(237) skewX(11) scale(.58 .6)"/>
+      <use href="#lgPetalI" fill="url(#lgGoldC)" transform="rotate(293) skewX(12) scale(.6 .57)"/>
+      <use href="#lgPetalI" fill="url(#lgGoldC)" transform="rotate(342) skewX(11) scale(.57 .6)"/>
+    </g>
+    <g id="lgRing5">
+      <use href="#lgPetalI" fill="url(#lgGoldA)" transform="rotate(17) skewX(13) scale(.44 .46)"/>
+      <use href="#lgPetalI" fill="url(#lgGoldD)" transform="rotate(73) skewX(13) scale(.46 .43)"/>
+      <use href="#lgPetalI" fill="url(#lgGoldD)" transform="rotate(136) skewX(14) scale(.43 .46)"/>
+      <use href="#lgPetalI" fill="url(#lgGoldB)" transform="rotate(194) skewX(13) scale(.45 .44)"/>
+      <use href="#lgPetalI" fill="url(#lgGoldA)" transform="rotate(258) skewX(14) scale(.44 .46)"/>
+      <use href="#lgPetalI" fill="url(#lgGoldC)" transform="rotate(315) skewX(13) scale(.46 .43)"/>
+    </g>
+    <g id="lgRing6">
+      <use href="#lgPetalI" fill="url(#lgGoldB)" transform="rotate(39) skewX(14) scale(.32 .34)"/>
+      <use href="#lgPetalI" fill="url(#lgGoldD)" transform="rotate(102) skewX(15) scale(.34 .31)"/>
+      <use href="#lgPetalI" fill="url(#lgGoldD)" transform="rotate(158) skewX(14) scale(.31 .34)"/>
+      <use href="#lgPetalI" fill="url(#lgGoldB)" transform="rotate(225) skewX(15) scale(.33 .32)"/>
+      <use href="#lgPetalI" fill="url(#lgGoldC)" transform="rotate(280) skewX(14) scale(.32 .34)"/>
+      <use href="#lgPetalI" fill="url(#lgGoldC)" transform="rotate(342) skewX(15) scale(.34 .31)"/>
+    </g>
+    <g id="lgRing7">
+      <use href="#lgPetalI" fill="url(#lgGoldA)" transform="rotate(13) skewX(16) scale(.21 .22)"/>
+      <use href="#lgPetalI" fill="url(#lgGoldB)" transform="rotate(80) skewX(16) scale(.22 .2)"/>
+      <use href="#lgPetalI" fill="url(#lgGoldD)" transform="rotate(155) skewX(16) scale(.2 .22)"/>
+      <use href="#lgPetalI" fill="url(#lgGoldB)" transform="rotate(223) skewX(16) scale(.22 .21)"/>
+      <use href="#lgPetalI" fill="url(#lgGoldC)" transform="rotate(300) skewX(16) scale(.21 .22)"/>
+    </g>
+
+    <mask id="lgSil">
+      <g filter="url(#lgFlatten)">
+        <circle r="84"/>
+        <use href="#lgRing1"/>
+        <use href="#lgRing2"/>
+        <use href="#lgRing3"/>
+        <use href="#lgRing4"/>
+        <use href="#lgRing5"/>
+        <use href="#lgRing6"/>
+        <use href="#lgRing7"/>
+      </g>
+    </mask>
+  </defs>
+
+
+  <circle class="hero-glow" cx="288" cy="248" r="176" fill="url(#lgGlow)"/>
+
+  <!-- .plant 自身不带 transform：摇曳动画会覆写 transform，位移放在内层 -->
+  <g class="plant" filter="url(#lgPlantShadow)">
+   <g transform="translate(300 260)">
+    <g class="bloom" style="--i:7;--dir:1"><g filter="url(#lgLayer)"><use href="#lgRing1"/></g></g>
+
+    <circle class="hero-core" r="84" fill="url(#lgCore)"/>
+
+    <g class="bloom" style="--i:6;--dir:-1"><g filter="url(#lgLayer)"><use href="#lgRing2"/></g></g>
+    <g class="bloom" style="--i:5;--dir:1"><g filter="url(#lgLayer)"><use href="#lgRing3"/></g></g>
+    <g class="bloom" style="--i:4;--dir:-1"><g filter="url(#lgLayer)"><use href="#lgRing4"/></g></g>
+    <g class="bloom" style="--i:3;--dir:1"><g filter="url(#lgLayer)"><use href="#lgRing5"/></g></g>
+    <g class="bloom" style="--i:2;--dir:-1"><g filter="url(#lgLayer)"><use href="#lgRing6"/></g></g>
+    <g class="bloom" style="--i:1;--dir:1"><g filter="url(#lgLayer)"><use href="#lgRing7"/></g></g>
+
+    <!-- 方向光压在最后：左上提亮、右下压暗，覆盖所有花瓣的世界位置 -->
+    <g class="hero-light" mask="url(#lgSil)">
+      <rect x="-128" y="-128" width="256" height="256" fill="url(#lgSunLit)"/>
+      <rect x="-128" y="-128" width="256" height="256" fill="url(#lgSunShade)"/>
+    </g>
+   </g>
+  </g>
+</svg>
+
+    </div>
+
+    <h1 class="land-title"><span>金</span><span>蔷</span><span>薇</span></h1>
+    <p class="land-tag">把散落日子里捡到的好东西，<br class="n-br">长成你自己的知识</p>
+    <p class="land-meta">公众号 / 小红书 / B 站 / 视频号 / 知乎 / 网页 / 一句话的念头<span class="land-dot">→</span><span class="land-to">你自己的 Obsidian</span></p>
+    <a class="land-cue" href="#landPoem" aria-label="向下阅读">
+      <i class="land-cue-line" aria-hidden="true"></i>
+    </a>
+  </section>
+
+  <!-- ============ 诗：逐行落定，末句点亮 ============ -->
+  <section class="land-poem" id="landPoem">
+    <p class="poem-lead rv">我们终日行走在生活的尘埃里。</p>
+    <div class="stanza">
+      <p class="rv">读过的文字，偶然闪过的念头，</p>
+      <p class="rv">一次谈话，一点困惑，一瞬间的领悟——</p>
+      <p class="rv">它们散落在时间里，微小得像一粒粒<i class="g">金粉</i>。</p>
+    </div>
+    <div class="stanza">
+      <p class="rv">把它们拾起、筛选、积攒，</p>
+      <p class="rv">让零散的知识彼此相遇，</p>
+      <p class="rv">让模糊的思想渐渐成形。</p>
+    </div>
+    <div class="stanza">
+      <p class="rv">直到有一天，</p>
+      <p class="rv">这些微小的<i class="g">金粉</i>，</p>
+      <p class="rv">会成为属于你的那一朵——</p>
+    </div>
+    <p class="poem-word rv" id="roseWord">金蔷薇</p>
+  </section>
+
+  <!-- ============ 怎么用：一根花茎随滚动长上来，三朵花在节点上开 ============ -->
+  <section class="land-how" id="landHow">
+    <p class="kicker rv">怎么用</p>
+    <div class="how-body">
+      <div class="stem" aria-hidden="true"><i id="stemFill"></i></div>
+      <ol class="steps">
+        <li class="step rv">
+          <i class="node" aria-hidden="true"></i>
+          <h3>拾取<span class="step-sub">粘贴一条链接，或者写下此刻的念头</span></h3>
+          <p class="prose">不用先想清楚放哪里。公众号、小红书、B 站、视频号、知乎、网页、AI 对话，一条链接就够；文件、录音和一句话的灵感同样收。</p>
+        </li>
+        <li class="step rv">
+          <i class="node" aria-hidden="true"></i>
+          <h3>积攒<span class="step-sub">你关机的时候，服务器接着替你干活</span></h3>
+          <p class="prose">云端提取正文、语音转写、图像识别，再用大模型整理、提炼。</p>
+        </li>
+        <li class="step rv">
+          <i class="node" aria-hidden="true"></i>
+          <h3>成形<span class="step-sub">回到你自己的 Obsidian 库</span></h3>
+          <p class="prose">插件把原始材料和整理结果下载回本地，按你的目录落盘、可重试不重复建笔记；更新生成内容时保护你自己的修改。整个 Vault 始终在你电脑上。</p>
+        </li>
+      </ol>
+    </div>
+    <div class="vows">
+      <p class="kicker rv">几条底线</p>
+      <ul class="vowlist">
+        <li class="rv"><b>原文永远留着</b><span>AI 整理只是副本，加工失败也不会让已接收的材料消失。</span></li>
+        <li class="rv"><b>凭据只属于你</b><span>模型 Key 加密托管在服务器上，只服务你这一份额度。</span></li>
+        <li class="rv"><b>本地才是家</b><span>云端不上传整个知识库，入库由你电脑上的插件完成。</span></li>
+        <li class="rv"><b>写过的算你的</b><span>机器重跑不能覆盖你自己改过的段落。</span></li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ============ 结尾：入口 ============ -->
+  <section class="land-join" id="landJoin">
+    <p class="kicker rv">开始攒金粉</p>
+    <h2 class="join-title rv">把今天漏下的那几粒，先拾起来。</h2>
+    <div class="rv">
+      <button class="land-cta big" type="button" data-login-entry>登录 / 用邀请码注册</button>
+    </div>
+    <p class="join-note rv">使用 jerrythealpaca.cn 统一账号；新用户需要一枚邀请码，向站点管理员索取即可。登录后在 Obsidian 安装 KB Inbox 插件，笔记就能回到你自己的知识库。</p>
+  </section>
+
+  <footer class="land-foot">
+    <span class="land-foot-brand">金蔷薇</span>
+    <span>把每天漏下的注意，攒成自己的知识库</span>
+  </footer>
 </main>
 
 <main id="appView" hidden>
@@ -104,101 +437,288 @@
       <!-- 中间：金蔷薇（视觉中心） -->
       <div class="rose-stage">
         <div class="rose-wrap" aria-hidden="true">
-        <svg class="rose" viewBox="120 80 360 360" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-  <title id="regularRoseTitle">规律排列的金蔷薇</title>
-  <desc id="regularRoseDesc">一朵由同形花瓣按等角度和固定比例逐层排列的低饱和金色蔷薇。</desc>
+        <svg class="rose" viewBox="120 80 360 360" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">
   <defs>
-    <radialGradient id="regularGlow" cx="50%" cy="50%" r="50%">
-      <stop offset="0" stop-color="#e5c289" stop-opacity=".16"/>
-      <stop offset=".58" stop-color="#c99c62" stop-opacity=".06"/>
+    <radialGradient id="gdGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0" stop-color="#e5c289" stop-opacity=".2"/>
+      <stop offset=".5" stop-color="#c99c62" stop-opacity=".08"/>
       <stop offset="1" stop-color="#a97942" stop-opacity="0"/>
     </radialGradient>
-    <linearGradient id="regularGold" x1=".2" y1="0" x2=".76" y2="1">
-      <stop offset="0" stop-color="#f3ddb5"/>
-      <stop offset=".28" stop-color="#dfbd88"/>
-      <stop offset=".58" stop-color="#bd8954"/>
-      <stop offset=".82" stop-color="#93613b"/>
-      <stop offset="1" stop-color="#714831"/>
+
+    <!-- 形体渐变：只描述花瓣自己的卷曲，不描述光从哪来。
+         所以四条都沿花瓣对称轴（x1=x2），顶端亮、花心侧暗，左右对称；
+         这类明暗跟着 rotate 一起转是对的，世界方向光见下面 gdSunLit/gdSunShade。
+         A/B 中间调、C 亮档、D 暗档，只作花色错落，不承担方向。 -->
+    <linearGradient id="gdGoldA" x1=".5" y1="0" x2=".5" y2="1">
+      <stop offset="0" stop-color="#ffedaa"/>
+      <stop offset=".12" stop-color="#e2b04a"/>
+      <stop offset=".42" stop-color="#b8862f"/>
+      <stop offset=".62" stop-color="#a97942"/>
+      <stop offset=".8" stop-color="#c99c62"/>
+      <stop offset="1" stop-color="#b8862f"/>
     </linearGradient>
-    <linearGradient id="regularRim" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#fff1d1" stop-opacity=".2"/>
-      <stop offset=".5" stop-color="#fff0cf" stop-opacity=".82"/>
-      <stop offset="1" stop-color="#b27d49" stop-opacity=".18"/>
+    <linearGradient id="gdGoldB" x1=".5" y1="0" x2=".5" y2="1">
+      <stop offset="0" stop-color="#e2b04a"/>
+      <stop offset=".14" stop-color="#ffedaa"/>
+      <stop offset=".38" stop-color="#b8862f"/>
+      <stop offset=".66" stop-color="#a97942"/>
+      <stop offset=".86" stop-color="#c99c62"/>
+      <stop offset="1" stop-color="#b8862f"/>
     </linearGradient>
-    <linearGradient id="regularSheen" x1="0" y1="0" x2="1" y2="0">
+    <linearGradient id="gdGoldC" x1=".5" y1="0" x2=".5" y2="1">
+      <stop offset="0" stop-color="#fff1d1"/>
+      <stop offset=".14" stop-color="#ffedaa"/>
+      <stop offset=".4" stop-color="#e2b04a"/>
+      <stop offset=".66" stop-color="#dfbd88"/>
+      <stop offset=".86" stop-color="#b8862f"/>
+      <stop offset="1" stop-color="#c99c62"/>
+    </linearGradient>
+    <linearGradient id="gdGoldD" x1=".5" y1="0" x2=".5" y2="1">
+      <stop offset="0" stop-color="#c99c62"/>
+      <stop offset=".24" stop-color="#b8862f"/>
+      <stop offset=".5" stop-color="#a97942"/>
+      <stop offset=".76" stop-color="#b8862f"/>
+      <stop offset="1" stop-color="#c99c62"/>
+    </linearGradient>
+
+    <!-- 卷边与边缘高光同理：以花瓣自身中线为轴左右对称，不预设侧光 -->
+    <linearGradient id="gdRoll" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#b8862f" stop-opacity=".22"/>
+      <stop offset=".14" stop-color="#c99c62" stop-opacity=".06"/>
+      <stop offset=".3" stop-color="#ffedaa" stop-opacity=".12"/>
+      <stop offset=".5" stop-color="#ffedaa" stop-opacity="0"/>
+      <stop offset=".7" stop-color="#ffedaa" stop-opacity=".12"/>
+      <stop offset=".86" stop-color="#c99c62" stop-opacity=".06"/>
+      <stop offset="1" stop-color="#b8862f" stop-opacity=".22"/>
+    </linearGradient>
+    <linearGradient id="gdRim" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#e2b04a" stop-opacity=".3"/>
+      <stop offset=".22" stop-color="#fff1d1" stop-opacity=".7"/>
+      <stop offset=".5" stop-color="#fff1d1" stop-opacity=".95"/>
+      <stop offset=".78" stop-color="#fff1d1" stop-opacity=".7"/>
+      <stop offset="1" stop-color="#e2b04a" stop-opacity=".3"/>
+    </linearGradient>
+    <linearGradient id="gdFold" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffedaa" stop-opacity="0"/>
+      <stop offset=".35" stop-color="#fff1d1" stop-opacity=".45"/>
+      <stop offset="1" stop-color="#b8862f" stop-opacity=".35"/>
+    </linearGradient>
+
+    <!-- 花心是凹陷：暗部压到背光（右下）一侧 -->
+    <radialGradient id="gdCore" cx="57%" cy="61%" r="56%">
+      <stop offset="0" stop-color="#a97942"/>
+      <stop offset=".6" stop-color="#b8862f"/>
+      <stop offset="1" stop-color="#b8862f" stop-opacity="0"/>
+    </radialGradient>
+
+    <linearGradient id="gdSheen" x1="0" y1="0" x2="1" y2="0">
       <stop offset="0" stop-color="#fff" stop-opacity="0"/>
       <stop offset=".45" stop-color="#fff5df" stop-opacity=".02"/>
-      <stop offset=".5" stop-color="#fff8e9" stop-opacity=".28"/>
+      <stop offset=".5" stop-color="#fff8e9" stop-opacity=".3"/>
       <stop offset=".55" stop-color="#fff5df" stop-opacity=".02"/>
       <stop offset="1" stop-color="#fff" stop-opacity="0"/>
     </linearGradient>
-    <filter id="regularShadow" x="-30%" y="-30%" width="160%" height="170%">
-      <feDropShadow dx="0" dy="7" stdDeviation="7" flood-color="#2b190e" flood-opacity=".24"/>
+
+    <!-- 世界空间方向光：光从左上。画在未旋转的矩形上，方向固定在世界坐标里，
+         再用花冠轮廓掩膜只让花冠内部受益，不会在背景上留边。
+         亮部只用很窄一段暖白，暗部沿用层间投影的 #2b190e，不往棕色走。 -->
+    <linearGradient id="gdSunLit" x1="0" y1="0" x2=".78" y2=".78">
+      <stop offset="0" stop-color="#fff6e4" stop-opacity=".26"/>
+      <stop offset=".3" stop-color="#ffeecb" stop-opacity=".11"/>
+      <stop offset=".56" stop-color="#ffe9c2" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="gdSunShade" x1=".22" y1=".22" x2="1" y2="1">
+      <stop offset=".4" stop-color="#2b190e" stop-opacity="0"/>
+      <stop offset=".72" stop-color="#2b190e" stop-opacity=".12"/>
+      <stop offset="1" stop-color="#2b190e" stop-opacity=".22"/>
+    </linearGradient>
+
+    <!-- 光从左上：投影一律往右下落 -->
+    <filter id="gdPlantShadow" x="-24%" y="-22%" width="150%" height="150%">
+      <feDropShadow dx="5" dy="8" stdDeviation="8" flood-color="#2b190e" flood-opacity=".28"/>
     </filter>
-    <clipPath id="regularBloomClip"><circle cx="300" cy="260" r="166"/></clipPath>
-    <g id="regularPetal">
-      <path d="M0 6 C-22 6-38-8-42-27 C-48-55-39-84-21-104 C-10-116 10-116 21-104 C39-84 48-55 42-27 C38-8 22 6 0 6Z" fill="url(#regularGold)" stroke="#8b5b39" stroke-opacity=".5" stroke-width="1.35"/>
-      <path d="M-21-104 C-10-116 10-116 21-104" fill="none" stroke="url(#regularRim)" stroke-width="2.8" stroke-linecap="round"/>
+    <filter id="gdLayer" x="-24%" y="-22%" width="150%" height="150%">
+      <feDropShadow dx="3" dy="4" stdDeviation="4" flood-color="#2b190e" flood-opacity=".22"/>
+    </filter>
+    <!-- 铸造磨砂：噪点只在花冠轮廓内参与 overlay 混合，不会在背景上留下圆边 -->
+    <filter id="gdGrain" x="-8%" y="-8%" width="116%" height="116%">
+      <feTurbulence type="fractalNoise" baseFrequency=".9" numOctaves="3" seed="11" result="nz"/>
+      <feColorMatrix in="nz" type="saturate" values="0" result="mono"/>
+      <feComponentTransfer in="mono" result="soft"><feFuncA type="linear" slope=".09"/></feComponentTransfer>
+      <feComposite in="soft" in2="SourceGraphic" operator="in" result="masked"/>
+      <feBlend in="SourceGraphic" in2="masked" mode="overlay"/>
+    </filter>
+    <!-- 把花冠压成纯白剪影（保留 alpha），供 gdSil 当掩膜用 -->
+    <filter id="gdFlatten" x="-6%" y="-6%" width="112%" height="112%">
+      <feColorMatrix type="matrix" values="0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 1 0"/>
+    </filter>
+
+    <clipPath id="gdBloomClip"><circle cx="300" cy="260" r="166"/></clipPath>
+
+    <path id="gdOuter" d="M0 5 C-20-3-40-21-48-49 C-55-74-46-95-28-102 C-19-106-11-102-6-94 C-2-88 2-88 6-94 C11-102 19-106 28-102 C46-95 55-74 48-49 C40-21 20-3 0 5Z"/>
+    <path id="gdOuterRim" fill="none" d="M-28-102 C-19-106-11-102-6-94 C-2-88 2-88 6-94 C11-102 19-106 28-102"/>
+    <path id="gdStd" d="M0 4 C-17-3-33-20-39-46 C-45-70-37-90-22-98 C-16-101-9-99-5-92 C-2-87 2-87 5-92 C9-99 16-101 22-98 C37-90 45-70 39-46 C33-20 17-3 0 4Z"/>
+    <path id="gdStdRim" fill="none" d="M-22-98 C-16-101-9-99-5-92 C-2-87 2-87 5-92 C9-99 16-101 22-98"/>
+    <path id="gdInr" d="M0 3 C-13-3-25-17-28-36 C-31-55-24-72-13-79 C-7-83-3-80-1-74 C1-80 6-83 12-79 C23-72 30-55 27-36 C24-17 12-3 0 3Z"/>
+    <path id="gdInrRim" fill="none" d="M-13-79 C-7-83-3-80-1-74 C1-80 6-83 12-79"/>
+    <path id="gdFoldDark" fill="none" stroke="#b8862f" stroke-opacity=".22" stroke-width="2.2" stroke-linecap="round"
+          d="M-14-86 C-19-56-11-26-1-2 M14-86 C19-56 11-26 1-2 M0-90 C-2-60-1-30 0-2"/>
+    <path id="gdFoldLite" fill="none" stroke="url(#gdFold)" stroke-width="1.4" stroke-linecap="round"
+          d="M-10-86 C-15-56-7-26 2-4 M11-85 C16-55 8-26-1-4"/>
+
+    <g id="gdPetalO">
+      <use href="#gdOuter"/>
+      <use href="#gdOuter" fill="url(#gdRoll)"/>
+      <use href="#gdOuter" fill="none" stroke="#b8862f" stroke-opacity=".3" stroke-width=".9"/>
+      <use href="#gdFoldDark"/>
+      <use href="#gdFoldLite"/>
+      <use href="#gdOuterRim" stroke="url(#gdRim)" stroke-width="3" stroke-linecap="round"/>
     </g>
-    <g id="centerBlade">
-      <path d="M0 1 C-7-5-10-15-6-24 C-3-31 3-34 7-29 C13-23 14-14 10-7 C8-3 4 0 0 1Z" fill="#bd8a56" stroke="#805234" stroke-opacity=".45" stroke-width=".9"/>
-      <path d="M-5-23 C-2-29 3-32 7-28" fill="none" stroke="#ecd0a0" stroke-opacity=".7" stroke-width="1.4" stroke-linecap="round"/>
+    <g id="gdPetalS">
+      <use href="#gdStd"/>
+      <use href="#gdStd" fill="url(#gdRoll)"/>
+      <use href="#gdStd" fill="none" stroke="#b8862f" stroke-opacity=".28" stroke-width=".85"/>
+      <use href="#gdFoldDark" transform="scale(.94)"/>
+      <use href="#gdFoldLite" transform="scale(.94)"/>
+      <use href="#gdStdRim" stroke="url(#gdRim)" stroke-width="2.6" stroke-linecap="round"/>
     </g>
+    <g id="gdPetalI">
+      <use href="#gdInr"/>
+      <use href="#gdInr" fill="url(#gdRoll)"/>
+      <use href="#gdInr" fill="none" stroke="#b8862f" stroke-opacity=".26" stroke-width=".8"/>
+      <use href="#gdFoldLite" transform="scale(.6)"/>
+      <use href="#gdInrRim" stroke="url(#gdRim)" stroke-width="2.1" stroke-linecap="round"/>
+    </g>
+
+    <!-- 各层花瓣只列几何，不带 gdLayer 投影：绘制树和剪影掩膜共用同一份。
+         角度是刻意不等间隔的（每片在 ±3° 内扰动，各圈平均间隔仍为 40/45/51/51/60/60/72），
+         等间隔的环形阵列一眼就看得出是假的，别"顺手对齐"回去。 -->
+    <g id="gdRing1">
+      <use href="#gdPetalO" fill="url(#gdGoldA)" transform="rotate(2) skewX(6) scale(1.08 1.06)"/>
+      <use href="#gdPetalO" fill="url(#gdGoldB)" transform="rotate(39) skewX(6) scale(1.02 1.08)"/>
+      <use href="#gdPetalO" fill="url(#gdGoldB)" transform="rotate(82) skewX(7) scale(1.1 1.03)"/>
+      <use href="#gdPetalO" fill="url(#gdGoldD)" transform="rotate(124) skewX(6) scale(1.04 1.07)"/>
+      <use href="#gdPetalO" fill="url(#gdGoldD)" transform="rotate(158) skewX(7) scale(1.09 1.04)"/>
+      <use href="#gdPetalO" fill="url(#gdGoldB)" transform="rotate(200) skewX(6) scale(1.03 1.08)"/>
+      <use href="#gdPetalO" fill="url(#gdGoldA)" transform="rotate(243) skewX(7) scale(1.08 1.03)"/>
+      <use href="#gdPetalO" fill="url(#gdGoldC)" transform="rotate(277) skewX(6) scale(1.02 1.07)"/>
+      <use href="#gdPetalO" fill="url(#gdGoldC)" transform="rotate(321) skewX(7) scale(1.07 1.04)"/>
+    </g>
+    <g id="gdRing2">
+      <use href="#gdPetalS" fill="url(#gdGoldA)" transform="rotate(19) skewX(8) scale(.9 .9)"/>
+      <use href="#gdPetalS" fill="url(#gdGoldB)" transform="rotate(68) skewX(8) scale(.95 .88)"/>
+      <use href="#gdPetalS" fill="url(#gdGoldB)" transform="rotate(111) skewX(9) scale(.88 .93)"/>
+      <use href="#gdPetalS" fill="url(#gdGoldD)" transform="rotate(160) skewX(8) scale(.94 .89)"/>
+      <use href="#gdPetalS" fill="url(#gdGoldB)" transform="rotate(200) skewX(9) scale(.89 .93)"/>
+      <use href="#gdPetalS" fill="url(#gdGoldA)" transform="rotate(248) skewX(8) scale(.95 .9)"/>
+      <use href="#gdPetalS" fill="url(#gdGoldC)" transform="rotate(289) skewX(9) scale(.88 .92)"/>
+      <use href="#gdPetalS" fill="url(#gdGoldC)" transform="rotate(339) skewX(8) scale(.93 .9)"/>
+    </g>
+    <g id="gdRing3">
+      <use href="#gdPetalS" fill="url(#gdGoldA)" transform="rotate(11) skewX(10) scale(.64 .66)"/>
+      <use href="#gdPetalS" fill="url(#gdGoldB)" transform="rotate(58) skewX(10) scale(.67 .63)"/>
+      <use href="#gdPetalS" fill="url(#gdGoldD)" transform="rotate(113) skewX(11) scale(.63 .66)"/>
+      <use href="#gdPetalS" fill="url(#gdGoldD)" transform="rotate(160) skewX(10) scale(.66 .64)"/>
+      <use href="#gdPetalS" fill="url(#gdGoldB)" transform="rotate(217) skewX(11) scale(.64 .67)"/>
+      <use href="#gdPetalS" fill="url(#gdGoldA)" transform="rotate(265) skewX(10) scale(.67 .63)"/>
+      <use href="#gdPetalS" fill="url(#gdGoldC)" transform="rotate(321) skewX(10) scale(.63 .66)"/>
+    </g>
+    <g id="gdRing4">
+      <use href="#gdPetalI" fill="url(#gdGoldA)" transform="rotate(31) skewX(11) scale(.58 .6)"/>
+      <use href="#gdPetalI" fill="url(#gdGoldD)" transform="rotate(88) skewX(12) scale(.6 .57)"/>
+      <use href="#gdPetalI" fill="url(#gdGoldD)" transform="rotate(136) skewX(11) scale(.57 .6)"/>
+      <use href="#gdPetalI" fill="url(#gdGoldB)" transform="rotate(190) skewX(12) scale(.6 .58)"/>
+      <use href="#gdPetalI" fill="url(#gdGoldA)" transform="rotate(237) skewX(11) scale(.58 .6)"/>
+      <use href="#gdPetalI" fill="url(#gdGoldC)" transform="rotate(293) skewX(12) scale(.6 .57)"/>
+      <use href="#gdPetalI" fill="url(#gdGoldC)" transform="rotate(342) skewX(11) scale(.57 .6)"/>
+    </g>
+    <g id="gdRing5">
+      <use href="#gdPetalI" fill="url(#gdGoldA)" transform="rotate(17) skewX(13) scale(.44 .46)"/>
+      <use href="#gdPetalI" fill="url(#gdGoldD)" transform="rotate(73) skewX(13) scale(.46 .43)"/>
+      <use href="#gdPetalI" fill="url(#gdGoldD)" transform="rotate(136) skewX(14) scale(.43 .46)"/>
+      <use href="#gdPetalI" fill="url(#gdGoldB)" transform="rotate(194) skewX(13) scale(.45 .44)"/>
+      <use href="#gdPetalI" fill="url(#gdGoldA)" transform="rotate(258) skewX(14) scale(.44 .46)"/>
+      <use href="#gdPetalI" fill="url(#gdGoldC)" transform="rotate(315) skewX(13) scale(.46 .43)"/>
+    </g>
+    <g id="gdRing6">
+      <use href="#gdPetalI" fill="url(#gdGoldB)" transform="rotate(39) skewX(14) scale(.32 .34)"/>
+      <use href="#gdPetalI" fill="url(#gdGoldD)" transform="rotate(102) skewX(15) scale(.34 .31)"/>
+      <use href="#gdPetalI" fill="url(#gdGoldD)" transform="rotate(158) skewX(14) scale(.31 .34)"/>
+      <use href="#gdPetalI" fill="url(#gdGoldB)" transform="rotate(225) skewX(15) scale(.33 .32)"/>
+      <use href="#gdPetalI" fill="url(#gdGoldC)" transform="rotate(280) skewX(14) scale(.32 .34)"/>
+      <use href="#gdPetalI" fill="url(#gdGoldC)" transform="rotate(342) skewX(15) scale(.34 .31)"/>
+    </g>
+    <g id="gdRing7">
+      <use href="#gdPetalI" fill="url(#gdGoldA)" transform="rotate(13) skewX(16) scale(.21 .22)"/>
+      <use href="#gdPetalI" fill="url(#gdGoldB)" transform="rotate(80) skewX(16) scale(.22 .2)"/>
+      <use href="#gdPetalI" fill="url(#gdGoldD)" transform="rotate(155) skewX(16) scale(.2 .22)"/>
+      <use href="#gdPetalI" fill="url(#gdGoldB)" transform="rotate(223) skewX(16) scale(.22 .21)"/>
+      <use href="#gdPetalI" fill="url(#gdGoldC)" transform="rotate(300) skewX(16) scale(.21 .22)"/>
+    </g>
+
+    <mask id="gdSil">
+      <g filter="url(#gdFlatten)">
+        <circle r="84"/>
+        <use href="#gdRing1"/>
+        <use href="#gdRing2"/>
+        <use href="#gdRing3"/>
+        <use href="#gdRing4"/>
+        <use href="#gdRing5"/>
+        <use href="#gdRing6"/>
+        <use href="#gdRing7"/>
+      </g>
+    </mask>
+
+    <!-- 点亮用的两层渐变：整朵提亮 + 自下而上扫过花冠的光带。
+         都掩膜到花冠轮廓内，所以只提亮花瓣，不会在背景上留出一个方块 -->
+    <radialGradient id="gdLit" cx="50%" cy="50%" r="60%">
+      <stop offset="0" stop-color="#ffedbb" stop-opacity=".5"/>
+      <stop offset=".55" stop-color="#ffe3a8" stop-opacity=".22"/>
+      <stop offset="1" stop-color="#e2b04a" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="gdLitBand" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0" stop-color="#fff3cf" stop-opacity="0"/>
+      <stop offset=".5" stop-color="#fff8e6" stop-opacity=".9"/>
+      <stop offset="1" stop-color="#fff3cf" stop-opacity="0"/>
+    </linearGradient>
   </defs>
 
-  <style>
-    .sheenRect { transform: translateX(-700px); }
-    .play .plant { transform-box: view-box; transform-origin: 50% 50%; animation: swayOnce 2s ease-in-out 1 both; }
-    @keyframes swayOnce { 0% { transform: rotate(0); } 32% { transform: rotate(-1.5deg); } 68% { transform: rotate(1deg); } 100% { transform: rotate(0); } }
-    .play .sheenRect { animation: sheenOnce 1.5s ease-in-out .18s 1 both; }
-    @keyframes sheenOnce { from { transform: translateX(-700px); } to { transform: translateX(700px); } }
-    .play .glowPulse { transform-box: fill-box; transform-origin: center; animation: glowOnce 1.8s ease-in-out 1 both; }
-    @keyframes glowOnce { 0%, 100% { transform: scale(1); } 45% { transform: scale(1.045); } }
-    @media (prefers-reduced-motion: reduce) { * { animation: none !important; } }
-  </style>
 
-  <circle class="glowPulse" cx="300" cy="260" r="172" fill="url(#regularGlow)"/>
-  <g class="plant" filter="url(#regularShadow)" transform="translate(300 260)">
-    <g>
-      <use href="#regularPetal" transform="rotate(0) scale(1.05)"/>
-      <use href="#regularPetal" transform="rotate(30) scale(1.05)"/>
-      <use href="#regularPetal" transform="rotate(60) scale(1.05)"/>
-      <use href="#regularPetal" transform="rotate(90) scale(1.05)"/>
-      <use href="#regularPetal" transform="rotate(120) scale(1.05)"/>
-      <use href="#regularPetal" transform="rotate(150) scale(1.05)"/>
-      <use href="#regularPetal" transform="rotate(180) scale(1.05)"/>
-      <use href="#regularPetal" transform="rotate(210) scale(1.05)"/>
-      <use href="#regularPetal" transform="rotate(240) scale(1.05)"/>
-      <use href="#regularPetal" transform="rotate(270) scale(1.05)"/>
-      <use href="#regularPetal" transform="rotate(300) scale(1.05)"/>
-      <use href="#regularPetal" transform="rotate(330) scale(1.05)"/>
+  <circle class="glowPulse" cx="288" cy="248" r="176" fill="url(#gdGlow)"/>
+
+  <!-- .plant 自身不带 transform：摇曳动画会覆写 transform，位移放在内层 -->
+  <g class="plant" filter="url(#gdPlantShadow)">
+   <g transform="translate(300 260)">
+   <g filter="url(#gdGrain)">
+    <g filter="url(#gdLayer)"><use href="#gdRing1"/></g>
+
+    <circle r="84" fill="url(#gdCore)"/>
+
+    <g filter="url(#gdLayer)"><use href="#gdRing2"/></g>
+    <g filter="url(#gdLayer)"><use href="#gdRing3"/></g>
+    <g filter="url(#gdLayer)"><use href="#gdRing4"/></g>
+    <g filter="url(#gdLayer)"><use href="#gdRing5"/></g>
+    <g filter="url(#gdLayer)"><use href="#gdRing6"/></g>
+    <g filter="url(#gdLayer)"><use href="#gdRing7"/></g>
+
+    <!-- 方向光压在最后：左上提亮、右下压暗，覆盖所有花瓣的世界位置 -->
+    <g mask="url(#gdSil)">
+      <rect x="-128" y="-128" width="256" height="256" fill="url(#gdSunLit)"/>
+      <rect x="-128" y="-128" width="256" height="256" fill="url(#gdSunShade)"/>
     </g>
-    <g transform="rotate(15) scale(.84)">
-      <use href="#regularPetal" transform="rotate(0)"/><use href="#regularPetal" transform="rotate(36)"/>
-      <use href="#regularPetal" transform="rotate(72)"/><use href="#regularPetal" transform="rotate(108)"/>
-      <use href="#regularPetal" transform="rotate(144)"/><use href="#regularPetal" transform="rotate(180)"/>
-      <use href="#regularPetal" transform="rotate(216)"/><use href="#regularPetal" transform="rotate(252)"/>
-      <use href="#regularPetal" transform="rotate(288)"/><use href="#regularPetal" transform="rotate(324)"/>
-    </g>
-    <g transform="rotate(7.5) scale(.67)">
-      <use href="#regularPetal" transform="rotate(0)"/><use href="#regularPetal" transform="rotate(45)"/>
-      <use href="#regularPetal" transform="rotate(90)"/><use href="#regularPetal" transform="rotate(135)"/>
-      <use href="#regularPetal" transform="rotate(180)"/><use href="#regularPetal" transform="rotate(225)"/>
-      <use href="#regularPetal" transform="rotate(270)"/><use href="#regularPetal" transform="rotate(315)"/>
-    </g>
-    <g transform="rotate(30) scale(.53)">
-      <use href="#regularPetal" transform="rotate(0)"/><use href="#regularPetal" transform="rotate(60)"/>
-      <use href="#regularPetal" transform="rotate(120)"/><use href="#regularPetal" transform="rotate(180)"/>
-      <use href="#regularPetal" transform="rotate(240)"/><use href="#regularPetal" transform="rotate(300)"/>
-    </g>
-    <g transform="rotate(8)">
-      <use href="#centerBlade" transform="rotate(0)"/><use href="#centerBlade" transform="rotate(72)"/>
-      <use href="#centerBlade" transform="rotate(144)"/><use href="#centerBlade" transform="rotate(216)"/>
-      <use href="#centerBlade" transform="rotate(288)"/>
-    </g>
+   </g>
+   <!-- 点亮两层单独一层，不带磨砂：提交那两秒里噪点不必每帧重算。
+        仍掩膜在花冠轮廓内，所以只有花瓣变亮，背景不留方块 -->
+   <g mask="url(#gdSil)">
+      <rect class="litGlow" x="-128" y="-128" width="256" height="256" fill="url(#gdLit)"/>
+      <rect class="litBand" x="-128" y="-38" width="256" height="76" fill="url(#gdLitBand)"/>
+   </g>
+   </g>
   </g>
-  <g clip-path="url(#regularBloomClip)"><g transform="rotate(18 300 260)"><rect class="sheenRect" x="244" y="94" width="112" height="332" fill="url(#regularSheen)"/></g></g>
-        </svg>
+
+  <g clip-path="url(#gdBloomClip)"><g transform="rotate(18 300 260)"><rect class="sheenRect" x="244" y="94" width="112" height="332" fill="url(#gdSheen)"/></g></g>
+</svg>
+
         </div>
         <div class="rose-caption">金蔷薇</div>
         <div class="rose-sub">从生活的金粉里，铸出一朵蔷薇</div>
@@ -388,5 +908,6 @@
 </div>
 
 <script type="module" src="/webstatic/js/app.js"></script>
+<script type="module" src="/webstatic/js/landing.js"></script>
 </body>
 </html>

@@ -1,0 +1,274 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="120 80 360 360" class="rose" role="img" aria-labelledby="gildedRoseTitle gildedRoseDesc">
+  <title id="gildedRoseTitle">鎏金蔷薇</title>
+  <desc id="gildedRoseDesc">一朵层层错落排布、通体鎏金的金色蔷薇。</desc>
+  <defs>
+    <radialGradient id="gdGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0" stop-color="#e5c289" stop-opacity=".2"/>
+      <stop offset=".5" stop-color="#c99c62" stop-opacity=".08"/>
+      <stop offset="1" stop-color="#a97942" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- 形体渐变：只描述花瓣自己的卷曲，不描述光从哪来。
+         所以四条都沿花瓣对称轴（x1=x2），顶端亮、花心侧暗，左右对称；
+         这类明暗跟着 rotate 一起转是对的，世界方向光见下面 gdSunLit/gdSunShade。
+         A/B 中间调、C 亮档、D 暗档，只作花色错落，不承担方向。 -->
+    <linearGradient id="gdGoldA" x1=".5" y1="0" x2=".5" y2="1">
+      <stop offset="0" stop-color="#ffedaa"/>
+      <stop offset=".12" stop-color="#e2b04a"/>
+      <stop offset=".42" stop-color="#b8862f"/>
+      <stop offset=".62" stop-color="#a97942"/>
+      <stop offset=".8" stop-color="#c99c62"/>
+      <stop offset="1" stop-color="#b8862f"/>
+    </linearGradient>
+    <linearGradient id="gdGoldB" x1=".5" y1="0" x2=".5" y2="1">
+      <stop offset="0" stop-color="#e2b04a"/>
+      <stop offset=".14" stop-color="#ffedaa"/>
+      <stop offset=".38" stop-color="#b8862f"/>
+      <stop offset=".66" stop-color="#a97942"/>
+      <stop offset=".86" stop-color="#c99c62"/>
+      <stop offset="1" stop-color="#b8862f"/>
+    </linearGradient>
+    <linearGradient id="gdGoldC" x1=".5" y1="0" x2=".5" y2="1">
+      <stop offset="0" stop-color="#fff1d1"/>
+      <stop offset=".14" stop-color="#ffedaa"/>
+      <stop offset=".4" stop-color="#e2b04a"/>
+      <stop offset=".66" stop-color="#dfbd88"/>
+      <stop offset=".86" stop-color="#b8862f"/>
+      <stop offset="1" stop-color="#c99c62"/>
+    </linearGradient>
+    <linearGradient id="gdGoldD" x1=".5" y1="0" x2=".5" y2="1">
+      <stop offset="0" stop-color="#c99c62"/>
+      <stop offset=".24" stop-color="#b8862f"/>
+      <stop offset=".5" stop-color="#a97942"/>
+      <stop offset=".76" stop-color="#b8862f"/>
+      <stop offset="1" stop-color="#c99c62"/>
+    </linearGradient>
+
+    <!-- 卷边与边缘高光同理：以花瓣自身中线为轴左右对称，不预设侧光 -->
+    <linearGradient id="gdRoll" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#b8862f" stop-opacity=".22"/>
+      <stop offset=".14" stop-color="#c99c62" stop-opacity=".06"/>
+      <stop offset=".3" stop-color="#ffedaa" stop-opacity=".12"/>
+      <stop offset=".5" stop-color="#ffedaa" stop-opacity="0"/>
+      <stop offset=".7" stop-color="#ffedaa" stop-opacity=".12"/>
+      <stop offset=".86" stop-color="#c99c62" stop-opacity=".06"/>
+      <stop offset="1" stop-color="#b8862f" stop-opacity=".22"/>
+    </linearGradient>
+    <linearGradient id="gdRim" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#e2b04a" stop-opacity=".3"/>
+      <stop offset=".22" stop-color="#fff1d1" stop-opacity=".7"/>
+      <stop offset=".5" stop-color="#fff1d1" stop-opacity=".95"/>
+      <stop offset=".78" stop-color="#fff1d1" stop-opacity=".7"/>
+      <stop offset="1" stop-color="#e2b04a" stop-opacity=".3"/>
+    </linearGradient>
+    <linearGradient id="gdFold" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffedaa" stop-opacity="0"/>
+      <stop offset=".35" stop-color="#fff1d1" stop-opacity=".45"/>
+      <stop offset="1" stop-color="#b8862f" stop-opacity=".35"/>
+    </linearGradient>
+
+    <!-- 花心是凹陷：暗部压到背光（右下）一侧 -->
+    <radialGradient id="gdCore" cx="57%" cy="61%" r="56%">
+      <stop offset="0" stop-color="#a97942"/>
+      <stop offset=".6" stop-color="#b8862f"/>
+      <stop offset="1" stop-color="#b8862f" stop-opacity="0"/>
+    </radialGradient>
+
+    <linearGradient id="gdSheen" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#fff" stop-opacity="0"/>
+      <stop offset=".45" stop-color="#fff5df" stop-opacity=".02"/>
+      <stop offset=".5" stop-color="#fff8e9" stop-opacity=".3"/>
+      <stop offset=".55" stop-color="#fff5df" stop-opacity=".02"/>
+      <stop offset="1" stop-color="#fff" stop-opacity="0"/>
+    </linearGradient>
+
+    <!-- 世界空间方向光：光从左上。画在未旋转的矩形上，方向固定在世界坐标里，
+         再用花冠轮廓掩膜只让花冠内部受益，不会在背景上留边。
+         亮部只用很窄一段暖白，暗部沿用层间投影的 #2b190e，不往棕色走。 -->
+    <linearGradient id="gdSunLit" x1="0" y1="0" x2=".78" y2=".78">
+      <stop offset="0" stop-color="#fff6e4" stop-opacity=".26"/>
+      <stop offset=".3" stop-color="#ffeecb" stop-opacity=".11"/>
+      <stop offset=".56" stop-color="#ffe9c2" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="gdSunShade" x1=".22" y1=".22" x2="1" y2="1">
+      <stop offset=".4" stop-color="#2b190e" stop-opacity="0"/>
+      <stop offset=".72" stop-color="#2b190e" stop-opacity=".12"/>
+      <stop offset="1" stop-color="#2b190e" stop-opacity=".22"/>
+    </linearGradient>
+
+    <!-- 光从左上：投影一律往右下落 -->
+    <filter id="gdPlantShadow" x="-24%" y="-22%" width="150%" height="150%">
+      <feDropShadow dx="5" dy="8" stdDeviation="8" flood-color="#2b190e" flood-opacity=".28"/>
+    </filter>
+    <filter id="gdLayer" x="-24%" y="-22%" width="150%" height="150%">
+      <feDropShadow dx="3" dy="4" stdDeviation="4" flood-color="#2b190e" flood-opacity=".22"/>
+    </filter>
+    <!-- 铸造磨砂：噪点只在花冠轮廓内参与 overlay 混合，不会在背景上留下圆边 -->
+    <filter id="gdGrain" x="-8%" y="-8%" width="116%" height="116%">
+      <feTurbulence type="fractalNoise" baseFrequency=".9" numOctaves="3" seed="11" result="nz"/>
+      <feColorMatrix in="nz" type="saturate" values="0" result="mono"/>
+      <feComponentTransfer in="mono" result="soft"><feFuncA type="linear" slope=".09"/></feComponentTransfer>
+      <feComposite in="soft" in2="SourceGraphic" operator="in" result="masked"/>
+      <feBlend in="SourceGraphic" in2="masked" mode="overlay"/>
+    </filter>
+    <!-- 把花冠压成纯白剪影（保留 alpha），供 gdSil 当掩膜用 -->
+    <filter id="gdFlatten" x="-6%" y="-6%" width="112%" height="112%">
+      <feColorMatrix type="matrix" values="0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 1 0"/>
+    </filter>
+
+    <clipPath id="gdBloomClip"><circle cx="300" cy="260" r="166"/></clipPath>
+
+    <path id="gdOuter" d="M0 5 C-20-3-40-21-48-49 C-55-74-46-95-28-102 C-19-106-11-102-6-94 C-2-88 2-88 6-94 C11-102 19-106 28-102 C46-95 55-74 48-49 C40-21 20-3 0 5Z"/>
+    <path id="gdOuterRim" fill="none" d="M-28-102 C-19-106-11-102-6-94 C-2-88 2-88 6-94 C11-102 19-106 28-102"/>
+    <path id="gdStd" d="M0 4 C-17-3-33-20-39-46 C-45-70-37-90-22-98 C-16-101-9-99-5-92 C-2-87 2-87 5-92 C9-99 16-101 22-98 C37-90 45-70 39-46 C33-20 17-3 0 4Z"/>
+    <path id="gdStdRim" fill="none" d="M-22-98 C-16-101-9-99-5-92 C-2-87 2-87 5-92 C9-99 16-101 22-98"/>
+    <path id="gdInr" d="M0 3 C-13-3-25-17-28-36 C-31-55-24-72-13-79 C-7-83-3-80-1-74 C1-80 6-83 12-79 C23-72 30-55 27-36 C24-17 12-3 0 3Z"/>
+    <path id="gdInrRim" fill="none" d="M-13-79 C-7-83-3-80-1-74 C1-80 6-83 12-79"/>
+    <path id="gdFoldDark" fill="none" stroke="#b8862f" stroke-opacity=".22" stroke-width="2.2" stroke-linecap="round"
+          d="M-14-86 C-19-56-11-26-1-2 M14-86 C19-56 11-26 1-2 M0-90 C-2-60-1-30 0-2"/>
+    <path id="gdFoldLite" fill="none" stroke="url(#gdFold)" stroke-width="1.4" stroke-linecap="round"
+          d="M-10-86 C-15-56-7-26 2-4 M11-85 C16-55 8-26-1-4"/>
+
+    <g id="gdPetalO">
+      <use href="#gdOuter"/>
+      <use href="#gdOuter" fill="url(#gdRoll)"/>
+      <use href="#gdOuter" fill="none" stroke="#b8862f" stroke-opacity=".3" stroke-width=".9"/>
+      <use href="#gdFoldDark"/>
+      <use href="#gdFoldLite"/>
+      <use href="#gdOuterRim" stroke="url(#gdRim)" stroke-width="3" stroke-linecap="round"/>
+    </g>
+    <g id="gdPetalS">
+      <use href="#gdStd"/>
+      <use href="#gdStd" fill="url(#gdRoll)"/>
+      <use href="#gdStd" fill="none" stroke="#b8862f" stroke-opacity=".28" stroke-width=".85"/>
+      <use href="#gdFoldDark" transform="scale(.94)"/>
+      <use href="#gdFoldLite" transform="scale(.94)"/>
+      <use href="#gdStdRim" stroke="url(#gdRim)" stroke-width="2.6" stroke-linecap="round"/>
+    </g>
+    <g id="gdPetalI">
+      <use href="#gdInr"/>
+      <use href="#gdInr" fill="url(#gdRoll)"/>
+      <use href="#gdInr" fill="none" stroke="#b8862f" stroke-opacity=".26" stroke-width=".8"/>
+      <use href="#gdFoldLite" transform="scale(.6)"/>
+      <use href="#gdInrRim" stroke="url(#gdRim)" stroke-width="2.1" stroke-linecap="round"/>
+    </g>
+
+    <!-- 各层花瓣只列几何，不带 gdLayer 投影：绘制树和剪影掩膜共用同一份。
+         角度是刻意不等间隔的（每片在 ±3° 内扰动，各圈平均间隔仍为 40/45/51/51/60/60/72），
+         等间隔的环形阵列一眼就看得出是假的，别"顺手对齐"回去。 -->
+    <g id="gdRing1">
+      <use href="#gdPetalO" fill="url(#gdGoldA)" transform="rotate(2) skewX(6) scale(1.08 1.06)"/>
+      <use href="#gdPetalO" fill="url(#gdGoldB)" transform="rotate(39) skewX(6) scale(1.02 1.08)"/>
+      <use href="#gdPetalO" fill="url(#gdGoldB)" transform="rotate(82) skewX(7) scale(1.1 1.03)"/>
+      <use href="#gdPetalO" fill="url(#gdGoldD)" transform="rotate(124) skewX(6) scale(1.04 1.07)"/>
+      <use href="#gdPetalO" fill="url(#gdGoldD)" transform="rotate(158) skewX(7) scale(1.09 1.04)"/>
+      <use href="#gdPetalO" fill="url(#gdGoldB)" transform="rotate(200) skewX(6) scale(1.03 1.08)"/>
+      <use href="#gdPetalO" fill="url(#gdGoldA)" transform="rotate(243) skewX(7) scale(1.08 1.03)"/>
+      <use href="#gdPetalO" fill="url(#gdGoldC)" transform="rotate(277) skewX(6) scale(1.02 1.07)"/>
+      <use href="#gdPetalO" fill="url(#gdGoldC)" transform="rotate(321) skewX(7) scale(1.07 1.04)"/>
+    </g>
+    <g id="gdRing2">
+      <use href="#gdPetalS" fill="url(#gdGoldA)" transform="rotate(19) skewX(8) scale(.9 .9)"/>
+      <use href="#gdPetalS" fill="url(#gdGoldB)" transform="rotate(68) skewX(8) scale(.95 .88)"/>
+      <use href="#gdPetalS" fill="url(#gdGoldB)" transform="rotate(111) skewX(9) scale(.88 .93)"/>
+      <use href="#gdPetalS" fill="url(#gdGoldD)" transform="rotate(160) skewX(8) scale(.94 .89)"/>
+      <use href="#gdPetalS" fill="url(#gdGoldB)" transform="rotate(200) skewX(9) scale(.89 .93)"/>
+      <use href="#gdPetalS" fill="url(#gdGoldA)" transform="rotate(248) skewX(8) scale(.95 .9)"/>
+      <use href="#gdPetalS" fill="url(#gdGoldC)" transform="rotate(289) skewX(9) scale(.88 .92)"/>
+      <use href="#gdPetalS" fill="url(#gdGoldC)" transform="rotate(339) skewX(8) scale(.93 .9)"/>
+    </g>
+    <g id="gdRing3">
+      <use href="#gdPetalS" fill="url(#gdGoldA)" transform="rotate(11) skewX(10) scale(.64 .66)"/>
+      <use href="#gdPetalS" fill="url(#gdGoldB)" transform="rotate(58) skewX(10) scale(.67 .63)"/>
+      <use href="#gdPetalS" fill="url(#gdGoldD)" transform="rotate(113) skewX(11) scale(.63 .66)"/>
+      <use href="#gdPetalS" fill="url(#gdGoldD)" transform="rotate(160) skewX(10) scale(.66 .64)"/>
+      <use href="#gdPetalS" fill="url(#gdGoldB)" transform="rotate(217) skewX(11) scale(.64 .67)"/>
+      <use href="#gdPetalS" fill="url(#gdGoldA)" transform="rotate(265) skewX(10) scale(.67 .63)"/>
+      <use href="#gdPetalS" fill="url(#gdGoldC)" transform="rotate(321) skewX(10) scale(.63 .66)"/>
+    </g>
+    <g id="gdRing4">
+      <use href="#gdPetalI" fill="url(#gdGoldA)" transform="rotate(31) skewX(11) scale(.58 .6)"/>
+      <use href="#gdPetalI" fill="url(#gdGoldD)" transform="rotate(88) skewX(12) scale(.6 .57)"/>
+      <use href="#gdPetalI" fill="url(#gdGoldD)" transform="rotate(136) skewX(11) scale(.57 .6)"/>
+      <use href="#gdPetalI" fill="url(#gdGoldB)" transform="rotate(190) skewX(12) scale(.6 .58)"/>
+      <use href="#gdPetalI" fill="url(#gdGoldA)" transform="rotate(237) skewX(11) scale(.58 .6)"/>
+      <use href="#gdPetalI" fill="url(#gdGoldC)" transform="rotate(293) skewX(12) scale(.6 .57)"/>
+      <use href="#gdPetalI" fill="url(#gdGoldC)" transform="rotate(342) skewX(11) scale(.57 .6)"/>
+    </g>
+    <g id="gdRing5">
+      <use href="#gdPetalI" fill="url(#gdGoldA)" transform="rotate(17) skewX(13) scale(.44 .46)"/>
+      <use href="#gdPetalI" fill="url(#gdGoldD)" transform="rotate(73) skewX(13) scale(.46 .43)"/>
+      <use href="#gdPetalI" fill="url(#gdGoldD)" transform="rotate(136) skewX(14) scale(.43 .46)"/>
+      <use href="#gdPetalI" fill="url(#gdGoldB)" transform="rotate(194) skewX(13) scale(.45 .44)"/>
+      <use href="#gdPetalI" fill="url(#gdGoldA)" transform="rotate(258) skewX(14) scale(.44 .46)"/>
+      <use href="#gdPetalI" fill="url(#gdGoldC)" transform="rotate(315) skewX(13) scale(.46 .43)"/>
+    </g>
+    <g id="gdRing6">
+      <use href="#gdPetalI" fill="url(#gdGoldB)" transform="rotate(39) skewX(14) scale(.32 .34)"/>
+      <use href="#gdPetalI" fill="url(#gdGoldD)" transform="rotate(102) skewX(15) scale(.34 .31)"/>
+      <use href="#gdPetalI" fill="url(#gdGoldD)" transform="rotate(158) skewX(14) scale(.31 .34)"/>
+      <use href="#gdPetalI" fill="url(#gdGoldB)" transform="rotate(225) skewX(15) scale(.33 .32)"/>
+      <use href="#gdPetalI" fill="url(#gdGoldC)" transform="rotate(280) skewX(14) scale(.32 .34)"/>
+      <use href="#gdPetalI" fill="url(#gdGoldC)" transform="rotate(342) skewX(15) scale(.34 .31)"/>
+    </g>
+    <g id="gdRing7">
+      <use href="#gdPetalI" fill="url(#gdGoldA)" transform="rotate(13) skewX(16) scale(.21 .22)"/>
+      <use href="#gdPetalI" fill="url(#gdGoldB)" transform="rotate(80) skewX(16) scale(.22 .2)"/>
+      <use href="#gdPetalI" fill="url(#gdGoldD)" transform="rotate(155) skewX(16) scale(.2 .22)"/>
+      <use href="#gdPetalI" fill="url(#gdGoldB)" transform="rotate(223) skewX(16) scale(.22 .21)"/>
+      <use href="#gdPetalI" fill="url(#gdGoldC)" transform="rotate(300) skewX(16) scale(.21 .22)"/>
+    </g>
+
+    <mask id="gdSil">
+      <g filter="url(#gdFlatten)">
+        <circle r="84"/>
+        <use href="#gdRing1"/>
+        <use href="#gdRing2"/>
+        <use href="#gdRing3"/>
+        <use href="#gdRing4"/>
+        <use href="#gdRing5"/>
+        <use href="#gdRing6"/>
+        <use href="#gdRing7"/>
+      </g>
+    </mask>
+  </defs>
+
+  <style>
+    .sheenRect { transform: translateX(-700px); }
+    .play .plant { transform-box: view-box; transform-origin: 50% 50%; animation: swayOnce 2s ease-in-out 1 both; }
+    @keyframes swayOnce { 0% { transform: rotate(0); } 32% { transform: rotate(-1.5deg); } 68% { transform: rotate(1deg); } 100% { transform: rotate(0); } }
+    .play .sheenRect { animation: sheenOnce 1.5s ease-in-out .18s 1 both; }
+    @keyframes sheenOnce { from { transform: translateX(-700px); } to { transform: translateX(700px); } }
+    .play .glowPulse { transform-box: fill-box; transform-origin: center; animation: glowOnce 1.8s ease-in-out 1 both; }
+    @keyframes glowOnce { 0%, 100% { transform: scale(1); } 45% { transform: scale(1.05); } }
+    @media (prefers-reduced-motion: reduce) { * { animation: none !important; } }
+  </style>
+
+  <circle class="glowPulse" cx="288" cy="248" r="176" fill="url(#gdGlow)"/>
+
+  <!-- .plant 自身不带 transform：摇曳动画会覆写 transform，位移放在内层 -->
+  <g class="plant" filter="url(#gdPlantShadow)">
+   <g transform="translate(300 260)">
+   <g filter="url(#gdGrain)">
+    <g filter="url(#gdLayer)"><use href="#gdRing1"/></g>
+
+    <circle r="84" fill="url(#gdCore)"/>
+
+    <g filter="url(#gdLayer)"><use href="#gdRing2"/></g>
+    <g filter="url(#gdLayer)"><use href="#gdRing3"/></g>
+    <g filter="url(#gdLayer)"><use href="#gdRing4"/></g>
+    <g filter="url(#gdLayer)"><use href="#gdRing5"/></g>
+    <g filter="url(#gdLayer)"><use href="#gdRing6"/></g>
+    <g filter="url(#gdLayer)"><use href="#gdRing7"/></g>
+
+    <!-- 方向光压在最后：左上提亮、右下压暗，覆盖所有花瓣的世界位置 -->
+    <g mask="url(#gdSil)">
+      <rect x="-128" y="-128" width="256" height="256" fill="url(#gdSunLit)"/>
+      <rect x="-128" y="-128" width="256" height="256" fill="url(#gdSunShade)"/>
+    </g>
+   </g>
+   </g>
+  </g>
+
+  <g clip-path="url(#gdBloomClip)"><g transform="rotate(18 300 260)"><rect class="sheenRect" x="244" y="94" width="112" height="332" fill="url(#gdSheen)"/></g></g>
+</svg>

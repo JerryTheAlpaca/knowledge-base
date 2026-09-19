@@ -110,27 +110,18 @@ h2, .card-title { font-size: var(--fs-h2); font-weight: 600; margin: 0 0 12px; }
   font-family: var(--font-display); letter-spacing: .3px; }
 label { display: block; font-size: var(--fs-small); color: var(--text-2); margin: 14px 0 6px; }
 
-/* —— 登录页 —— */
-.login-hero { min-height: 74vh; display: flex; flex-direction: column; justify-content: center;
-              align-items: center; text-align: center; padding: 40px 0; }
-.brand-display { font-family: var(--font-display); font-size: clamp(30px, 5vw, 40px); font-weight: 600;
-                 margin-bottom: 10px; letter-spacing: 2px;
-                 background: linear-gradient(180deg, #ffedaa 0%, #e2b04a 58%, #b8862f 100%);
-                 -webkit-background-clip: text; background-clip: text; color: transparent; }
-.brand-display::after { content: ""; display: block; width: 76px; height: 1px; margin: 20px auto 0;
-                        background: linear-gradient(90deg, transparent, #e2b04a, transparent); }
-.login-sub { color: var(--text-2); max-width: 440px; margin: 0 0 26px; line-height: 1.8; }
-#loginBtn { min-width: 220px; }
+/* —— 未登录时的产品说明页在 landing.css（#loginView），本文件只管登录后的收件箱 —— */
 
 /* ============ 首页三层：顶部条目抽屉 / 中间金蔷薇 / 底部胶囊采集框 ============ */
 #homeView { display: flex; flex-direction: column;
-            min-height: calc(100dvh - 96px - env(safe-area-inset-top) - env(safe-area-inset-bottom)); }
+            /* 顶栏 + main 上下内边距（24+16）；顶栏高走令牌，不再重复写死（U-06） */
+            min-height: calc(100dvh - var(--topbar-h) - 40px - env(safe-area-inset-top) - env(safe-area-inset-bottom)); }
 .home-main { display: flex; flex-direction: column; flex: 1; min-height: 0; position: relative; }
 
 /* —— 顶部：条目抽屉。收起时只剩一个从顶边垂下来的半圆拉手 —— */
 .drawer { position: relative; z-index: 30; display: flex; justify-content: center; }
 /* 拉手 z 高于面板(45)：拖动中它是页面前缘的拉环，要画在面板之上 */
-.drawer-handle { position: relative; z-index: 46; width: 150px; min-height: 46px; padding: 6px 0 8px;
+.drawer-handle { position: relative; z-index: 46; width: 150px; min-height: var(--handle-h); padding: 6px 0 8px;
                  margin-top: -24px;  /* 抵消 main 顶边距，让半圆贴住顶栏下沿 */
                  touch-action: none;  /* 拖拽把手：按住下拖不能触发页面滚动 */
                  border: 1px solid var(--border-strong); border-top: none;
@@ -595,7 +586,8 @@ details.disclosure.slim .disclosure-body { padding: 0 8px 8px; }
   .smartbox.multi { border-radius: 24px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .rose .plant, .rose .sheenRect, .rose .glowPulse { animation: none !important; }
+  .rose .plant, .rose .sheenRect, .rose .glowPulse,
+  .rose .litGlow, .rose .litBand { animation: none !important; }
   .step.running .sline { animation: none; background: var(--accent); }
   .itembar.indeterminate > i, .stagepanel .panelbar.indeterminate > i { animation: none; left: 30%; }
   ul.items > li.enter, .detail { animation: none; }
