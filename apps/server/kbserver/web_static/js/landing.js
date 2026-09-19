@@ -163,16 +163,27 @@ function stemGrow() {
   whenShown(measure);
 }
 
-// ---------- 顶栏：吸顶态 + 那条当进度用的发丝线 ----------
+// ---------- 顶栏：吸顶态 + 标题缩成胶囊 + 那条当进度用的发丝线 ----------
 function topBar() {
   const top = document.getElementById("landTop");
   const bar = document.getElementById("landProgress");
+  const title = view.querySelector(".land-title");
   let queued = false;
   const measure = () => {
     queued = false;
     const y = scrollY;
     top.classList.toggle("stuck", y > 8);
     view.classList.toggle("scrolled", y > 40);
+    if (title) {
+      // 首屏那行「金蔷薇」整行滚到顶栏下沿之上，就把品牌收成一颗悬着的胶囊：
+      // 看着像那行字自己缩了上去。来回 26px 的迟滞带，免得停在边界上时一闪一闪。
+      const box = title.getBoundingClientRect();
+      if (box.height) {           // 登录视图还 hidden 时矩形全是 0，量了会凭空吸出一颗胶囊
+        const line = top.getBoundingClientRect().bottom;
+        const on = top.classList.contains("capsule");
+        if (on ? box.bottom > line + 26 : box.bottom <= line) top.classList.toggle("capsule", !on);
+      }
+    }
     const max = document.documentElement.scrollHeight - innerHeight;
     bar.style.setProperty("--p", max > 40 ? (y / max).toFixed(4) : 0);
   };
