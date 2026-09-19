@@ -34,7 +34,7 @@
    边框留着 1px 只是不想让顶栏高度差出一像素，把发丝线的位置挪走。 */
 .land-top { position: fixed; left: 0; right: 0; top: 0; z-index: 30;
             --pad-x: clamp(14px, 4vw, 40px);
-            --pw: calc(var(--w, 0px) + 68px);      /* 收拢后那颗胶囊的宽度：那一行 + 左右各 34px */
+            --pw: calc(var(--w, 0px) + 48px);      /* 收拢后那颗胶囊的宽度：那一行 + 左右各 24px */
             display: flex; align-items: center;
             padding: calc(12px + env(safe-area-inset-top)) var(--pad-x) 12px;
             background: transparent; border-bottom: 1px solid transparent;
@@ -70,7 +70,7 @@
 .land-pill.notrans .land-mark, .land-pill.notrans .land-ends { transition: none !important; }
 .land-mark, .land-ends { flex: none; display: flex; align-items: center; gap: 6px;
                          transition: transform .8s var(--ease); }
-.land-ends { margin-left: clamp(44px, 7.5vw, 88px); }   /* 收拢后品牌与入口之间留够，别挤成一条 */
+.land-ends { margin-left: clamp(56px, 11vw, 132px); }   /* 胶囊要宽，靠中间这段留白撑，不是把两侧糊厚 */
 .land-top.capsule .land-mark { transform: translateX(var(--g, 0px)); }
 .land-top.capsule .land-ends { transform: translateX(calc(var(--g, 0px) * -1)); }
 /* 阅读进度就是这一条发丝线：平时跟底衬一样摸到屏幕两边，收拢时缩到胶囊里侧那一段（14px 内收，
@@ -324,8 +324,8 @@
 @media (max-width: 420px) {
   .land-cta { padding: 0 12px; }
   .land-brand { font-size: 17px; }
-  /* 窄屏顶栏左右只留 14px，胶囊两侧再各外扩 34px 就顶到屏幕边了，收到 24px */
-  .land-top { --pw: calc(var(--w, 0px) + 48px); }
+  /* 窄屏顶栏左右只留 14px，胶囊两侧再各外扩 24px 就顶到屏幕边了，收到 18px */
+  .land-top { --pw: calc(var(--w, 0px) + 36px); }
 }
 
 /* —— 矮视口（横放的手机、小笔记本）：首屏仍要是一整屏，只能收花冠与字号 —— */
