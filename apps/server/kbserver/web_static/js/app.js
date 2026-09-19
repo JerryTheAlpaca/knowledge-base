@@ -105,6 +105,9 @@ async function doLogout() {
   try { await api("/v1/auth/logout", { method: "POST" }); } catch (e) { /* 会话已无效也清理界面 */ }
   clearDraft();
   showLogin();
+  // 再用一次真实加载替掉当前这条历史记录：返回键取的就是停在历史里的那份文档，
+  // 只切视图的话，浏览器仍可能把退出前那份登录态 DOM 原样还给你（不发请求，也不跑启动检查）。
+  location.replace("/inbox");
 }
 
 // ---------- 启动 ----------
