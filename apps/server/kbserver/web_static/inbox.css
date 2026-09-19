@@ -287,6 +287,14 @@ label { display: block; font-size: var(--fs-small); color: var(--text-2); margin
 .grouptitle { font-size: var(--fs-small); font-weight: 600; color: var(--text-2);
               margin: 0 0 8px; display: flex; align-items: center; gap: 8px;
               letter-spacing: .4px; }
+/* 三个分组标题前各一枚小色点：一眼分清谁要动、谁在等、谁完事了。
+   点要小——它是分类记号，不是警示灯；「搜索结果」那一组不属于三种状态，不给点。 */
+.g-attention > .grouptitle::before, .g-pending > .grouptitle::before,
+.g-done > .grouptitle::before { content: ""; flex: none; width: 6px; height: 6px;
+                                border-radius: 50%; }
+.g-attention > .grouptitle::before { background: var(--bad); }
+.g-pending > .grouptitle::before { background: var(--info); }
+.g-done > .grouptitle::before { background: var(--ok); }
 /* 已完成默认只露最新三条，其余折叠（点标题下的按钮展开） */
 ul.items.collapsed > li:nth-child(n+4) { display: none; }
 .grouptoggle { margin-top: 10px; }
