@@ -71,7 +71,13 @@
   --t-slow: 200ms;    /* 位移/显隐 */
 
   /* —— 字体 —— */
-  --font-display: "Source Han Serif SC", "Noto Serif SC", "Songti SC", "SimSun", serif;
+  /* 展示字（宋体）。iOS 的 serif 关键字对中文给的是苹方，必须写到具体家族名；
+     Songti SC 在 iPhone 上要连"宋体-简""STSong"一起列，缺一个就可能整栈落空。
+     系统里没有宋体字库时（iPhone 未下载中文字体、部分安卓 ROM）只能落到 sans，
+     说明页的正文另有 landing-serif.woff2 兜底，见 landing.css。 */
+  --font-display: "Source Han Serif SC", "思源宋体", "Source Han Serif CN",
+                  "Noto Serif SC", "Noto Serif CJK SC", "Source Han Serif",
+                  "Songti SC", "宋体-简", "STSong", "SimSun", "STZhongsong", "宋体", serif;
   --font-body: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
 
   /* —— 旧变量别名（authorize.html 等渐进迁移）—— */
