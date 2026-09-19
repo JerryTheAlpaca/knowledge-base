@@ -191,54 +191,80 @@ export function setSubmittedHandler(fn) { onSubmitted = fn; }
 //    顺序感全靠 DUST_RISE 这个延时：点亮动画（inbox.css 的 .rose.play）在多数粉落定时挂上。
 const DUST_RISE = 760;   // 金粉从发送钮汇聚到花冠所需时间，与下面的飞行时长+错峰相配
 const LIT_HOLD = 2700;   // 点亮序列总长，略大于最晚结束的 sway(2.2s)
-let litTimer = null, holdTimer = null;
+let litTimer = null, holdTimer = null, settleTimer = null;
+
+// 手机上键盘把整页顶起来，提交后键盘收起、版面要往下走两三百毫秒。这中间量到的花冠
+// 是「被顶着」时的位置，金粉就会落在花的上方。所以先等版面停住（视口尺寸与滚动连续
+// 120ms 不变，最多等 520ms）再按落定后的位置放动画；桌面没有这档事，一次轮询就过了。
+function layoutSettled(next) {
+  const vv = window.visualViewport;
+  const sig = () => (vv ? [vv.height, vv.width, vv.offsetTop] : []).concat(
+    [innerHeight, innerWidth, scrollY]).join();
+  let last = sig(), quiet = 0, waited = 0;
+  const tick = () => {
+    const s = sig();
+    quiet = s === last ? quiet + 40 : 0;
+    last = s;
+    waited += 40;
+    if (quiet >= 120 || waited >= 520) next();
+    else settleTimer = setTimeout(tick, 40);
+  };
+  settleTimer = setTimeout(tick, 40);
+}
+
+function dustToRose(rose) {
+  const tr = rose.getBoundingClientRect();
+  const fr = $("capSubmit").getBoundingClientRect();
+  const fx = fr.left + fr.width / 2, fy = fr.top + fr.height / 2;
+  // 花心就是 svg 方框的正中：viewBox「120 80 360 360」的中心正落在 (300,260) 的花心上
+  const cx = tr.left + tr.width / 2, cy = tr.top + tr.height / 2;
+  const R = tr.width * 0.3;     // 落点散布半径：压在看得见的瓣圈内（瓣只长到约 .35 宽），不撒到花外的黑底上
+  const colors = ["#ffd98e", "#f4ca72", "#e2b04a", "#fff3c9"];
+  for (let i = 0; i < 28; i++) {
+    const p = document.createElement("i");
+    p.className = "gold-spark";
+    const s = (3.5 + Math.random() * 4.5).toFixed(1);
+    p.style.cssText = "width:" + s + "px;height:" + s + "px;background:" +
+      colors[i % colors.length] + ";left:" + fx + "px;top:" + fy + "px";
+    document.body.appendChild(p);
+    // 落点均匀撒满瓣圈（sqrt 才不往圆心堆），最后收在这一点上
+    const a = Math.random() * Math.PI * 2;
+    const r = Math.sqrt(Math.random()) * R;
+    const dx = cx + Math.cos(a) * r - fx;
+    const dy = cy + Math.sin(a) * r * 0.94 - fy;
+    // 中途沿切向鼓一点，走弧线汇进花里，而不是直愣愣四散开
+    const bow = (Math.random() - 0.5) * 0.26;
+    const mx = dx * 0.5 - dy * bow, my = dy * 0.5 + dx * bow;
+    p.animate([
+      { transform: "translate(0,0) scale(.5)", opacity: 0 },
+      { transform: "translate(" + dx * 0.12 + "px," + dy * 0.14 + "px) scale(1)", opacity: 1, offset: 0.18 },
+      { transform: "translate(" + mx + "px," + my + "px) scale(.9)", opacity: 1, offset: 0.58 },
+      { transform: "translate(" + dx + "px," + dy + "px) scale(.5)", opacity: 1, offset: 0.9 },
+      { transform: "translate(" + dx + "px," + dy + "px) scale(0)", opacity: 0 },
+    ], { duration: 520 + Math.random() * 190, delay: i * 13,
+         easing: "cubic-bezier(.34,.56,.28,1)", fill: "forwards" })
+      .addEventListener("finish", () => p.remove());
+  }
+}
+
 function roseCelebrate() {
   const wrap = document.querySelector(".rose-wrap");
   const rose = document.querySelector("svg.rose");
   if (!wrap || !rose || wrap.offsetParent === null) return;
   const reduce = window.matchMedia
     && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  if (!reduce) {
-    const tr = rose.getBoundingClientRect();
-    const fr = $("capSubmit").getBoundingClientRect();
-    const fx = fr.left + fr.width / 2, fy = fr.top + fr.height / 2;
-    // 花心就是 svg 方框的正中：viewBox「120 80 360 360」的中心正落在 (300,260) 的花心上
-    const cx = tr.left + tr.width / 2, cy = tr.top + tr.height / 2;
-    const R = tr.width * 0.3;     // 落点散布半径：压在看得见的瓣圈内（瓣只长到约 .35 宽），不撒到花外的黑底上
-    const colors = ["#ffd98e", "#f4ca72", "#e2b04a", "#fff3c9"];
-    for (let i = 0; i < 28; i++) {
-      const p = document.createElement("i");
-      p.className = "gold-spark";
-      const s = (3.5 + Math.random() * 4.5).toFixed(1);
-      p.style.cssText = "width:" + s + "px;height:" + s + "px;background:" +
-        colors[i % colors.length] + ";left:" + fx + "px;top:" + fy + "px";
-      document.body.appendChild(p);
-      // 落点均匀撒满瓣圈（sqrt 才不往圆心堆），最后收在这一点上
-      const a = Math.random() * Math.PI * 2;
-      const r = Math.sqrt(Math.random()) * R;
-      const dx = cx + Math.cos(a) * r - fx;
-      const dy = cy + Math.sin(a) * r * 0.94 - fy;
-      // 中途沿切向鼓一点，走弧线汇进花里，而不是直愣愣四散开
-      const bow = (Math.random() - 0.5) * 0.26;
-      const mx = dx * 0.5 - dy * bow, my = dy * 0.5 + dx * bow;
-      p.animate([
-        { transform: "translate(0,0) scale(.5)", opacity: 0 },
-        { transform: "translate(" + dx * 0.12 + "px," + dy * 0.14 + "px) scale(1)", opacity: 1, offset: 0.18 },
-        { transform: "translate(" + mx + "px," + my + "px) scale(.9)", opacity: 1, offset: 0.58 },
-        { transform: "translate(" + dx + "px," + dy + "px) scale(.5)", opacity: 1, offset: 0.9 },
-        { transform: "translate(" + dx + "px," + dy + "px) scale(0)", opacity: 0 },
-      ], { duration: 520 + Math.random() * 190, delay: i * 13,
-           easing: "cubic-bezier(.34,.56,.28,1)", fill: "forwards" })
-        .addEventListener("finish", () => p.remove());
-    }
-  }
   clearTimeout(litTimer);
   clearTimeout(holdTimer);
+  clearTimeout(settleTimer);
   rose.classList.remove("play");
-  litTimer = setTimeout(() => {
-    rose.classList.add("play");
-    holdTimer = setTimeout(() => rose.classList.remove("play"), LIT_HOLD);
-  }, reduce ? 0 : DUST_RISE);
+  const go = () => {
+    if (!reduce) dustToRose(rose);
+    litTimer = setTimeout(() => {
+      rose.classList.add("play");
+      holdTimer = setTimeout(() => rose.classList.remove("play"), LIT_HOLD);
+    }, reduce ? 0 : DUST_RISE);
+  };
+  if (reduce) go(); else layoutSettled(go);
 }
 
 export async function submitCapture() {
