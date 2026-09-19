@@ -644,26 +644,32 @@ def test_normal_web_capture_does_not_enter_asr(client, user_a, monkeypatch):
             worker.Job.item_id == item_id, worker.Job.stage.like("asr%")).count() == 0
 
 
-def test_republish_replaces_stale_readable_in_manifest(client, user_a, monkeypatch):
-    """重发布必须替换同路径旧文件：清单里两份 readable.md 时读侧命中靠前的旧版，
-    转写完成后「下载原文」仍只有标题（网页壳页 → 补充正文 → 转写发布）。
-    """
-    from kbserver.db import get_session_factory
+def _capture_web_shell_page(client, token, monkeypatch, key: str) -> str:
+    """一条只有标题的网页壳页条目：正文来自网页标题，用来观察转写发布后读的是哪一版。"""
     from kbserver.extractors import webpages
-    from kbserver.models import Item, SourceRevision
-    from kbserver.workers.publish import publish_segments_revision
 
-    token = user_a["desktop"]["token"]
     monkeypatch.setattr(webpages, "extract", lambda url, **kw: SimpleNamespace(
         platform="web", canonical_url="https://example.com/podcast", title="播客第 1 期",
         author=None, published_at=None, raw_html=b"<html></html>", raw_mime="text/html",
         segments=[{"segment_id": "s0001", "text": "播客第 1 期", "locator": {},
                    "origin": "web_article", "confidence": None, "kind": "heading"}],
         images=[], missing_materials=[], warnings=[], coverage="full_text"))
-    item_id = client.post("/v1/captures", json={
-        "client_capture_id": "republish-0001-1111-2222-3333-444444444444",
+    return client.post("/v1/captures", json={
+        "client_capture_id": f"{key}-1111-2222-3333-444444444444",
         "input_kind": "url", "original_url": "https://example.com/podcast",
-    }, headers={**auth(token), "Idempotency-Key": "republish-0001"}).json()["item_id"]
+    }, headers={**auth(token), "Idempotency-Key": key}).json()["item_id"]
+
+
+def test_republish_replaces_stale_readable_in_manifest(client, user_a, monkeypatch):
+    """重发布必须替换同路径旧文件：清单里两份 readable.md 时读侧命中靠前的旧版，
+    转写完成后「下载原文」仍只有标题（网页壳页 → 补充正文 → 转写发布）。
+    """
+    from kbserver.db import get_session_factory
+    from kbserver.models import Item, SourceRevision
+    from kbserver.workers.publish import publish_segments_revision
+
+    token = user_a["desktop"]["token"]
+    item_id = _capture_web_shell_page(client, token, monkeypatch, "republish-0001")
 
     sf = get_session_factory()
     _drain(sf)
@@ -702,3 +708,48 @@ def test_republish_replaces_stale_readable_in_manifest(client, user_a, monkeypat
     ).json()["files"]]
     for path in ("readable.md", "normalized.md", "segments.json"):
         assert paths.count(path) == 1, (path, paths)
+
+
+def test_legacy_duplicate_manifest_still_reads_newest(client, user_a, monkeypatch):
+    """线上已写坏的清单（同路径两份、旧版在前）不必重跑转写也要读到最新正文。"""
+    import json
+
+    from kbserver.db import get_session_factory
+    from kbserver.domain import pipeline
+    from kbserver.models import Item
+    from kbserver.repositories import core as repo
+
+    token = user_a["desktop"]["token"]
+    item_id = _capture_web_shell_page(client, token, monkeypatch, "legacy-mani-0001")
+    sf = get_session_factory()
+    _drain(sf)
+
+    store = ObjectStore()
+    with sf() as db:
+        item = db.get(Item, item_id)
+        bundle = repo.get_bundle(db, item.user_id, item.id, item.bundle_revision)
+        manifest = json.loads(store.read_object(bundle.manifest_key).decode("utf-8"))
+        stale = next(f for f in manifest["files"] if f["relative_path"] == "readable.md")
+        new_file = pipeline.register_file(
+            db, store, user_id=item.user_id, item_id=item.id,
+            data="这里是机器转写的正文。\n".encode("utf-8"), relative_path="readable.md",
+            role="source_material", mime="text/markdown",
+        )
+        newest_id = new_file.file_id
+        as_entry = {
+            "file_id": new_file.file_id, "relative_path": new_file.relative_path,
+            "role": new_file.role, "mime": new_file.mime,
+            "bytes": new_file.bytes, "sha256": new_file.sha256,
+        }
+        # 修复前发布器写出的清单形状：旧版在前、转写正文追加在最后
+        manifest["files"] = ([stale]
+                             + [f for f in manifest["files"] if f["relative_path"] != "readable.md"]
+                             + [as_entry])
+        sha, key, _ = store.put_bytes(pipeline.canonical_json(manifest))
+        bundle.manifest_key = key
+        bundle.manifest_sha256 = sha
+        db.commit()
+
+    sm = client.get(f"/v1/items/{item_id}/reading", headers=auth(token)).json()["source_material"]
+    assert "这里是机器转写的正文" in sm["readable_md"]
+    assert [f["file_id"] for f in sm["files"] if f["relative_path"] == "readable.md"] == [newest_id]
