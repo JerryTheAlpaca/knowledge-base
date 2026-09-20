@@ -115,7 +115,7 @@ class ProviderProfile(Base, TimestampMixin):
     # 40 字符：wechat_channels_session 等平台会话 kind 超过原 20（docs/18 §7.2）
     kind: Mapped[str] = mapped_column(String(40))  # llm|vision_ocr|bilibili_session|xiaohongshu_session|wechat_channels_session|zhihu_session
     adapter: Mapped[str] = mapped_column(String(40))  # openai-compatible|bilibili-web|...
-    # llm 配置的角色：digest=整理文本（默认/NULL，历史行）、optimize=优化文本（分段与纠错）
+    # llm 配置的角色：digest=整理文本（默认/NULL，历史行）、optimize=优化文本（纠错与分段）
     role: Mapped[str | None] = mapped_column(String(20), nullable=True)
     endpoint: Mapped[str] = mapped_column(String(512))
     model: Mapped[str] = mapped_column(String(120))

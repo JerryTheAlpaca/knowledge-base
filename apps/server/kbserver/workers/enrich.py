@@ -75,7 +75,7 @@ class EnrichPlan:
     model: str
     capabilities: dict
     operation_id: str
-    # 优化文本配置（语义分段与听错词修正）；未设置时兜底填充整理配置，
+    # 优化文本配置（纠错与分段）；未设置时兜底填充整理配置，
     # 思考档位仍按优化档设置独立生效
     optimize_profile_id: str | None = None
     optimize_endpoint: str | None = None
@@ -244,7 +244,7 @@ def prepare(session_factory, job_id: str, lease_token: str) -> EnrichPlan | None
         optimize_id = user_settings.get("optimize_profile_id")
         opt = next(((p, c) for p, c in rows if p.id == optimize_id), None) if optimize_id else None
 
-        # 主配置取本次真正要用到的那一档：只开「语义分段与纠错」时不去要求整理档
+        # 主配置取本次真正要用到的那一档：只开「纠错与分段」时不去要求整理档
         # 凭据，否则条目会卡在一个它根本用不上的开关上（waiting_key）。
         if digest_enabled:
             candidates: list[tuple[ProviderProfile, Credential]] = digest_rows
@@ -508,8 +508,8 @@ def call_provider(session_factory, plan: EnrichPlan) -> dict:
         raws.append(result.raw)
         return parse_model_json(result.output_text)
 
-    # 语义分段 + 听错词修正先于提炼：修正后的文本让提炼摘录与正文一致
-    # （用户关闭「AI 语义分段」时跳过，阅读层保持本地规则分段）。
+    # 纠错与分段先于提炼：修正后的文本让提炼摘录与正文一致
+    # （用户关闭「AI 自动纠错与分段」时跳过，阅读层保持本地规则分段）。
     # 分段/纠错属于「优化文本」：走优化档 provider（未设置优化档时兜底用整理配置，
     # 思考档位独立、通常关闭——更便宜更快）；凭据不可用时回退整理 provider。
     text_plan = (
@@ -589,7 +589,7 @@ def call_provider(session_factory, plan: EnrichPlan) -> dict:
     return {"doc": doc, "raw": raws[-1] if raws else {}, "ai_text_plan": text_plan}
 
 
-# 语义分段调用的输出预算：推理模型会把大量输出花在思维链上，常规
+# 纠错与分段调用的输出预算：推理模型会把大量输出花在思维链上，常规
 # max_output_tokens（8K）常在正文输出前耗尽，content 为空（finish_reason=length）。
 # 实测 92 句材料思维链 ~2.5 万 token，放宽到 32K 才能拿到正文。
 _PARAGRAPHING_MAX_OUTPUT_TOKENS = 32768
@@ -599,7 +599,7 @@ _PARAGRAPHING_CHUNK_SEGMENTS = 40
 
 
 def _semantic_paragraph_starts(plan: EnrichPlan, call) -> dict | None:
-    """LLM 语义分段 + 听错词修正（尽力而为）：失败返回 None，阅读层保持现有分段。
+    """LLM 纠错与分段 + 听错词修正（尽力而为）：失败返回 None，阅读层保持现有分段。
 
     分块材料逐块调用（用上一块结尾两句作承接判断，块首句若承接上文则
     不算段首），汇总各块的段首句并校验顺序；同时收集确信的听错句修正
@@ -719,7 +719,7 @@ def finish(session_factory, plan: EnrichPlan, result: dict) -> None:
             ]
             db.flush()
 
-        # AI 语义分段 + 听错词修正：按模型给出的段首句重算阅读层段落、
+        # AI 纠错与分段 + 听错词修正：按模型给出的段首句重算阅读层段落、
         # 应用修正文本，覆盖 Bundle 内 readable.md / segments.json
         #（失败或缺失时保持原分段，不回退）
         extra_files: list[StoredFile] = []
@@ -775,7 +775,7 @@ def finish(session_factory, plan: EnrichPlan, result: dict) -> None:
             result_file_id=generated_files[0].file_id if organized else None,
         )
         item.state_detail = "" if organized else (
-            "已完成文字优化（分段与纠错）；AI 自动整理已关闭。" if ai_starts
+            "已完成文字优化（纠错与分段）；AI 自动整理已关闭。" if ai_starts
             else "文字优化这次没有产出结果，阅读层保持本地分段；AI 自动整理已关闭。"
         )
         job.state = "succeeded"

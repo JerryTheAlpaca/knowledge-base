@@ -241,7 +241,7 @@ def group_paragraphs(segments: list[dict]) -> list[dict]:
 
 
 def group_paragraphs_from_starts(segments: list[dict], start_ids) -> list[dict]:
-    """按显式的段落起始句集合分组（AI 语义分段结果）。
+    """按显式的段落起始句集合分组（AI 自动纠错与分段结果）。
 
     start_ids 为段首 segment_id 集合；材料首句始终视为段首。
     """

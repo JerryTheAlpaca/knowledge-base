@@ -45,7 +45,7 @@ router = APIRouter(tags=["profiles"])
 
 ALLOWED_KINDS = {"llm", "vision_ocr"}
 ALLOWED_ADAPTERS = {"openai-compatible"}
-# llm 配置角色：digest=整理文本（提炼）、optimize=优化文本（语义分段与听错词修正）
+# llm 配置角色：digest=整理文本（提炼）、optimize=优化文本（纠错与分段）
 ALLOWED_ROLES = {"digest", "optimize"}
 ALLOWED_CAPABILITY_KEYS = {
     "context_tokens": int,

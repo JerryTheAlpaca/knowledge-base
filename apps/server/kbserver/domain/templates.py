@@ -228,7 +228,7 @@ def build_paragraphing_prompt(
     chunk_index: int | None = None, chunk_total: int | None = None,
     subtitle_refs: dict[str, str] | None = None,
 ) -> str:
-    """语义分段 + 听错词修正调用（独立于提炼）：按话题给段首句，顺带修正 ASR 听错的句子。"""
+    """纠错与分段 + 听错词修正调用（独立于提炼）：按话题给段首句，顺带修正 ASR 听错的句子。"""
     refs = [
         {"segment_id": sid, "subtitle_text": text}
         for sid, text in (subtitle_refs or {}).items()

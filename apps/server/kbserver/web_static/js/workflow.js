@@ -23,7 +23,7 @@ export function actionLabel(code, platLabel) {
     update_session: "更新" + plat + "登录信息",
     retry: "重试",
     start_organize: "开始整理",
-    start_optimize_text: "开始优化文本",
+    start_optimize_text: "开始优化文本（纠错与分段）",
     choose_audio: "选择音频",
     refresh: "刷新",
   };
@@ -41,7 +41,7 @@ export function availableActionLabels(platLabel) {
     supplement: "补充材料",
     choose_model: "选择整理模型",
     start_organize: "重新整理",
-    start_optimize_text: "优化文本",
+    start_optimize_text: "优化文本（纠错与分段）",
     connect_obsidian: "连接 Obsidian",
     connect_platform: "连接" + plat,
     update_session: "更新" + plat + "登录信息",

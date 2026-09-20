@@ -165,7 +165,7 @@ def derive_item_workflow(
         organize = _step("organize", "completed", "ORGANIZE_DONE", "已生成整理结果", label="整理")
     elif ps == "enriching" and not auto_enrich:
         # 自动整理关着但文字优化在跑：这一步不是「整理中」，照实说在做什么
-        organize = _step("organize", "running", "OPTIMIZING_TEXT", "正在优化文字（分段与纠错）",
+        organize = _step("organize", "running", "OPTIMIZING_TEXT", "正在优化文字（纠错与分段）",
                          label="整理")
     elif organize_off:
         organize = _step("organize", "skipped", "AUTO_ORGANIZE_OFF", "自动整理已关闭，直接取用原文",
@@ -317,8 +317,9 @@ def _available_actions(item: Item, meta: dict, steps: dict[str, dict] | list,
         acts.append("choose_model")
     if organize["reason_code"] in ("AUTO_ORGANIZE_OFF", "STALE_ORGANIZE", "ORGANIZE_FAILED"):
         acts.append("start_organize")
-    # 手动「开始优化文本」：只要分段与纠错开着就显示（外部 AI 调用，不占本地资源）
-    if ai_paragraphing:
+    # 手动「开始优化文本」：始终显示，除非条目还没提取完或需要补充材料
+    # （这些状态下没有可优化的原文）
+    if item.pipeline_state not in {"queued", "extracting", "needs_input"}:
         acts.append("start_optimize_text")
     if delivery["status"] == "connect_obsidian":
         acts.append("connect_obsidian")

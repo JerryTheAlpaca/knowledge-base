@@ -849,17 +849,13 @@ def optimize_text(
     principal=Depends(require_scope("items:edit")),
     db: Session = Depends(get_db),
 ) -> ItemOut:
-    """手动触发文字优化（分段与纠错）：只改写阅读层，不生成知识笔记。
+    """手动触发文字优化（纠错与分段）：只改写阅读层，不生成知识笔记。
 
-    前提：「AI 语义分段与纠错」开着。如果关着，400 提示。
+    不管「AI 自动纠错与分段」开关开没开，手动点这个按钮都会入队优化任务。
     入队 enrich 任务，digest_requested=False，让任务内部跳过整理。
     """
-    from ..workers.publish import ai_paragraphing_enabled
-
     user = principal.user
     item = _require_item(db, user.id, item_id)
-    if not ai_paragraphing_enabled(db, user.id):
-        raise ApiError("BAD_REQUEST", "AI 语义分段与纠错 未开启", status_code=400)
 
     pipeline.enqueue_stage(
         db, user_id=user.id, item_id=item.id, source_revision=item.source_revision,
@@ -867,7 +863,7 @@ def optimize_text(
         digest_requested=False,  # 只优化，不整理
     )
     item.pipeline_state = "queued"
-    item.state_detail = "用户请求优化文字（分段与纠错）"
+    item.state_detail = "用户请求优化文字（纠错与分段）"
     db.commit()
     db.refresh(item)
     return _item_out(item, _latest_source(db, item), db)

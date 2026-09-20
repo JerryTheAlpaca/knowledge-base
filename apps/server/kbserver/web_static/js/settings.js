@@ -141,7 +141,7 @@ function renderAiParagraphing(settings) {
     try {
       await api("/v1/settings", { method: "PATCH", body: { ai_paragraphing: cb.checked } });
       toast(cb.checked ? "已开启：条目会自动按话题分段并修正听错字词"
-                       : "已关闭：分段与纠错改用本地规则，不再产生这部分调用", { type: "ok" });
+                       : "已关闭：纠错与分段改用本地规则，不再产生这部分调用", { type: "ok" });
     } catch (e) { showErr(e); cb.checked = !cb.checked; }
   };
 }

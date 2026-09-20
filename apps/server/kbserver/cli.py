@@ -180,7 +180,7 @@ def cmd_reparagraph(args) -> None:
                 skipped += 1
                 continue
             if doc.get("paragraph_source") == "ai":
-                skipped += 1  # AI 语义分段：不由本地规则重算覆盖
+                skipped += 1  # AI 纠错与分段：不由本地规则重算覆盖
                 continue
             paragraphs = parafmt.group_paragraphs(segments)
             mapping = parafmt.segment_paragraph_map(paragraphs)

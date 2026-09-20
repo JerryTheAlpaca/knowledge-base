@@ -33,7 +33,7 @@ def auto_enrich_enabled(db: Session, user_id: str) -> bool:
 
 
 def ai_paragraphing_enabled(db: Session, user_id: str) -> bool:
-    """用户级「AI 语义分段与纠错」开关（默认开）：关闭时加工不做 LLM 分段与
+    """用户级「AI 自动纠错与分段」开关（默认开）：关闭时加工不做 LLM 分段与
     听错词修正，阅读层保持本地规则分段（零模型开销）。"""
     from ..models import User
 
@@ -47,7 +47,7 @@ def ai_paragraphing_enabled(db: Session, user_id: str) -> bool:
 def auto_process_enabled(db: Session, user_id: str) -> bool:
     """提取完成后是否自动排队 enrich。
 
-    「AI 自动整理」与「AI 语义分段与纠错」是两件独立的事：前者生成知识笔记，
+    「AI 自动整理」与「AI 自动纠错与分段」是两件独立的事：前者生成知识笔记，
     后者只改写阅读层文字。任一开着就入队，任务内部再按各自的开关决定做哪一半
     （见 enrich.prepare）——不能让关掉整理顺带把文字优化也掐掉。
     """
