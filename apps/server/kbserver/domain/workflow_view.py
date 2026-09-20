@@ -317,8 +317,8 @@ def _available_actions(item: Item, meta: dict, steps: dict[str, dict] | list,
         acts.append("choose_model")
     if organize["reason_code"] in ("AUTO_ORGANIZE_OFF", "STALE_ORGANIZE", "ORGANIZE_FAILED"):
         acts.append("start_organize")
-    # 手动「开始优化文本」：只要分段与纠错开着、没有正在跑的任务，就显示
-    if ai_paragraphing and active_job is None:
+    # 手动「开始优化文本」：只要分段与纠错开着就显示（外部 AI 调用，不占本地资源）
+    if ai_paragraphing:
         acts.append("start_optimize_text")
     if delivery["status"] == "connect_obsidian":
         acts.append("connect_obsidian")
