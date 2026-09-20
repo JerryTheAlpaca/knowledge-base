@@ -900,3 +900,61 @@ def test_stale_holder_must_not_cancel_a_taken_over_job(client, user_a, asr_env, 
         assert asr_mod._load_context(s, job_id, "stale-token", settle_orphan=True) is None
     with sf() as s:
         assert s.get(worker.Job, job_id).state == "running"
+
+
+def test_cancel_while_a_chunk_is_running_actually_stops(client, user_a, asr_env, fresh_queue):
+    """执行中点取消要真的停下来：既不能被下一次领取悄悄复活，也不能被在飞的那次重新排队。
+
+    docs/11 §6.3 要求「取消/删除要终止当前子进程树，检查点不再推进」。原来
+    cancel_asr 只把 queued/retry_wait 的任务标取消，正在执行的那份留着不动——
+    Worker 的所有权检查只看租约，不看 run 是否已取消，于是照跑不误，还会把
+    run.state 从 cancelled 改回 transcribing。
+    """
+    asr_env.install()
+    item_id = _capture_bili_url(client, user_a["phone"]["token"], "asrcancelfly").json()["item_id"]
+    client.post(f"/v1/items/{item_id}/asr", json={},
+                headers=auth(user_a["desktop"]["token"]))
+    sf = _session_factory()
+    worker.run_once(sf, AlwaysAllowGate())   # extract（no_track → needs_input）
+    worker.run_once(sf, AlwaysAllowGate())   # prepare → 2 段就绪，run 进入 transcribing
+    job = worker.claim_job(sf, worker.ASR_TRANSCRIBE_STAGES)   # 模拟「正在执行这一段」
+    assert job is not None and job.stage == "asr_transcribe"
+    stale_token = job.lease_token
+    with sf() as s:
+        asr_mod.cancel_asr(s, _get_run(s, item_id))
+        s.commit()
+    with sf() as s:
+        # 1) 正在执行的那个任务也要被标掉，Worker 现有的租约/所有权检查才会停下来
+        assert _item_job(s, item_id, "asr_transcribe").state == "cancelled"
+    # 2) 在飞的那一次用已经拿到的上下文继续收尾，不许把 run 改回活动中状态
+    asr_mod.execute_transcribe(sf, job.id, stale_token, AlwaysAllowGate())
+    with sf() as s:
+        run = _get_run(s, item_id)
+        assert run.state == "cancelled", run.state
+        assert run.next_chunk_index == 0, "检查点还在推进，说明没真的停"
+
+
+def test_claiming_a_cancelled_run_does_not_restart_it(client, user_a, asr_env, fresh_queue):
+    """已取消的 run 被重新排回队列后，下一次领取不许把它改回活动中状态。
+
+    这是「取消之后又悄悄续跑」的现场：执行中的那次收尾时只按租约判断归属，就把
+    任务重新排回了队列。取消按钮和这个重排之间没有任何锁，交错完全可能出现。
+    """
+    asr_env.install()
+    item_id = _capture_bili_url(client, user_a["phone"]["token"], "asrrevive").json()["item_id"]
+    client.post(f"/v1/items/{item_id}/asr", json={},
+                headers=auth(user_a["desktop"]["token"]))
+    sf = _session_factory()
+    worker.run_once(sf, AlwaysAllowGate())   # extract
+    worker.run_once(sf, AlwaysAllowGate())   # prepare → 段就绪
+    with sf() as s:
+        asr_mod.cancel_asr(s, _get_run(s, item_id))
+        s.commit()
+    with sf() as s:   # 模拟在飞那次收尾时把它重新排队
+        job = _item_job(s, item_id, "asr_transcribe")
+        job.state = "queued"
+        s.commit()
+    _drain(sf, AlwaysAllowGate(), max_rounds=2)   # 领取由 run_once 做，别在这里提前占掉
+    with sf() as s:
+        assert _get_run(s, item_id).state == "cancelled"
+        assert _item_job(s, item_id, "asr_transcribe").state == "cancelled"

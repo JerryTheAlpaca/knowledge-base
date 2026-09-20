@@ -223,7 +223,10 @@ def cancel_asr(db: Session, run: AsrRun) -> None:
     run.updated_at = utcnow()
     for stage in ("asr_prepare", "asr_transcribe"):
         job = _get_asr_job(db, run, stage)
-        if job is not None and job.state in ("queued", "retry_wait"):
+        # 正在执行的那份也要标掉：Worker 的续租与所有权检查都以 running 为条件，
+        # 标了它们才会失败并在下一次回调里终止子进程树（docs/11 §6.3）。只标排队
+        # 任务的话，执行中的这段会照跑，收尾时还把任务重新排回队列。
+        if job is not None and job.state in ("queued", "retry_wait", "running"):
             job.state = "cancelled"
     item = db.get(Item, run.item_id)
     if item is not None and item.pipeline_state in ("queued", "extracting"):
@@ -275,7 +278,7 @@ def _load_run_for_job(db: Session, job: Job) -> AsrRun | None:
     ).one_or_none()
 
 
-def _cancel_orphan(db: Session, job: Job, run: AsrRun | None) -> None:
+def _cancel_orphan(db: Session, job: Job, run: AsrRun | None, why: str) -> None:
     """把「数据已经不成立」的任务就地判成取消。
 
     这类情况以前一律静默 return：任务留在 running，120 秒后被 recover_expired_leases
@@ -283,7 +286,7 @@ def _cancel_orphan(db: Session, job: Job, run: AsrRun | None) -> None:
     6000 多次，每两轮就报一次「周期恢复过期租约」。
     """
     job.state = "cancelled"
-    job.last_error = "条目或转写任务已不存在，任务作废"
+    job.last_error = why
     job.lease_token = None
     job.lease_until = None
     if run is not None and run.state not in ("succeeded", "failed", "cancelled"):
@@ -300,6 +303,9 @@ def _load_context(db: Session, job_id: str, lease_token: str, *,
     settle_orphan 给「刚领取任务」的那一处用：租约仍属于我们、但条目/来源/run 已经
     对不上时，直接把任务判掉。少了这一步，领取方拿不到上下文就原样返回，任务永远
     停在 running 等着被反复重领。
+
+    run 已是终态也算对不上：用户取消时执行中的那段可能已经把任务重新排回队列，
+    不拦的话下一次领取会把 run.state 从 cancelled 改回活动中，取消就被悄悄撤销。
     """
     job = db.get(Job, job_id)
     if job is None or job.lease_token != lease_token or job.state != "running":
@@ -314,9 +320,12 @@ def _load_context(db: Session, job_id: str, lease_token: str, *,
                     SourceRevision.revision == job.source_revision)
             .one_or_none()
         )
-    if run is None or item is None or item.deleted_at is not None or source is None:
+    finished = run is not None and run.state in ("succeeded", "cancelled", "failed")
+    if finished or run is None or item is None or item.deleted_at is not None or source is None:
         if settle_orphan:
-            _cancel_orphan(db, job, run)
+            _cancel_orphan(db, job, None if finished else run,
+                           "转写已结束或已取消，任务作废" if finished
+                           else "条目或转写任务已不存在，任务作废")
         return None
     return RunContext(job=job, run=run, item=item, source=source)
 
