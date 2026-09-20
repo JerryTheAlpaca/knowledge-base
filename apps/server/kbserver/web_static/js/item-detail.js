@@ -425,6 +425,15 @@ export async function doReprocess() {
   } catch (e) { showErr(e); }
 }
 
+async function doOptimizeText() {
+  if (!detailId) return;
+  try {
+    await api("/v1/items/" + encodeURIComponent(detailId) + "/optimize-text", { method: "POST" });
+    toast("已开始优化文本（分段与纠错）", { type: "ok" });
+    refreshDetail();
+  } catch (e) { showErr(e); }
+}
+
 async function doRefetch() {
   if (!detailId) return;
   try {
@@ -640,6 +649,7 @@ async function stageAction(code) {
     case "update_session": goPlatformSettings(); break;
     case "retry": doReprocess(); break;
     case "start_organize": doReprocess(); break;
+    case "start_optimize_text": doOptimizeText(); break;
     default: break;
   }
 }
@@ -673,6 +683,7 @@ export function initDetail() {
     else if (code === "retry_process") doAsrTrigger();
     else if (code === "supplement") openSupplementModal();
     else if (code === "start_organize") doReprocess();
+    else if (code === "start_optimize_text") doOptimizeText();
     else if (code === "choose_model") goSettingsCard("secModel");
     else if (code === "connect_obsidian") goSettingsCard("secObsidian");
     else if (code === "connect_platform" || code === "update_session") goPlatformSettings();
