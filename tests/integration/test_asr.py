@@ -958,3 +958,43 @@ def test_claiming_a_cancelled_run_does_not_restart_it(client, user_a, asr_env, f
     with sf() as s:
         assert _get_run(s, item_id).state == "cancelled"
         assert _item_job(s, item_id, "asr_transcribe").state == "cancelled"
+
+
+def test_delete_item_mid_transcription_settles_without_publishing(client, user_a, asr_env, fresh_queue):
+    """条目在识别中途被删除：任务要被判掉，不许复活成活动状态，也不许发布成品。
+
+    delete_item 只把 queued/retry_wait 的任务标取消，执行中的那一份没人管——线上就是
+    这样留下一个 attempt 空转 6000 多次的已删除条目。这里走完整一圈：在飞 → 删除 →
+    租约回收 → 再被领取，最后必须停在终态，且没有多出一个整理结果版本。
+    """
+    from datetime import timedelta
+
+    asr_env.install()
+    token = user_a["phone"]["token"]
+    item_id = _capture_bili_url(client, token, "asrdel").json()["item_id"]
+    client.post(f"/v1/items/{item_id}/asr", json={},
+                headers=auth(user_a["desktop"]["token"]))
+    sf = _session_factory()
+    worker.run_once(sf, AlwaysAllowGate())   # extract（no_track → needs_input）
+    worker.run_once(sf, AlwaysAllowGate())   # prepare → 段就绪
+    with sf() as s:
+        item = s.get(worker.Item, item_id)
+        rev_before, bundle_before = item.source_revision, item.bundle_revision
+    job = worker.claim_job(sf, worker.ASR_TRANSCRIBE_STAGES)   # 模拟「正在跑这一段」
+    assert job is not None and job.stage == "asr_transcribe"
+    # 删除要 items:edit，手机令牌只有 captures/uploads 权限
+    assert client.delete(f"/v1/items/{item_id}",
+                         headers=auth(user_a["desktop"]["token"])).status_code == 200
+    with sf() as s:   # 删除接口不碰执行中的任务，靠租约回收后下一轮领取收尾
+        row = s.get(worker.Job, job.id)
+        assert row.state == "running"
+        row.lease_until = worker.utcnow() - timedelta(seconds=1)
+        s.commit()
+    assert worker.recover_expired_leases(sf) >= 1
+    worker.run_once(sf, AlwaysAllowGate())
+    with sf() as s:
+        assert _get_run(s, item_id).state == "cancelled"
+        assert _item_job(s, item_id, "asr_transcribe").state == "cancelled"
+        item = s.get(worker.Item, item_id)
+        assert (item.source_revision, item.bundle_revision) == (rev_before, bundle_before)
+    assert worker.claim_job(sf, worker.ASR_TRANSCRIBE_STAGES) is None   # 不再被重领
