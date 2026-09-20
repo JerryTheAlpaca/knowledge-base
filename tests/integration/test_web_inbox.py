@@ -119,6 +119,18 @@ def test_central_rejected_returns_401(wc, central):
     assert wc.get("/v1/items").status_code == 401
 
 
+def test_central_revocation_hits_next_request(wc, central):
+    """在记账侧退出或被撤销时 KB 完全不知情：下一个 KB 请求就得 401。
+
+    这条盯的是「不许缓存校验结果」。哪怕只缓存几秒，退出后按返回键也还能
+    回到登录态主页——这是明确不接受的行为。
+    """
+    assert _login(wc, central).status_code == 200
+    assert wc.get("/v1/items").status_code == 200  # 已经成功校验过一次
+    central["valid"] = False                       # 中心撤销，KB 侧什么都没做
+    assert wc.get("/v1/items").status_code == 401
+
+
 def test_central_unavailable_returns_503(wc, central, db):
     """中心超时/异常：可恢复的 503，不当作无账号（不新增本地用户）。"""
     central["unavailable"] = True
@@ -157,8 +169,12 @@ def test_login_redirect_goes_to_central(wc, central):
     assert loc.startswith("https://auth.example.com/login?return_to=")
     from urllib.parse import unquote, urlparse, parse_qs
 
-    return_to = parse_qs(urlparse(loc).query)["return_to"][0]
+    query = parse_qs(urlparse(loc).query)
+    return_to = query["return_to"][0]
     assert return_to.startswith("http://testserver/inbox")
+    # app=kb 决定中心登录页用金蔷薇那套外观；丢了它就变成记账的大白底页。
+    # 登录态仍然完全共享，这里只是换肤。
+    assert query["app"] == ["kb"]
 
 
 def test_login_redirect_rejects_external_next(wc, central):
@@ -176,7 +192,9 @@ def test_register_redirect_goes_to_central_register(wc, central):
     assert "/login?" not in loc
     from urllib.parse import parse_qs, urlparse
 
-    assert parse_qs(urlparse(loc).query)["return_to"][0].startswith("http://testserver/inbox")
+    query = parse_qs(urlparse(loc).query)
+    assert query["return_to"][0].startswith("http://testserver/inbox")
+    assert query["app"] == ["kb"]  # 注册页同样要换肤，不能只有登录页是金蔷薇
 
 
 def test_central_unconfigured_returns_503(wc, monkeypatch):

@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import hashlib
+import http.cookiejar
 import time
 from http.cookies import SimpleCookie
 
@@ -19,6 +20,8 @@ from ..config import get_settings
 # 同值的滑动续期 Set-Cookie，任何在飞的请求晚到一步就把刚清掉的凭据又种回浏览器；
 # 中心偶尔撤销得慢（或这次没撤销成），返回键回去就是登录态主页。
 REVOKED_TTL_SECONDS = 300
+# 进程内内存：uvicorn 目前 --workers 1（apps/server/Dockerfile）。加 worker 会让
+# 退出只记在一个进程里，另一进程的晚到续期响应又能把凭据种回浏览器。
 _revoked: dict[str, float] = {}
 
 
@@ -52,28 +55,76 @@ class CentralAuthRejected(Exception):
     """中心明确返回未登录/会话无效：按 401 处理。"""
 
 
-def _timeout() -> httpx.Timeout:
-    return httpx.Timeout(get_settings().auth_timeout_seconds, connect=3.0)
+# 共享客户端：浏览器每个 Cookie 通道请求都要校验一次中心会话，走的是公网 HTTPS。
+# 用 httpx.get() 每次新建客户端等于每个请求重做一遍 DNS+TCP+TLS 握手——握手是这台
+# 2 核机器上真实的大头，两边都要付，而且每次请求都占着一个请求线程。
+class _NeverStoreCookies(http.cookiejar.DefaultCookiePolicy):
+    """共享客户端的 Cookie jar 必须永远为空。
 
-
-def validate_central_session(cookie_value: str) -> tuple[dict, dict | None]:
-    """校验中心会话，返回 (中心的 data 节点, 续期 Cookie 或 None)。
-
-    data 节点形如 {user: {id, username, role?}, expiresAt}。
-    - 中心明确未登录 -> CentralAuthRejected（KB 返回 401）。
-    - 中心超时/5xx/非 JSON -> CentralAuthUnavailable（KB 返回 503）。
+    中心每次校验都回一颗同值的滑动续期 Set-Cookie。jar 一旦收下，下一个用户的请求
+    就会带上上一个用户的会话凭据。续期值由 extract_renewal_cookie 单独取出后中继给
+    浏览器，服务端自己不允许保管任何中心 Cookie；发送也只走显式 Cookie 头。
     """
+
+    def set_ok(self, cookie, request):
+        return False
+
+
+def _new_client(transport: httpx.BaseTransport | None = None) -> httpx.Client:
+    client = httpx.Client(
+        limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
+        follow_redirects=False,
+        transport=transport,
+    )
+    client.cookies.jar.set_policy(_NeverStoreCookies())
+    return client
+
+
+_client = _new_client()
+
+
+def _cookie_header(settings, cookie_value: str) -> dict[str, str]:
+    """按名字只带这一颗凭据，不整串转发浏览器 Cookie，也不经手 jar。"""
+    return {"Cookie": f"{settings.auth_cookie_name}={cookie_value}"}
+
+
+# 中心重启/重新部署的那一两秒里，KB 全部 Cookie 通道请求都会 503。这类失败是「秒回」
+# 的（连接被拒、Caddy 502、复用的长连接变陈旧），所以按剩余预算补试一次就能吃掉抖动。
+# 中心真的挂起时首次尝试已花光预算，剩下的时间不足就不再重试，最坏耗时仍约等于
+# AUTH_TIMEOUT_SECONDS，不会翻倍。401 走 Rejected，永不重试。
+_MAX_ATTEMPTS = 2
+_RETRY_BACKOFF_SECONDS = 0.4
+_RETRY_MIN_REMAINING_SECONDS = 1.0
+
+
+def _budget_seconds() -> float:
+    return max(get_settings().auth_timeout_seconds, 1.0)
+
+
+def _run_with_retry(call):
+    deadline = time.monotonic() + _budget_seconds()
+    for attempt in range(1, _MAX_ATTEMPTS + 1):
+        try:
+            return call(deadline)
+        except CentralAuthUnavailable:
+            if attempt >= _MAX_ATTEMPTS:
+                raise
+            if deadline - time.monotonic() < _RETRY_MIN_REMAINING_SECONDS:
+                raise
+            time.sleep(_RETRY_BACKOFF_SECONDS)
+
+
+def _timeout_until(deadline: float) -> httpx.Timeout:
+    remaining = max(deadline - time.monotonic(), 0.05)
+    return httpx.Timeout(remaining, connect=min(3.0, remaining))
+
+
+def _validate_once(cookie_value: str, deadline: float) -> tuple[dict, dict | None]:
     settings = get_settings()
-    if not settings.auth_session_url:
-        raise CentralAuthUnavailable("未配置中心认证接口（AUTH_SESSION_URL）")
+    headers = {"Accept": "application/json", **_cookie_header(settings, cookie_value)}
     try:
-        resp = httpx.get(
-            settings.auth_session_url,
-            cookies={settings.auth_cookie_name: cookie_value},
-            timeout=_timeout(),
-            follow_redirects=False,
-            headers={"Accept": "application/json"},
-        )
+        resp = _client.get(settings.auth_session_url, timeout=_timeout_until(deadline),
+                           headers=headers)
     except httpx.HTTPError as exc:
         raise CentralAuthUnavailable(f"中心认证服务不可达：{type(exc).__name__}") from exc
     if resp.status_code >= 500:
@@ -94,24 +145,42 @@ def validate_central_session(cookie_value: str) -> tuple[dict, dict | None]:
     return data, renewal
 
 
-def central_logout(cookie_value: str) -> None:
+def validate_central_session(cookie_value: str) -> tuple[dict, dict | None]:
+    """校验中心会话，返回 (中心的 data 节点, 续期 Cookie 或 None)。
+
+    data 节点形如 {user: {id, username, role?}, expiresAt}。
+    - 中心明确未登录 -> CentralAuthRejected（KB 返回 401）。
+    - 中心超时/5xx/非 JSON -> CentralAuthUnavailable（KB 返回 503）。
+
+    不缓存校验结果：在记账侧退出、退出所有设备、管理员撤销，都在下一个请求立即生效。
+    """
+    settings = get_settings()
+    if not settings.auth_session_url:
+        raise CentralAuthUnavailable("未配置中心认证接口（AUTH_SESSION_URL）")
+    return _run_with_retry(lambda deadline: _validate_once(cookie_value, deadline))
+
+
+def _logout_once(cookie_value: str, deadline: float) -> None:
     """转发退出到中心 logout：固定目标、固定 Origin；调用方先完成 CSRF/Origin 校验。"""
     settings = get_settings()
-    if not settings.auth_logout_url:
-        raise CentralAuthUnavailable("未配置中心退出接口（AUTH_LOGOUT_URL）")
-    headers = {"Origin": settings.auth_forward_origin} if settings.auth_forward_origin else {}
+    headers = _cookie_header(settings, cookie_value)
+    if settings.auth_forward_origin:
+        headers["Origin"] = settings.auth_forward_origin
     try:
-        resp = httpx.post(
-            settings.auth_logout_url,
-            cookies={settings.auth_cookie_name: cookie_value},
-            timeout=_timeout(),
-            follow_redirects=False,
-            headers=headers,
-        )
+        resp = _client.post(settings.auth_logout_url, timeout=_timeout_until(deadline),
+                            headers=headers)
     except httpx.HTTPError as exc:
         raise CentralAuthUnavailable(f"中心认证服务不可达：{type(exc).__name__}") from exc
     if resp.status_code >= 500:
         raise CentralAuthUnavailable(f"中心认证服务错误（HTTP {resp.status_code}）")
+
+
+def central_logout(cookie_value: str) -> None:
+    """撤销中心会话。重试只在「这次没撤销成」的不可用情形上发生，重复撤销是幂等的。"""
+    settings = get_settings()
+    if not settings.auth_logout_url:
+        raise CentralAuthUnavailable("未配置中心退出接口（AUTH_LOGOUT_URL）")
+    _run_with_retry(lambda deadline: _logout_once(cookie_value, deadline))
 
 
 def extract_renewal_cookie(set_cookie_headers: list[str]) -> dict | None:
