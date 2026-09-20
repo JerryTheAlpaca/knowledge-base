@@ -140,8 +140,8 @@ function renderAiParagraphing(settings) {
   cb.onchange = async () => {
     try {
       await api("/v1/settings", { method: "PATCH", body: { ai_paragraphing: cb.checked } });
-      toast(cb.checked ? "已开启：AI 整理将按话题分段并修正听错字词"
-                       : "已关闭：分段与纠错改用本地规则，不再产生这部分模型开销", { type: "ok" });
+      toast(cb.checked ? "已开启：条目会自动按话题分段并修正听错字词"
+                       : "已关闭：分段与纠错改用本地规则，不再产生这部分调用", { type: "ok" });
     } catch (e) { showErr(e); cb.checked = !cb.checked; }
   };
 }

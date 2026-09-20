@@ -267,8 +267,9 @@ def test_settings_ai_paragraphing_roundtrip(client, user_a):
     assert r.json()["ai_paragraphing"] is False
 
 
-def test_auto_enrich_off_stops_after_extract(client, user_a, fresh_queue):
-    client.patch("/v1/settings", json={"auto_enrich": False},
+def test_auto_processing_off_stops_after_extract(client, user_a, fresh_queue):
+    """两个自动加工开关都关：提取完成后不入队（各自独立，见 test_m2）。"""
+    client.patch("/v1/settings", json={"auto_enrich": False, "ai_paragraphing": False},
                  headers=auth(user_a["desktop"]["token"]))
     r = client.post(
         "/v1/captures",

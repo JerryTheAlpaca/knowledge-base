@@ -58,7 +58,7 @@ from ..storage.objects import ObjectStore
 from . import asr as asr_stage
 from . import enrich as enrich_stage
 from . import idle as idle_mod
-from .publish import auto_enrich_enabled
+from .publish import auto_process_enabled
 from .publish import bundle_files as _bundle_files
 from .publish import publish_segments_revision as _publish_segments_revision
 
@@ -287,17 +287,17 @@ def _extract_plain_text(db: Session, store: ObjectStore, job: Job, item: Item,
     files = list(files.values())
     db.flush()
 
-    auto_enrich = auto_enrich_enabled(db, item.user_id)
+    auto_process = auto_process_enabled(db, item.user_id)
     pipeline.publish_bundle(
         db, store, item=item, source=source, files=files,
         processing_state="original_only",
-        pipeline_state="enriching" if auto_enrich else "extracted",
-        warnings=["已生成规范文字稿；AI 加工待执行。" if auto_enrich
+        pipeline_state="enriching" if auto_process else "extracted",
+        warnings=["已生成规范文字稿；AI 加工待执行。" if auto_process
                   else "已生成规范文字稿；AI 自动加工已关闭，可手动重新加工。"],
     )
     job.state = "succeeded"
 
-    if auto_enrich:
+    if auto_process:
         pipeline.enqueue_stage(
             db, user_id=item.user_id, item_id=item.id, source_revision=source.revision, stage="enrich"
         )

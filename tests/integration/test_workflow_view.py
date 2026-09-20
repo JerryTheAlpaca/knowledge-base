@@ -251,7 +251,7 @@ def test_no_device_asks_to_connect_obsidian(db):
 
     wf = derive_item_workflow(
         item=_Item(), meta={}, run=None, bundle=_Bundle(), receipt=None,
-        has_device=False, active_job=None, auto_enrich=True,
+        has_device=False, active_job=None, auto_enrich=True, ai_paragraphing=True,
     )
     pub = wf["steps"][2]
     assert pub["status"] == "attention"

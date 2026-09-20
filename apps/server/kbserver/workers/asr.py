@@ -58,7 +58,7 @@ from ..models import (
 )
 from ..storage.objects import ObjectStore
 from . import idle as idle_mod
-from .publish import publish_segments_revision
+from .publish import ai_paragraphing_enabled, auto_enrich_enabled, publish_segments_revision
 
 # docs/11 §2 固定制品：主模型 dolphin；备用 sense_voice 仅质量复测时部署
 ASR_MODELS = {
@@ -859,7 +859,7 @@ def execute_transcribe(session_factory, job_id: str, lease_token: str,
         run.next_chunk_index = index + 1
         run.updated_at = utcnow()
         if run.next_chunk_index >= chunk_count:
-            ctx.item.state_detail = f"转写完成，共 {chunk_count} 段；正在整理发布"
+            ctx.item.state_detail = f"转写完成，共 {chunk_count} 段；{_post_process_hint(db, ctx.item.user_id)}"
             db.commit()
             subtitle_ref = _fetch_platform_subtitle_ref(session_factory, run_id)
             _finish_if_complete(session_factory, job_id, lease_token,
@@ -1182,6 +1182,23 @@ def _fetch_platform_subtitle_ref(session_factory, run_id: str) -> list[dict] | N
         return records or None
     except Exception:  # noqa: BLE001 —— 字幕参考是尽力而为，失败不影响发布
         return None
+
+
+def _post_process_hint(db: Session, user_id: str) -> str:
+    """转写完成后紧接着要自动做的那件事，按用户开关如实说。
+
+    整理与文字优化是两个独立开关，都关着时并没有「下一步」——以前这里无条件
+    写「正在整理发布」，条目其实停在已提取，看的人和排查的人都会被带偏。
+    """
+    organize = auto_enrich_enabled(db, user_id)
+    optimize = ai_paragraphing_enabled(db, user_id)
+    if organize and optimize:
+        return "正在优化文字并整理发布"
+    if organize:
+        return "正在整理发布"
+    if optimize:
+        return "正在优化文字（分段与纠错）"
+    return "AI 自动加工已关闭，可在条目里手动整理"
 
 
 def _finish_if_complete(session_factory, job_id: str, lease_token: str,

@@ -252,9 +252,13 @@ def publish_bundle(
 
 
 def enqueue_stage(db: Session, *, user_id: str, item_id: str, source_revision: int, stage: str,
-                  reset_attempt: bool = False) -> Job:
+                  reset_attempt: bool = False, digest_requested: bool = False) -> Job:
     """幂等入队：jobs 有 UNIQUE(user,item,revision,stage,recipe_hash)，
-    重复入队（重新加工、凭据更新后重排队）复位已有行而不是插入新行。"""
+    重复入队（重新加工、凭据更新后重排队）复位已有行而不是插入新行。
+
+    digest_requested=用户点名要整理（手动「开始整理」）。同一行会被自动入队和
+    手动点击复用，所以只能往上置真、不清除。
+    """
     recipe_hash = hashlib.sha256(RECIPE_VERSION.encode()).hexdigest()[:16]
     job = db.query(Job).filter(
         Job.user_id == user_id,
@@ -264,6 +268,7 @@ def enqueue_stage(db: Session, *, user_id: str, item_id: str, source_revision: i
         Job.recipe_hash == recipe_hash,
     ).one_or_none()
     if job is not None:
+        job.digest_requested = job.digest_requested or digest_requested
         if job.state != "running":
             job.state = "queued"
             job.not_before = utcnow()
@@ -275,6 +280,7 @@ def enqueue_stage(db: Session, *, user_id: str, item_id: str, source_revision: i
     job = Job(
         user_id=user_id, item_id=item_id, source_revision=source_revision,
         stage=stage, recipe_hash=recipe_hash, state="queued",
+        digest_requested=digest_requested,
     )
     db.add(job)
     db.flush()

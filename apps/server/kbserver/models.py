@@ -312,6 +312,9 @@ class Job(Base, TimestampMixin):
     source_revision: Mapped[int] = mapped_column(Integer)
     stage: Mapped[str] = mapped_column(String(40))  # extract|enrich
     recipe_hash: Mapped[str] = mapped_column(String(64))
+    # 用户点名要整理（手动「开始整理」/「重新加工」）：为真时忽略「AI 自动整理」
+    # 开关。自动入队的任务为假，按当时的开关决定做整理还是只做文字优化。
+    digest_requested: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     state: Mapped[str] = mapped_column(String(20), default="queued")
     attempt: Mapped[int] = mapped_column(Integer, default=0)
     last_error: Mapped[str] = mapped_column(Text, default="")

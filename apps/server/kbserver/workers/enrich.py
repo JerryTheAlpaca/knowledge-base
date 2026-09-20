@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session
 from ..config import get_settings
 from ..domain import analysis, pipeline, provider_ops, templates
 from ..extractors import paragraphs as parafmt
-from .publish import ai_paragraphing_enabled
+from .publish import ai_paragraphing_enabled, auto_enrich_enabled
 from ..models import (
     Capture,
     Credential,
@@ -91,6 +91,8 @@ class EnrichPlan:
     max_output_tokens: int = 2000
     subtitle_refs: dict[str, str] = field(default_factory=dict)
     paragraphing_enabled: bool = True
+    # 「AI 自动整理」：关掉时本任务只做文字优化，不生成知识笔记
+    digest_enabled: bool = True
 
 
 def _caps_with_thinking(caps: dict | None, level: str) -> dict:
@@ -223,21 +225,46 @@ def prepare(session_factory, job_id: str, lease_token: str) -> EnrichPlan | None
         )
         # 整理档：digest=整理文本（NULL 兼容存量）
         digest_rows = [(p, c) for p, c in rows if (p.role or "digest") == "digest"]
-        if not digest_rows:
-            _waiting(db, job, item, "waiting_key",
-                     "未配置模型凭据：配置后自动继续；原始材料已保存。", "item_waiting_key")
-            db.commit()
-            return None
-        # 整理档优先使用用户设置的默认整理配置，否则取最近配置凭据的；
-        # 优化档由用户在设置里显式选择（optimize_profile_id），未设置则兜底用整理配置
         user = db.get(User, item.user_id)
         user_settings = (user.settings_json or {}) if user else {}
-        default_id = user_settings.get("default_profile_id")
-        profile, _credential = next(
-            ((p, c) for p, c in digest_rows if p.id == default_id), None
-        ) or max(digest_rows, key=lambda pc: pc[1].created_at)
+        # 手动「开始整理」把意图记在任务行上，优先于关着的自动开关
+        digest_enabled = bool(job.digest_requested) or auto_enrich_enabled(db, item.user_id)
+        paragraphing_enabled = ai_paragraphing_enabled(db, item.user_id)
+        if not digest_enabled and not paragraphing_enabled:
+            # 两半都不做却排到了任务（管理 CLI 重算等历史入口）：无事可做。
+            # 不发布空 Bundle 版本，也不留下「这次优化没产出」那种误导状态。
+            job.state = "cancelled"
+            job.last_error = "自动整理与文字优化均已关闭"
+            if item.pipeline_state == "enriching":
+                item.pipeline_state = "extracted"
+                item.state_detail = "AI 自动加工已关闭；可在条目里手动开始整理。"
+            db.commit()
+            return None
+        # 优化档由用户在设置里显式选择（optimize_profile_id），未设置则兜底用整理配置
         optimize_id = user_settings.get("optimize_profile_id")
         opt = next(((p, c) for p, c in rows if p.id == optimize_id), None) if optimize_id else None
+
+        # 主配置取本次真正要用到的那一档：只开「语义分段与纠错」时不去要求整理档
+        # 凭据，否则条目会卡在一个它根本用不上的开关上（waiting_key）。
+        if digest_enabled:
+            candidates: list[tuple[ProviderProfile, Credential]] = digest_rows
+            missing_detail = "未配置整理文本模型凭据：配置后自动继续；原始材料已保存。"
+        else:
+            candidates = [opt] if opt else digest_rows
+            missing_detail = ("未配置优化文本模型：在设置里配好「优化文本模型」使用的"
+                              "配置后自动继续；原始材料已保存。")
+        if not candidates:
+            _waiting(db, job, item, "waiting_key", missing_detail, "item_waiting_key")
+            db.commit()
+            return None
+        if digest_enabled:
+            # 整理档优先使用用户设置的默认整理配置，否则取最近配置凭据的
+            default_id = user_settings.get("default_profile_id")
+            profile, _credential = next(
+                ((p, c) for p, c in candidates if p.id == default_id), None
+            ) or max(candidates, key=lambda pc: pc[1].created_at)
+        else:
+            profile, _credential = candidates[0]
         opt_profile, _opt_cred = opt if opt else (None, None)
 
         # 已有未完成操作：sent 表示请求可能已生效，不盲目重发（docs/02 §7.3）
@@ -261,7 +288,6 @@ def prepare(session_factory, job_id: str, lease_token: str) -> EnrichPlan | None
             return None
 
         subtitle_refs = _align_subtitle_refs(segments, _load_subtitle_ref(db, item))
-        paragraphing_enabled = ai_paragraphing_enabled(db, item.user_id)
 
         meta = source.metadata_json
         conversation_mode = input_kind in {"conversation", "workflow"} or meta.get("platform") in {
@@ -329,6 +355,7 @@ def prepare(session_factory, job_id: str, lease_token: str) -> EnrichPlan | None
             max_output_tokens=max_output,
             subtitle_refs=subtitle_refs,
             paragraphing_enabled=paragraphing_enabled,
+            digest_enabled=digest_enabled,
         )
 
 
@@ -495,6 +522,11 @@ def call_provider(session_factory, plan: EnrichPlan) -> dict:
         for s in plan.segments:
             if s["segment_id"] in corrected:
                 s["text"] = corrected[s["segment_id"]]
+
+    if not plan.digest_enabled:
+        # 「AI 自动整理」关着：文字优化本身就是这次加工的全部内容，
+        # 不发起提炼调用，也不生成知识笔记（doc=None 由 finish 分支处理）
+        return {"doc": None, "raw": raws[-1] if raws else {}, "ai_text_plan": text_plan}
 
     segment_ids = {s["segment_id"] for s in plan.segments}
     segment_texts = {s["segment_id"]: s.get("text") or "" for s in plan.segments}
@@ -663,27 +695,29 @@ def finish(session_factory, plan: EnrichPlan, result: dict) -> None:
             db.commit()
             return
 
-        doc = result["doc"]
-        doc.setdefault("schema_version", templates.SCHEMA_VERSION)
-        doc["source_revision"] = plan.source_revision
-        doc["recipe_version"] = pipeline.RECIPE_VERSION
-        # 结构化证据映射（docs/08 §6.1）：claim_id -> 原文片段 ID；云端不生成双链
-        doc["evidence_map"] = analysis.evidence_map(doc)
-
         store = ObjectStore()
-        preview_md = analysis.render_preview_md(doc, user_note=plan.user_note)
-
-        analysis_file = pipeline.register_file(
-            db, store, user_id=item.user_id, item_id=item.id,
-            data=pipeline.canonical_json(doc), relative_path="analysis.json",
-            role="generated", mime="application/json",
-        )
-        preview_file = pipeline.register_file(
-            db, store, user_id=item.user_id, item_id=item.id,
-            data=preview_md.encode("utf-8"), relative_path="preview.md",
-            role="preview", mime="text/markdown",
-        )
-        db.flush()
+        doc = result["doc"]
+        # 「AI 自动整理」关着时 doc 为 None：本次只改写阅读层文字，不产出笔记
+        generated_files: list[StoredFile] = []
+        if doc is not None:
+            doc.setdefault("schema_version", templates.SCHEMA_VERSION)
+            doc["source_revision"] = plan.source_revision
+            doc["recipe_version"] = pipeline.RECIPE_VERSION
+            # 结构化证据映射（docs/08 §6.1）：claim_id -> 原文片段 ID；云端不生成双链
+            doc["evidence_map"] = analysis.evidence_map(doc)
+            generated_files = [
+                pipeline.register_file(
+                    db, store, user_id=item.user_id, item_id=item.id,
+                    data=pipeline.canonical_json(doc), relative_path="analysis.json",
+                    role="generated", mime="application/json",
+                ),
+                pipeline.register_file(
+                    db, store, user_id=item.user_id, item_id=item.id,
+                    data=analysis.render_preview_md(doc, user_note=plan.user_note).encode("utf-8"),
+                    relative_path="preview.md", role="preview", mime="text/markdown",
+                ),
+            ]
+            db.flush()
 
         # AI 语义分段 + 听错词修正：按模型给出的段首句重算阅读层段落、
         # 应用修正文本，覆盖 Bundle 内 readable.md / segments.json
@@ -732,19 +766,25 @@ def finish(session_factory, plan: EnrichPlan, result: dict) -> None:
         base = {f.relative_path: f for f in _base_bundle_files(db, item)}
         for f in extra_files:
             base[f.relative_path] = f
+        organized = doc is not None
         pipeline.publish_bundle(
             db, store, item=item, source=source,
-            files=list(base.values()) + [analysis_file, preview_file],
-            processing_state="ready", pipeline_state="ready",
-            result_file_id=analysis_file.file_id,
+            files=list(base.values()) + generated_files,
+            processing_state="ready" if organized else "original_only",
+            pipeline_state="ready" if organized else "extracted",
+            result_file_id=generated_files[0].file_id if organized else None,
         )
-        item.state_detail = ""
+        item.state_detail = "" if organized else (
+            "已完成文字优化（分段与纠错）；AI 自动整理已关闭。" if ai_starts
+            else "文字优化这次没有产出结果，阅读层保持本地分段；AI 自动整理已关闭。"
+        )
         job.state = "succeeded"
-        pipeline.emit_event(
-            db, item.user_id, item_id=item.id, bundle_revision=item.bundle_revision,
-            event_type="item_ready",
-            payload={"bundle_revision": item.bundle_revision},
-        )
+        if organized:
+            pipeline.emit_event(
+                db, item.user_id, item_id=item.id, bundle_revision=item.bundle_revision,
+                event_type="item_ready",
+                payload={"bundle_revision": item.bundle_revision},
+            )
         db.commit()
 
 

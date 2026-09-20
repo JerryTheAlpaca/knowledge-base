@@ -145,16 +145,16 @@ def test_source_edit_isolates_users(client, user_a, user_b, session_factory, mon
     assert r.status_code == 404
 
 
-def test_source_edit_auto_enrich_off_stays_extracted(
+def test_source_edit_auto_processing_off_stays_extracted(
     client, user_a, session_factory, db, monkeypatch,
 ):
-    """「AI 自动加工」关闭：编辑后停在 extracted，不自动排队提炼。"""
+    """两个自动加工开关都关闭：编辑后停在 extracted，不自动排队加工。"""
     FakeProvider.behavior = chunk_aware_behavior
     monkeypatch.setattr("kbserver.workers.enrich.OpenAICompatibleProvider", FakeProvider)
     from kbserver.models import User
 
     u = db.get(User, user_a["user_id"])
-    u.settings_json = {"ai": {"auto_enrich": False}}
+    u.settings_json = {"ai": {"auto_enrich": False, "ai_paragraphing": False}}
     db.commit()
 
     token = user_a["desktop"]["token"]

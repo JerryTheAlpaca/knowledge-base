@@ -79,6 +79,7 @@ def derive_item_workflow(
     has_device: bool,
     active_job: Job | None,
     auto_enrich: bool,
+    ai_paragraphing: bool,
     session_platforms: frozenset[str] = frozenset(),
 ) -> dict:
     """推导单个条目的 WorkflowView（输入均已按用户隔离批量取得）。"""
@@ -162,6 +163,10 @@ def derive_item_workflow(
     )
     if bundle_ready and not bundle_stale:
         organize = _step("organize", "completed", "ORGANIZE_DONE", "已生成整理结果", label="整理")
+    elif ps == "enriching" and not auto_enrich:
+        # 自动整理关着但文字优化在跑：这一步不是「整理中」，照实说在做什么
+        organize = _step("organize", "running", "OPTIMIZING_TEXT", "正在优化文字（分段与纠错）",
+                         label="整理")
     elif organize_off:
         organize = _step("organize", "skipped", "AUTO_ORGANIZE_OFF", "自动整理已关闭，直接取用原文",
                          label="整理")
@@ -240,7 +245,8 @@ def derive_item_workflow(
                    publish)
 
     primary = _primary_action(current, extract, organize, delivery)
-    available = _available_actions(item, meta, steps, run, active_job, delivery, auto_enrich)
+    available = _available_actions(item, meta, steps, run, active_job, delivery, auto_enrich,
+                                   ai_paragraphing)
 
     return {
         "version": WORKFLOW_VERSION,
@@ -287,7 +293,8 @@ def _primary_action(current: dict, extract: dict, organize: dict, delivery: dict
 
 def _available_actions(item: Item, meta: dict, steps: dict[str, dict] | list,
                        run: AsrRun | None, active_job: Job | None,
-                       delivery: dict, auto_enrich: bool) -> list[str]:
+                       delivery: dict, auto_enrich: bool,
+                       ai_paragraphing: bool) -> list[str]:
     """服务端按真实状态给出可用操作；前端不猜（docs/17 §10.2）。"""
     steps_by_id = {s["id"]: s for s in steps}
     extract = steps_by_id["extract"]
@@ -310,6 +317,9 @@ def _available_actions(item: Item, meta: dict, steps: dict[str, dict] | list,
         acts.append("choose_model")
     if organize["reason_code"] in ("AUTO_ORGANIZE_OFF", "STALE_ORGANIZE", "ORGANIZE_FAILED"):
         acts.append("start_organize")
+    # 手动「开始优化文本」：只要分段与纠错开着、没有正在跑的任务，就显示
+    if ai_paragraphing and active_job is None:
+        acts.append("start_optimize_text")
     if delivery["status"] == "connect_obsidian":
         acts.append("connect_obsidian")
     return acts
@@ -367,8 +377,9 @@ def collect_workflow_inputs(db: Session, user_id: str, items: list[Item]) -> dic
     # 每用户一次查询：哪些平台已托管活跃登录态（决定「连接」还是「更新」动作）
     out["session_platforms"] = platform_sessions.configured_platforms(db, user_id)
 
-    from ..workers.publish import auto_enrich_enabled
+    from ..workers.publish import auto_enrich_enabled, ai_paragraphing_enabled
     out["auto_enrich"] = auto_enrich_enabled(db, user_id)
+    out["ai_paragraphing"] = ai_paragraphing_enabled(db, user_id)
     return out
 
 
@@ -391,6 +402,7 @@ def build_workflow_map(db: Session, user_id: str, items: list[Item],
             has_device=inputs["has_device"],
             active_job=inputs["jobs"].get(it.id),
             auto_enrich=inputs["auto_enrich"],
+            ai_paragraphing=inputs["ai_paragraphing"],
             session_platforms=inputs.get("session_platforms", frozenset()),
         )
         if wf["delivery"]["device_id"]:

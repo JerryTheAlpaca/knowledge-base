@@ -564,6 +564,111 @@ def test_enrich_paragraphing_disabled_skips_llm_call(client, user_a, session_fac
     assert "paragraph_source" not in seg_doc
 
 
+def test_paragraphing_runs_even_when_auto_enrich_off(
+    client, user_a, session_factory, fake_llm,
+):
+    """两个开关各自独立：关掉「AI 自动整理」不能把文字优化一起掐掉。
+
+    线上出现过这个形状——用户开着「AI 语义分段与纠错」放了一段录音，转写完成，
+    但整理档关着导致 enrich 从不入队，分段/纠错一次也没跑（模型后台 0 调用）。
+    """
+    calls = {"paragraphing": 0, "digest": 0}
+
+    def behavior(request):
+        prompt = request.user
+        if '"task": "这份文本是语音识别的原始输出' in prompt:
+            calls["paragraphing"] += 1
+            payload = json.loads(prompt)
+            segs = json.loads(payload["segments"])
+            return llm_result({"paragraph_starts": [segs[0]["segment_id"]], "corrections": []})
+        calls["digest"] += 1
+        return llm_result(doc_from_prompt(prompt))
+
+    fake_llm.behavior = behavior
+    token = user_a["desktop"]["token"]
+    _create_profile(client, token)
+    client.patch("/v1/settings", json={"auto_enrich": False}, headers=auth(token))
+    c = _capture_text(client, user_a["phone"]["token"], "m2paralone",
+                      "第一段：可靠保存材料。\n第二段：加工不丢原文。\n第三段：都属同一话题。")
+    item_id = c.json()["item_id"]
+    _drain(session_factory)
+
+    it = _get_item(client, token, item_id)
+    assert calls["paragraphing"] >= 1  # 分段/纠错照跑
+    assert calls["digest"] == 0        # 整理档关着，一次提炼也不发
+    # 停在已提取：条目没有长出用户没要的笔记
+    assert it["pipeline_state"] == "extracted"
+    assert "文字优化" in it["state_detail"]
+
+    m = client.get(f"/v1/items/{item_id}/bundles/{it['bundle_revision']}/manifest",
+                   headers=auth(token)).json()
+    paths = {f["relative_path"] for f in m["files"]}
+    assert "analysis.json" not in paths and "preview.md" not in paths
+    seg_file = next(f for f in m["files"] if f["relative_path"] == "segments.json")
+    seg_doc = json.loads(client.get(
+        f"/v1/items/{item_id}/bundles/{it['bundle_revision']}/files/{seg_file['file_id']}",
+        headers=auth(token)).content)
+    assert seg_doc["paragraph_source"] == "ai"  # 阅读层确实是 AI 分段的结果
+
+
+def test_manual_organize_overrides_auto_enrich_off(
+    client, user_a, session_factory, fake_llm,
+):
+    """自动整理关着时，手动「开始整理」仍然要出成品笔记。
+
+    手动入队与自动入队复用同一个 jobs 行，所以「用户点名要整理」必须记在行上，
+    否则任务内部只读当前开关的话，这个按钮在自动开关关着时是空点。
+    """
+    def behavior(request):
+        if '"task": "这份文本是语音识别的原始输出' in request.user:
+            return llm_result({"paragraph_starts": [], "corrections": []})
+        return llm_result(doc_from_prompt(request.user))
+
+    fake_llm.behavior = behavior
+    token = user_a["desktop"]["token"]
+    _create_profile(client, token)
+    client.patch("/v1/settings", json={"auto_enrich": False}, headers=auth(token))
+    c = _capture_text(client, user_a["phone"]["token"], "m2manual",
+                      "第一段：手动整理的原文。\n第二段：先只做文字优化。")
+    item_id = c.json()["item_id"]
+    _drain(session_factory)
+    assert _get_item(client, token, item_id)["pipeline_state"] == "extracted"
+
+    r = client.post(f"/v1/items/{item_id}/reprocess", json={}, headers=auth(token))
+    assert r.status_code == 202
+    _drain(session_factory)
+
+    it = _get_item(client, token, item_id)
+    assert it["pipeline_state"] == "ready"
+    m = client.get(f"/v1/items/{item_id}/bundles/{it['bundle_revision']}/manifest",
+                   headers=auth(token)).json()
+    assert "analysis.json" in {f["relative_path"] for f in m["files"]}
+
+
+def test_both_auto_switches_off_leaves_item_extracted(
+    client, user_a, session_factory, fake_llm,
+):
+    """两个开关都关：提取完成后不入队，条目停在已提取等手动加工。"""
+    fake_llm.behavior = lambda request: llm_result(doc_from_prompt(request.user))
+    token = user_a["desktop"]["token"]
+    _create_profile(client, token)
+    client.patch("/v1/settings", json={"auto_enrich": False, "ai_paragraphing": False},
+                 headers=auth(token))
+    c = _capture_text(client, user_a["phone"]["token"], "m2bothoff",
+                      "第一段：都不开的情况。\n第二段：不该有任何模型调用。")
+    item_id = c.json()["item_id"]
+    _drain(session_factory)
+
+    assert fake_llm.instances == []  # 一次模型调用都没有发生
+    it = _get_item(client, token, item_id)
+    assert it["pipeline_state"] == "extracted"
+    with session_factory() as db:
+        from kbserver.workers import worker
+
+        assert db.query(worker.Job).filter(
+            worker.Job.item_id == item_id, worker.Job.stage == "enrich").count() == 0
+
+
 def test_paragraphing_prompt_includes_subtitle_refs():
     """有平台字幕参考时，分段提示词携带按句对齐的字幕文本；无参考则不带。"""
     from kbserver.domain import templates

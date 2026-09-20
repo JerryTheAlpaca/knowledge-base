@@ -21,7 +21,7 @@ def bundle_files(db: Session, item: Item) -> list[StoredFile]:
 
 
 def auto_enrich_enabled(db: Session, user_id: str) -> bool:
-    """用户级「AI 自动加工」开关（默认开）：关闭时提取完成后不做 AI 加工，
+    """用户级「AI 自动整理」开关（默认开）：关闭时提取完成后不做 AI 整理，
     条目停在 extracted 状态等待手动「重新加工」。手动重试不受它影响。"""
     from ..models import User
 
@@ -33,7 +33,7 @@ def auto_enrich_enabled(db: Session, user_id: str) -> bool:
 
 
 def ai_paragraphing_enabled(db: Session, user_id: str) -> bool:
-    """用户级「AI 语义分段」开关（默认开）：关闭时加工不做 LLM 分段与
+    """用户级「AI 语义分段与纠错」开关（默认开）：关闭时加工不做 LLM 分段与
     听错词修正，阅读层保持本地规则分段（零模型开销）。"""
     from ..models import User
 
@@ -42,6 +42,16 @@ def ai_paragraphing_enabled(db: Session, user_id: str) -> bool:
     if not isinstance(ai, dict):
         return True
     return bool(ai.get("ai_paragraphing", True))
+
+
+def auto_process_enabled(db: Session, user_id: str) -> bool:
+    """提取完成后是否自动排队 enrich。
+
+    「AI 自动整理」与「AI 语义分段与纠错」是两件独立的事：前者生成知识笔记，
+    后者只改写阅读层文字。任一开着就入队，任务内部再按各自的开关决定做哪一半
+    （见 enrich.prepare）——不能让关掉整理顺带把文字优化也掐掉。
+    """
+    return auto_enrich_enabled(db, user_id) or ai_paragraphing_enabled(db, user_id)
 
 
 def publish_segments_revision(db: Session, store: ObjectStore, job: Job | None, item: Item,
@@ -69,10 +79,10 @@ def publish_segments_revision(db: Session, store: ObjectStore, job: Job | None, 
                 BundleRevision.item_id == item.id,
                 BundleRevision.revision == item.bundle_revision,
             ).one_or_none()
-        auto_enrich = auto_enrich_enabled(db, item.user_id)
-        if item.pipeline_state == "failed" or (auto_enrich and bundle is not None and bundle.processing_state != "ready"):
-            # 提取结果没变：在同一版本上重新加工（failed 重试不受「AI 自动加工」
-            # 开关影响；等待 Key/预算的会在 enrich 预备阶段回到原等待状态）
+        auto_process = auto_process_enabled(db, item.user_id)
+        if item.pipeline_state == "failed" or (auto_process and bundle is not None and bundle.processing_state != "ready"):
+            # 提取结果没变：在同一版本上重新加工（failed 重试不受自动加工开关
+            # 影响；等待 Key/预算的会在 enrich 预备阶段回到原等待状态）
             pipeline.enqueue_stage(
                 db, user_id=item.user_id, item_id=item.id, source_revision=source.revision,
                 stage="enrich", reset_attempt=True,
@@ -132,16 +142,16 @@ def publish_segments_revision(db: Session, store: ObjectStore, job: Job | None, 
     files = list(merged.values())
     db.flush()
 
-    auto_enrich = auto_enrich_enabled(db, item.user_id)
+    auto_process = auto_process_enabled(db, item.user_id)
     pipeline.publish_bundle(
         db, store, item=item, source=source2, files=files,
         processing_state="original_only",
-        pipeline_state="enriching" if auto_enrich else "extracted",
+        pipeline_state="enriching" if auto_process else "extracted",
         warnings=warnings,
     )
     if job is not None:
         job.state = "succeeded"
-    if auto_enrich:
+    if auto_process:
         pipeline.enqueue_stage(
             db, user_id=item.user_id, item_id=item.id, source_revision=new_revision, stage="enrich"
         )

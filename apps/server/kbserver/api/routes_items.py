@@ -34,7 +34,7 @@ from ..extractors import subtitles as subfmt
 from ..models import AsrRun, AudioAsset, BundleRevision, Capture, Item, SourceRevision, Job, StoredFile, new_id, utcnow
 from ..repositories import core as repo
 from ..storage.objects import ObjectStore
-from ..workers.publish import auto_enrich_enabled
+from ..workers.publish import auto_process_enabled
 
 router = APIRouter(prefix="/v1/items", tags=["items"])
 
@@ -476,7 +476,7 @@ def _cloud_digest(db: Session, item: Item) -> CloudDigestOut:
     bundle = _analysis_bundle(db, item)
     if bundle is None:
         if item.pipeline_state == "extracted":
-            state, detail = "pending", "AI 自动加工已关闭；可在设置中开启，或手动重新加工。"
+            state, detail = "pending", "AI 自动整理已关闭；可在设置中开启，或手动重新加工。"
         elif item.pipeline_state in {"waiting_key", "needs_input"}:
             state, detail = "pending", "尚无云端提炼；原始资料仍可阅读。"
         elif item.pipeline_state == "failed":
@@ -784,14 +784,14 @@ def edit_source_text(item_id: str, body: SourceTextInput,
         latest[f.relative_path] = f
     files = list(latest.values())
 
-    auto_enrich = auto_enrich_enabled(db, user.id)
+    auto_process = auto_process_enabled(db, user.id)
     pipeline.publish_bundle(
         db, store, item=item, source=source2, files=files,
         processing_state="original_only",
-        pipeline_state="enriching" if auto_enrich else "extracted",
+        pipeline_state="enriching" if auto_process else "extracted",
         warnings=["用户编辑了原文；本次正文以编辑版本为准。"],
     )
-    if auto_enrich:
+    if auto_process:
         pipeline.enqueue_stage(db, user_id=user.id, item_id=item.id,
                                source_revision=new_revision, stage="enrich", reset_attempt=True)
     db.commit()
@@ -833,12 +833,44 @@ def reprocess(
     pipeline.enqueue_stage(
         db, user_id=user.id, item_id=item.id, source_revision=item.source_revision,
         stage=stage, reset_attempt=True,
+        # 用户点名要成品：别让关着的「AI 自动整理」把这个按钮变成只做文字优化
+        digest_requested=stage == "enrich",
     )
     item.pipeline_state = "queued"
     item.state_detail = body.reason or "用户请求重新加工"
     db.commit()
     db.refresh(item)
     return _item_out(item, source, db)
+
+
+@router.post("/{item_id}/optimize-text", response_model=ItemOut, status_code=202)
+def optimize_text(
+    item_id: str,
+    principal=Depends(require_scope("items:edit")),
+    db: Session = Depends(get_db),
+) -> ItemOut:
+    """手动触发文字优化（分段与纠错）：只改写阅读层，不生成知识笔记。
+
+    前提：「AI 语义分段与纠错」开着。如果关着，400 提示。
+    入队 enrich 任务，digest_requested=False，让任务内部跳过整理。
+    """
+    from ..workers.publish import ai_paragraphing_enabled
+
+    user = principal.user
+    item = _require_item(db, user.id, item_id)
+    if not ai_paragraphing_enabled(db, user.id):
+        raise ApiError("BAD_REQUEST", "AI 语义分段与纠错 未开启", status_code=400)
+
+    pipeline.enqueue_stage(
+        db, user_id=user.id, item_id=item.id, source_revision=item.source_revision,
+        stage="enrich", reset_attempt=True,
+        digest_requested=False,  # 只优化，不整理
+    )
+    item.pipeline_state = "queued"
+    item.state_detail = "用户请求优化文字（分段与纠错）"
+    db.commit()
+    db.refresh(item)
+    return _item_out(item, _latest_source(db, item), db)
 
 
 # 重新提取限频：每条目 10 分钟一次（docs/02 §10.1 refetch 限频）
