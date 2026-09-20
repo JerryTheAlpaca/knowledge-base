@@ -210,9 +210,11 @@
 .landing.scrolled .land-cue { opacity: 0; pointer-events: none; }
 
 /* ============ 入场基元：IntersectionObserver 给 .rv 逐个加 .in ============ */
+/* 触发线在视口底部，元素刚露头动画就开跑，等滚到跟前早播完了——
+   压 200ms 基础延迟，让元素先多进视口一段再动，动画过程看得见 */
 .landing .rv { opacity: 0; transform: translateY(18px); filter: blur(7px);
                transition: opacity 1s var(--ease), transform 1s var(--ease), filter 1.1s var(--ease);
-               transition-delay: calc(var(--i, 0) * 115ms); }
+               transition-delay: calc(200ms + var(--i, 0) * 115ms); }
 .landing .rv.in { opacity: 1; transform: none; filter: none; }
 
 /* ============ 诗 ============ */
