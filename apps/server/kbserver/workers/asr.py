@@ -1197,7 +1197,7 @@ def _post_process_hint(db: Session, user_id: str) -> str:
     if organize:
         return "正在整理发布"
     if optimize:
-        return "正在优化文字（纠错与分段）"
+        return "正在优化文字"
     return "AI 自动加工已关闭，可在条目里手动整理"
 
 

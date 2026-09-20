@@ -775,7 +775,7 @@ def finish(session_factory, plan: EnrichPlan, result: dict) -> None:
             result_file_id=generated_files[0].file_id if organized else None,
         )
         item.state_detail = "" if organized else (
-            "已完成文字优化（纠错与分段）；AI 自动整理已关闭。" if ai_starts
+            "已完成文字优化；AI 自动整理已关闭。" if ai_starts
             else "文字优化这次没有产出结果，阅读层保持本地分段；AI 自动整理已关闭。"
         )
         job.state = "succeeded"

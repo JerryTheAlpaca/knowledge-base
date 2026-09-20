@@ -429,7 +429,7 @@ async function doOptimizeText() {
   if (!detailId) return;
   try {
     await api("/v1/items/" + encodeURIComponent(detailId) + "/optimize-text", { method: "POST" });
-    toast("已开始优化文本（纠错与分段）", { type: "ok" });
+    toast("已开始优化文本", { type: "ok" });
     refreshDetail();
   } catch (e) { showErr(e); }
 }
