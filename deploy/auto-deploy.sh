@@ -117,8 +117,11 @@ if [ "$HTTP" = "200" ]; then
   # 悬空镜像即构建遗留层：已打标签的版本和被任何容器引用的镜像都不在其中
   sudo docker image prune -f \
     || echo "[$(date '+%F %T')] WARNING: image prune failed (non-fatal)"
-  # 构建缓存保留最近 3GB；失败不影响本次部署结果（下次成功部署会再清）
-  sudo docker builder prune --keep-storage 3GB -f >/dev/null \
+  # 构建缓存：只清 BuildKit 里已不被任何镜像引用的记录（实测约 3GB）；与镜像层共享的
+  # 那 6.4GB 本来就不在清理范围内，留着让下次构建继续秒级命中。
+  # 不用 --keep-storage：它按缓存总量封顶，会把共享的基础层记录一起挤掉，换来回填重编。
+  # 输出进日志，回收量可核对；失败不影响本次部署结果（下次成功部署会再清）
+  sudo docker builder prune -f \
     || echo "[$(date '+%F %T')] WARNING: builder prune failed (non-fatal)"
 else
   echo "[$(date '+%F %T')] WARNING: health check returned '$HTTP'; inspect: sudo docker compose -f $COMPOSE_FILE logs api --tail 50"
