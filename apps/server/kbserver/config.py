@@ -59,7 +59,7 @@ class Settings:
     asr_idle_cpu_stop: float = float(os.environ.get("ASR_IDLE_CPU_STOP", "0.80"))
     asr_idle_hold_seconds: int = int(os.environ.get("ASR_IDLE_HOLD_SECONDS", "60"))
     asr_busy_cooldown_seconds: int = int(os.environ.get("ASR_BUSY_COOLDOWN_SECONDS", "120"))
-    asr_idle_min_available_mib: int = int(os.environ.get("ASR_IDLE_MIN_AVAILABLE_MIB", "800"))
+    asr_idle_min_available_mib: int = int(os.environ.get("ASR_IDLE_MIN_AVAILABLE_MIB", "384"))
     asr_busy_min_available_mib: int = int(os.environ.get("ASR_BUSY_MIN_AVAILABLE_MIB", "256"))
 
     # 保留与清理（docs/02 §14.3）
@@ -178,6 +178,6 @@ def get_settings() -> Settings:
         asr_idle_cpu_stop=float(os.environ.get("ASR_IDLE_CPU_STOP", "0.80")),
         asr_idle_hold_seconds=int(os.environ.get("ASR_IDLE_HOLD_SECONDS", "60")),
         asr_busy_cooldown_seconds=int(os.environ.get("ASR_BUSY_COOLDOWN_SECONDS", "120")),
-        asr_idle_min_available_mib=int(os.environ.get("ASR_IDLE_MIN_AVAILABLE_MIB", "800")),
+        asr_idle_min_available_mib=int(os.environ.get("ASR_IDLE_MIN_AVAILABLE_MIB", "384")),
         asr_busy_min_available_mib=int(os.environ.get("ASR_BUSY_MIN_AVAILABLE_MIB", "256")),
     )
