@@ -199,15 +199,18 @@ label { display: block; font-size: var(--fs-small); color: var(--text-2); margin
    两态共用同一套 DOM：capmain 只放文字，capbar 只放「文件钮｜链接胶囊｜发送钮」。
    胶囊态把 capbar 用负 margin 整行提上来，正好叠在文字行那条带上——文件钮在左、发送钮
    在右，位置和不展开时一样；展开时它整行落回文字下方，两个按钮横向一步都不走。
-   所以形变只剩三件事：按钮行落下、圆角从 999 收到 30、文字行两侧让出的位置收回，
-   元素一律不跳位。点进来那一下由 capture.js 的 focusin 挂 .open，形态不看测量：
-   空框一离开焦点必回胶囊，不会再出现卡在圆角矩形回不去的情况（2026-09-17）。 */
+   圆角只走 28 → 30 这一档：胶囊的"圆"本来就等于半个框高，形变时是框在长高、不是角在转。
+   写成 999px 会被浏览器夹到半高，插值中途那串大数字全被夹成同一个形状，快到末尾才突然
+   松开——走查看到的"四个角卡"就是这个夹取过程，不是掉帧。
+   点进来那一下由 capture.js 的 focusin 挂 .open，形态不看测量：空框一离开焦点必回胶囊，
+   不会再出现卡在圆角矩形回不去的情况（2026-09-17）。 */
 .smartbox { --cap-bar: 44px;      /* capbar 行高，胶囊态按它整行上叠 */
             --cap-left: 52px;     /* 胶囊态左端文件钮让出的宽度 */
             --cap-right: 60px;    /* 胶囊态右端发送钮让出的宽度（含 ::before 扩出来的命中区） */
-            --t-morph: 110ms;
+            --pill-r: calc((var(--cap-bar) + 12px) / 2);   /* 胶囊态框高 56 的一半 */
+            --t-morph: 90ms;
             display: flex; flex-direction: column;
-            border: 1px solid var(--border-strong); border-radius: var(--radius-pill);
+            border: 1px solid var(--border-strong); border-radius: var(--pill-r);
             background: linear-gradient(165deg, rgba(56, 39, 17, .58) 0%, rgba(24, 16, 8, .92) 100%);
             padding: 5px 6px;
             box-shadow: 0 10px 34px rgba(0, 0, 0, .45), inset 0 1px 0 rgba(255, 225, 160, .07);
