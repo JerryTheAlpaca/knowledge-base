@@ -358,7 +358,9 @@ export function initItemList() {
   $("drawerClose").addEventListener("click", () => closeDrawer());
   document.addEventListener("click", (e) => {
     if (swallowClick) { swallowClick = false; return; }  // 拖拽余波落在面板外时由这里吞
-    if (isDrawerOpen() && !isModalOpen() && !e.target.closest("#listWrap")) closeDrawer();
+    // 「完成」那个菜单挂在 main 底下（要盖在面板之上），点它不该把抽屉一起收掉
+    if (isDrawerOpen() && !isModalOpen() && !e.target.closest("#listWrap") &&
+        !e.target.closest("#shareSelMenu")) closeDrawer();
   });
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && !isModalOpen() && isDrawerOpen()) {

@@ -642,16 +642,27 @@ details.disclosure.slim .disclosure-body { padding: 0 8px 8px; }
 }
 
 /* ============ 作品：选材料 → 澄清 → 生成 → 预览 → 分享（docs/20 §3） ============ */
-.share-selbar { position: fixed; left: 50%; transform: translateX(-50%); bottom: 22px; z-index: 40;
+/* 选择条排在抽屉底部（.drawer-body 内），跟着条目列表一起被面板裁切收放；
+   做成页面浮层的话，抽屉收起后它还会飘在采集框上。一进选择态就出现，0 篇也在。 */
+.share-selbar { flex: none; width: fit-content; max-width: 100%; margin: 10px auto 0;
                 display: flex; align-items: center; gap: 8px; flex-wrap: nowrap;
-                max-width: calc(100vw - 24px); padding: 8px 12px; white-space: nowrap;
+                padding: 8px 12px; white-space: nowrap;
                 background: var(--surface); border: 1px solid var(--border-strong);
                 border-radius: 999px; box-shadow: var(--shadow-2, 0 8px 28px rgba(0,0,0,.10));
                 font-size: var(--fs-small); }
 .share-selbar .btn { padding-inline: 12px; }
 .share-selbar .spacer { flex: 1; min-width: 6px; }
 .share-selbar[hidden] { display: none; }
-/* 「完成」先问一句要做什么：下载还是做 HTML，就地一个小菜单，不另开一层弹窗 */
+/* 提示↔计数换的是同一格文字，格子宽度恒定：条子居中，文字一长短就把右边两个按钮横向推走 */
+.share-selbar .seltext { min-width: 92px; display: inline-flex; }
+.share-selbar .selcount, .share-selbar.has-sel .selhint { display: none; }
+.share-selbar.has-sel .selcount { display: inline; }
+.share-selbar .selhint { color: var(--text-2); }
+.share-selbar .selcount .num { color: var(--accent); }
+/* 一篇没选时两个动作还没得点：默认的 .5 半透明压在金底上仍像可按，再压一档 */
+.share-selbar .btn:disabled { opacity: .38; }
+/* 「完成」先问一句要做什么：下载还是做 HTML，就地一个小菜单，不另开一层弹窗。
+   浮层在 main 下、z-index 高于抽屉那层（.drawer 是 z-index 30 的上下文），才点得到 */
 .share-menu { position: fixed; left: 50%; transform: translateX(-50%); bottom: 88px; z-index: 41;
               display: flex; flex-direction: column; gap: 2px; min-width: 196px; padding: 6px;
               background: var(--surface); border: 1px solid var(--border-strong);
@@ -665,6 +676,12 @@ ul.items li.item.picked { background: var(--accent-soft); border-color: var(--ac
                                       inset 0 0 22px rgba(226, 176, 74, .1); }
 ul.items li.item { position: relative; }
 body.share-selecting ul.items li.item { cursor: copy; }
+/* 「分享」是个开关，按下必须亮：文案不动（多一个字就把同排的搜索钮横向推走），
+   只把幽灵态换成描边 + 底色 + 一圈光，一次到位 */
+#selectToggle.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent);
+                   box-shadow: 0 0 0 1px var(--accent), 0 0 16px rgba(226, 176, 74, .22);
+                   transition: background var(--t-fast), border-color var(--t-fast),
+                               color var(--t-fast), box-shadow var(--t-fast); }
 
 /* ============ 分享创作：金蔷薇压成背景，中间只剩和 AI 的对话（docs/20 §3） ============ */
 /* 整页盖一层强遮罩：底下还是首页那朵蔷薇，只是退成背景；输入框沿用首页胶囊那一副。

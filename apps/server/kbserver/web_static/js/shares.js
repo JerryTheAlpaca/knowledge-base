@@ -27,6 +27,9 @@ let lastRevisionCount = 0;
 let pvOpen = false;        // 成品预览是否展开
 let pvDoc = null, pvDocKey = "";
 let sending = false;
+let qStep = 0;             // 当前待答轮里显示到第几题
+let qAns = new Map();      // question_id -> { opt, other }：切题/重画都从这份状态还原
+let qRoundId = null;       // qStep/qAns 属于哪一轮，换轮就清空
 let go = (url, state) => {
   // state 里带 view：退出时靠它判断这条历史是我们压进去的，可以直接 back 回去
   try { history.pushState(state || {}, "", url); } catch (e) { /* 忽略 */ }
@@ -72,9 +75,16 @@ function syncRowMarks() {
 function renderSelectionBar() {
   const bar = $("shareSelBar");
   if (!bar) return;
-  bar.hidden = !(selectMode && selected.size > 0);
+  // 一进选择态就亮条子，0 篇也在：否则点「分享」页面毫无变化
+  bar.hidden = !selectMode;
+  bar.classList.toggle("has-sel", selected.size > 0);
   const num = $("shareSelCount");
   if (num) num.textContent = String(selected.size);
+  const empty = selected.size === 0;
+  const clear = $("shareSelClear");
+  if (clear) clear.disabled = empty;
+  const done = $("shareSelDone");
+  if (done) done.disabled = empty;
 }
 
 function installSelection() {
@@ -429,8 +439,9 @@ function renderDock() {
   const run = workCache && workCache.run;
   if (run) {
     status.hidden = false;
+    const why = [run.reason_text, run.error_detail].filter(Boolean).join("：");
     status.innerHTML = '<span class="pill">' + esc(run.status_text) + "</span>" +
-      (run.reason_text ? '<span class="reason">' + esc(run.reason_text) + "</span>" : "");
+      (why ? '<span class="reason">' + esc(why) + "</span>" : "");
   } else {
     status.hidden = true;
     status.innerHTML = "";
