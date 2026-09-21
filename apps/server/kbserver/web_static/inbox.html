@@ -759,32 +759,41 @@
           <span class="switch" aria-hidden="true"><i></i></span>
         </label>
       </div>
+      <!-- 两排结构恒定：capmain 只放文字，capbar 只放链接胶囊 + 文件钮 + 发送钮。
+           胶囊态靠 capbar 的负 margin 叠到文字行右端，展开时落回下面一行，
+           按钮始终贴着右端，形变只剩上下位移（见 inbox.css「采集框」一节） -->
       <div class="smartbox" id="smartBox">
-        <textarea id="capText" rows="1" placeholder="粘贴链接，或写下想法……" aria-label="采集内容"></textarea>
-        <button type="button" class="icon uploadpick" id="uploadPick" aria-label="添加文件或录音" title="添加文件或录音">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-               stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-            <polyline points="17 8 12 3 7 8"/>
-            <line x1="12" y1="3" x2="12" y2="15"/>
-          </svg>
-        </button>
-        <button class="capsubmit" id="capSubmit" aria-label="提交" title="提交">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-               stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <line x1="12" y1="19" x2="12" y2="5"/>
-            <polyline points="5 12 12 5 19 12"/>
-          </svg>
-        </button>
-        <div class="chiprow" id="urlChips" hidden></div>
-        <div class="chiprow" id="fileChips" hidden></div>
-        <div class="chiprow" id="audioChips" hidden></div>
+        <div class="capmain">
+          <textarea id="capText" rows="1" placeholder="粘贴链接，或写下想法……" aria-label="采集内容"></textarea>
+        </div>
+        <div class="capbar">
+          <div class="chipzone">
+            <div class="chiprow" id="urlChips" hidden></div>
+            <div class="chiprow" id="fileChips" hidden></div>
+            <div class="chiprow" id="audioChips" hidden></div>
+          </div>
+          <button type="button" class="icon uploadpick" id="uploadPick" aria-label="添加文件或录音" title="添加文件或录音">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="17 8 12 3 7 8"/>
+              <line x1="12" y1="3" x2="12" y2="15"/>
+            </svg>
+          </button>
+          <button class="capsubmit" id="capSubmit" aria-label="提交" title="提交">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <line x1="12" y1="19" x2="12" y2="5"/>
+              <polyline points="5 12 12 5 19 12"/>
+            </svg>
+          </button>
+          <input id="capFiles" type="file" multiple hidden>
+        </div>
         <div class="capmeta">
           <span class="small" id="capAudioState"></span>
           <span class="spacer"></span>
           <span class="small num" id="capProgress"></span>
         </div>
-        <input id="capFiles" type="file" multiple hidden>
       </div>
       <!-- 歧义说明：只在系统检测到多内容时出现（docs/17 §4.4） -->
       <p class="help multiplenote" id="multipleNote" hidden></p>

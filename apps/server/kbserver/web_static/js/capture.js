@@ -66,21 +66,21 @@ export function restoreDraft() {
 }
 
 // ---------- 渲染 ----------
-// 形态判定固定以「胶囊态（按钮同排）宽度」为基准量行数：
-// 超过一行才加 .multi（文字全宽移到按钮上方）；两种形态不互为测量基准，不会来回抖动
+// 形态只看有没有内容，不做高度测量：有内容 = 圆角矩形（文字在上排，链接胶囊和
+// 文件钮、发送钮在同一下排），空框 = 单行胶囊。旧的 scrollHeight 判定在真机上会把
+// 空态误判成多行，表现为提交后卡在圆角矩形回不去（2026-09-17），改成纯内容判定后
+// 这条路径不存在了。只选文件不打字也算「有内容」，所以 renderCapChips 末尾要同步一次。
+function syncCapShape() {
+  const hasText = $("capText").value.trim() !== "";
+  $("smartBox").classList.toggle("open",
+    hasText || capFilesState.length > 0 || capAudiosState.length > 0);
+}
+
 function autosizeCap() {
   const t = $("capText");
-  const box = $("smartBox");
-  t.style.height = "auto";
-  box.classList.remove("multi");
-  const cs = getComputedStyle(t);
-  const lh = parseFloat(cs.lineHeight) || 24;
-  const single = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom) + lh;
+  syncCapShape();
   const hasText = t.value.trim() !== "";
-  // 空内容直接判单行，不信任 scrollHeight 测量：真机上字体加载/布局时序会让
-  // 空态被误判成多行，表现为提交后采集框卡在圆角矩形回不去胶囊（2026-09-17）
-  const multi = hasText && t.scrollHeight > single + lh / 2;
-  box.classList.toggle("multi", multi);
+  t.style.height = "auto";
   t.style.height = hasText ? Math.min(t.scrollHeight, 220) + "px" : "";
 }
 
@@ -105,6 +105,7 @@ function renderCapChips() {
     '<button class="xbtn" data-ai="' + i + '" aria-label="移除该录音">✕</button></span>').join("");
   renderContextOptions(urls);
   renderMultipleNote(urls);
+  syncCapShape();
 }
 
 // 上下文选项（§4.3）：识别到网页/公众号链接才出现「同时保存正文图片」；
@@ -384,6 +385,11 @@ export function initCapture({ onSubmit }) {
   setSubmittedHandler(onSubmit);
   $("capSubmit").addEventListener("click", submitCapture);
   $("capText").addEventListener("input", () => { autosizeCap(); renderCapChips(); });
+  // 展开动画走完再量一次高度：胶囊态文字行右端让给按钮（padding-right 104→12 是渐变的），
+  // 中途量到的 scrollHeight 会偏大，长链接粘进空框时底下会多留一行空白
+  $("capText").addEventListener("transitionend", (e) => {
+    if (e.propertyName === "padding-right") autosizeCap();
+  });
   window.addEventListener("resize", autosizeCap);
   $("uploadPick").addEventListener("click", () => $("capFiles").click());
   $("capFiles").addEventListener("change", (e) => {

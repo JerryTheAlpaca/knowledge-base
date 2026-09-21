@@ -195,36 +195,59 @@ label { display: block; font-size: var(--fs-small); color: var(--text-2); margin
         overflow: visible;
         filter: drop-shadow(0 0 30px rgba(232, 169, 60, .13)); }
 
-/* 胶囊采集框：常态为单行胶囊（上传｜输入｜发送 同排）；
-   内容超过一行时（capture.js 依胶囊态宽度判定加 .multi）舒展为圆角矩形：
-   文字全宽移到按钮上方，按钮行移到底部 */
-.smartbox { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 0 6px;
-            border: 1px solid var(--border-strong); border-radius: 999px;
+/* 采集框：静止是单行胶囊，一开始输入就长成圆角矩形。
+   两态共用同一套 DOM：capmain 只放文字，capbar 只放「链接胶囊｜文件钮｜发送钮」。
+   胶囊态把 capbar 用负 margin 整行提上来，叠在文字行所在的那条带上；两个按钮始终贴着
+   右端不动，形变因此只剩三件事——capbar 落回下面一行、圆角从 999 收到 30、文字行让出的
+   右端收回来，元素一律不跳位。.open 由 capture.js 按有无内容切换，不参与测量：空框必回
+   胶囊，不会再出现卡在圆角矩形回不去的情况（2026-09-17）。 */
+.smartbox { --cap-bar: 44px;      /* capbar 行高，胶囊态按它整行上叠 */
+            --cap-btns: 104px;    /* 胶囊态右端两个按钮占掉的宽度 */
+            --t-morph: 340ms;
+            display: flex; flex-direction: column;
+            border: 1px solid var(--border-strong); border-radius: var(--radius-pill);
             background: linear-gradient(165deg, rgba(56, 39, 17, .58) 0%, rgba(24, 16, 8, .92) 100%);
-            padding: 5px 8px;
+            padding: 5px 6px;
             box-shadow: 0 10px 34px rgba(0, 0, 0, .45), inset 0 1px 0 rgba(255, 225, 160, .07);
-            transition: border-color var(--t-fast), box-shadow var(--t-fast),
-                        border-radius .32s var(--ease); }
-.smartbox:has(.chiprow:not([hidden])),
-.smartbox:has(.capmeta span:not(:empty)),
-.smartbox.multi { border-radius: 30px; }
+            transition: border-radius var(--t-morph) var(--ease),
+                        border-color var(--t-fast), box-shadow var(--t-fast); }
+.smartbox.open { border-radius: 30px; }
 .smartbox:focus-within { border-color: var(--rose-deep);
                          box-shadow: 0 0 0 3px rgba(226, 176, 74, .12),
                                      0 8px 30px rgba(226, 176, 74, .10); }
-/* 胶囊态：一行输入夹在两个按钮之间（grid 第 1 行） */
-.smartbox textarea { grid-area: 1 / 2; border: none; box-shadow: none; padding: 10px 4px;
-                     min-height: 44px; max-height: 220px; resize: none; line-height: 24px;
-                     background: transparent; color: var(--text); caret-color: var(--accent); }
-.smartbox .uploadpick { grid-area: 1 / 1; }
-.smartbox .capsubmit { grid-area: 1 / 3; }
-.smartbox .chiprow, .smartbox .capmeta { grid-column: 1 / -1; }
-/* 多行态：文字全宽在上，左右留足与边框的间隙；按钮行在下 */
-.smartbox.multi { grid-template-columns: 1fr auto; }
-.smartbox.multi textarea { grid-area: 1 / 1 / 2 / 3; padding: 12px 14px 6px; }
-.smartbox.multi .uploadpick { grid-area: 2 / 1; }
-.smartbox.multi .capsubmit { grid-area: 2 / 2; }
+/* 上排：文字独占一行，从胶囊到矩形都在这一行里长大 */
+.capmain { display: flex; min-width: 0; }
+.smartbox textarea { flex: 1; min-width: 0; border: none; box-shadow: none; resize: none;
+                     min-height: var(--cap-bar); max-height: 220px;
+                     padding: 10px 12px; line-height: 24px;
+                     background: transparent; color: var(--text); caret-color: var(--accent);
+                     transition: padding-right calc(var(--t-morph) * .55) var(--ease)
+                                          calc(var(--t-morph) * .45); }
 .smartbox textarea:focus { box-shadow: none; }
 .smartbox textarea::placeholder { color: #8a7554; }
+/* 胶囊态：文字行右端让给叠在同一行的两个按钮。这条让位比 capbar 落下去晚起步
+   （延 = --t-morph 的 45%，本身只走 55%）：起步那段 capbar 还压着文字行，先把让位
+   留住，粘贴的长链接不会在过渡中途从按钮底下穿过去；capbar 已基本落定了才收回来。 */
+.smartbox:not(.open) textarea { padding-right: var(--cap-btns); }
+/* 下排：提取到的链接胶囊在左，文件钮与发送钮钉在右端 */
+.capbar { display: flex; align-items: center; gap: 6px; height: var(--cap-bar); padding: 0 2px;
+          transition: margin-top var(--t-morph) var(--ease); }
+/* 胶囊态整条 capbar 压在文字行上，它本身不能把点在输入框上的鼠标吃掉（实测点在左半边
+   命中的是 capbar）；只让两个按钮重新接收点击，空的胶囊区顺带也不响应 */
+.smartbox:not(.open) .capbar { margin-top: calc(-1 * var(--cap-bar)); pointer-events: none; }
+.smartbox:not(.open) .capbar .uploadpick,
+.smartbox:not(.open) .capbar .capsubmit { pointer-events: auto; }
+.chipzone { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0;
+            overflow-x: auto; overflow-y: hidden; scrollbar-width: none;
+            opacity: 0;   /* 展开途中 capbar 还压在文字行上，胶囊先别露脸 */
+            transition: none; }
+/* 等 capbar 基本落定（200ms）再把链接胶囊淡进来，避免粘贴多链接时胶囊从文字上擦过去。
+   淡入挂在 chipzone 自己身上：胶囊每次输入都由 innerHTML 重建，动画放子元素上会一路闪。 */
+.smartbox.open .chipzone { opacity: 1; transition: opacity 140ms var(--ease) 200ms; }
+.chipzone::-webkit-scrollbar { display: none; }
+/* 一条链接一个胶囊，横向排成一行，多了就横滚：行高恒定，多贴几条链接不会把框撑得抖动 */
+.smartbox .chiprow { padding: 0; flex: none; flex-wrap: nowrap; }
+.smartbox .chip { flex: none; }
 .uploadpick { width: 40px; min-width: 40px; min-height: 40px; border: none; background: transparent;
               border-radius: 50%; color: #d9b56a; flex: none; }
 .uploadpick:hover { background: rgba(226, 176, 74, .12); color: var(--accent-hover); border: none; }
@@ -590,9 +613,7 @@ details.disclosure.slim .disclosure-body { padding: 0 8px 8px; }
   .sline { top: 9px; left: calc(-50% + 16px); right: calc(50% + 16px); }
   .rose { width: clamp(190px, 30vh, 260px); }
   .rose-caption { font-size: var(--fs-display); }
-  .smartbox:has(.chiprow:not([hidden])),
-  .smartbox:has(.capmeta span:not(:empty)),
-  .smartbox.multi { border-radius: 24px; }
+  .smartbox.open { border-radius: 24px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .rose .plant, .rose .glowPulse, .rose .litGlow, .rose .litHalo { animation: none !important; }
