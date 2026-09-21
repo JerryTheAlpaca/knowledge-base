@@ -5,8 +5,8 @@
 // 开工要求 / 回答提问 / 调整方向 / 继续改成品。顶栏三横线那侧是以前所有的对话。
 // 预览走「主站鉴权取数据 → 可信容器设置 srcdoc」，iframe 只开 allow-scripts。
 
-import { $, api, esc, fmtShort, showErr, toast, isModalOpen } from "./api.js";
-import { setListPollPaused } from "./item-list.js";
+import { $, api, esc, fmtShort, showErr, toast, isModalOpen, dismissToast, sanitizeFilename } from "./api.js";
+import { setListPollPaused, refreshItems } from "./item-list.js";
 import { currentDetailId, closeDetail, openDetail } from "./item-detail.js";
 
 const SELECTED_KEY = "kb.share.selected.v1";
@@ -52,6 +52,7 @@ function setSelectMode(on) {
     toggle.classList.toggle("on", on);
   }
   document.body.classList.toggle("share-selecting", on);
+  if (!on) showSelMenu(false);
   renderSelectionBar();
 }
 
@@ -95,10 +96,106 @@ function installSelection() {
   if (clear) clear.addEventListener("click", () => {
     selected.clear(); saveSelected(); syncRowMarks(); renderSelectionBar();
   });
-  const goCreate = $("shareSelCreate");
-  if (goCreate) goCreate.addEventListener("click", () => openWorkbench());
-  const exit = $("shareSelExit");
-  if (exit) exit.addEventListener("click", () => setSelectMode(false));
+  const done = $("shareSelDone");
+  if (done) done.addEventListener("click", () => {
+    const menu = $("shareSelMenu");
+    showSelMenu(!!menu && menu.hidden);
+  });
+  const pick = (id, fn) => {
+    const el = $(id);
+    if (el) el.addEventListener("click", () => { showSelMenu(false); fn(); });
+  };
+  pick("shareDlSource", () => downloadChosen("source"));
+  pick("shareDlDigest", () => downloadChosen("digest"));
+  pick("shareMakeHtml", () => openWorkbench());
+  // 点菜单外任何一处就收起；勾选项本身由上面的捕获监听负责
+  document.addEventListener("click", (e) => {
+    const menu = $("shareSelMenu");
+    if (!menu || menu.hidden) return;
+    if (!e.target.closest("#shareSelMenu") && !e.target.closest("#shareSelDone")) showSelMenu(false);
+  });
+}
+
+function showSelMenu(on) {
+  const menu = $("shareSelMenu");
+  if (!menu) return;
+  menu.hidden = !on;
+  if (!on) return;
+  // 贴着多选条上沿：条子在小屏会换行长高，写死 bottom 会把它盖住
+  const bar = $("shareSelBar").getBoundingClientRect();
+  menu.style.bottom = Math.round(window.innerHeight - bar.top + 10) + "px";
+}
+
+// ---------- 批量下载：原文取 readable/normalized.md，整理稿取 preview.md ----------
+
+const DL_PATHS = { source: ["readable.md", "normalized.md"], digest: ["preview.md"] };
+const DL_LABEL = { source: "原文", digest: "整理稿" };
+let downloading = false;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function downloadChosen(kind) {
+  if (downloading) return;
+  const ids = selectedIds();
+  if (!ids.length) return;
+  downloading = true;
+  const busy = toast("正在准备 " + ids.length + " 篇" + DL_LABEL[kind] + "…", { sticky: true });
+  let ok = 0;
+  let missed = 0;
+  for (const id of ids) {
+    const one = await downloadOne(id, kind);
+    if (!one.ok) { missed++; continue; }
+    ok++;
+    await sleep(260);   // 连着点下载会被浏览器当成批量抓取，留一点间隔
+  }
+  dismissToast(busy);
+  const tail = missed ? "，" + missed + " 篇还没有可下载的" + DL_LABEL[kind] : "";
+  if (ok) toast("已下载 " + ok + " 篇" + DL_LABEL[kind] + tail, { type: missed ? "warn" : "ok" });
+  else toast(missed + " 篇都还没有可下载的" + DL_LABEL[kind], { type: "warn" });
+  downloading = false;
+  if (kind === "source" && ok) refreshItems();   // 下载原文会把条目推到「已下载」
+}
+
+async function downloadOne(id, kind) {
+  let d = null;
+  try { d = await api("/v1/items/" + encodeURIComponent(id) + "/reading"); } catch (e) { d = null; }
+  const title = (d && d.item && d.item.title) || "未命名材料";
+  const sm = d && d.source_material;
+  if (!sm) return { ok: false };
+  const file = DL_PATHS[kind]
+    .map((p) => (sm.files || []).find((f) => f.relative_path === p))
+    .find(Boolean);
+  if (!file) return { ok: false };
+  let text = "";
+  try {
+    const r = await fetch(sm.download_base + "/" + encodeURIComponent(file.file_id),
+      { credentials: "same-origin" });
+    if (r.ok) text = await r.text();
+  } catch (e) { text = ""; }
+  if (!text.trim()) return { ok: false };
+  if (kind === "source") text = cleanReadableMd(text);
+  saveAsMd(text, sanitizeFilename(title) + (kind === "digest" ? "-整理稿" : "") + ".md");
+  if (kind === "source") {
+    // 下载走本地 Blob，服务器只能靠这次登记把条目判为已下载（docs/17 §5.2）
+    try { await api("/v1/items/" + encodeURIComponent(id) + "/source-download", { method: "POST" }); }
+    catch (e) { /* 登记失败不影响已经到手的文件 */ }
+  }
+  return { ok: true };
+}
+
+// 证据角标（^s0001）是给网页定位用的，落到文件里就是噪声
+function cleanReadableMd(raw) {
+  return raw.split("\n").map((l) => l.replace(/\s+\^[sp]\d{4,}\s*$/, ""))
+    .join("\n").replace(/\n{3,}/g, "\n\n").trim() + "\n";
+}
+
+function saveAsMd(text, name) {
+  const url = URL.createObjectURL(new Blob([text], { type: "text/markdown;charset=utf-8" }));
+  const a = document.createElement("a");
+  a.href = url; a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 // ---------- 视图切换：对话舞台 / 以前的对话 ----------
@@ -751,7 +848,10 @@ export function initShares(navigator) {
   if (send) send.addEventListener("click", () => onSend());
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape" || isModalOpen()) return;
-    if (!$("shareStage").hidden || !$("sharesView").hidden) exitOverlay();
+    const menu = $("shareSelMenu");
+    if (menu && !menu.hidden) { showSelMenu(false); return; }   // 先收菜单
+    if (!$("shareStage").hidden || !$("sharesView").hidden) { exitOverlay(); return; }
+    if (selectMode) setSelectMode(false);                      // 再收多选
   });
   document.addEventListener("click", (e) => {
     const li = e.target.closest && e.target.closest("li.item");
