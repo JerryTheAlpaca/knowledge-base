@@ -111,6 +111,14 @@ def get_run(db: Session, user_id: str, work_id: str, run_id: str) -> ShareRun | 
     )
 
 
+def latest_run(db: Session, user_id: str, work_id: str) -> ShareRun | None:
+    """作品跑完以后 active_run_id 会清空，但那一轮对话还要能翻出来看。"""
+    return db.scalar(
+        select(ShareRun).where(ShareRun.user_id == user_id, ShareRun.work_id == work_id)
+        .order_by(ShareRun.created_at.desc()).limit(1)
+    )
+
+
 def claim_run(session_factory, *, max_active_per_user: int | None = None) -> ShareRun | None:
     """原子领取一个到期的分享任务；同用户执行中的任务数受上限约束。
 

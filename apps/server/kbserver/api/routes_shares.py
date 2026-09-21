@@ -109,7 +109,7 @@ def _actions(db: Session, work: ShareWork, run: ShareRun | None) -> dict:
     waiting = run.state in ("waiting_user", "awaiting_confirmation")
     terminal = run.state in ("failed", "cancelled", "succeeded", "unknown_outcome")
     return {
-        "can_answer": run.state == "waiting_user",
+        "can_answer": waiting,
         "can_start": waiting and run.brief_version > 0,
         "can_retry": terminal,
         "can_cancel": not terminal,
@@ -312,7 +312,10 @@ def list_shares(limit: int = 20, offset: int = 0,
 def get_share(work_id: str, principal=Depends(require_scope("shares:read")),
               db: Session = Depends(get_db)) -> dict:
     work = _get_work(db, principal.user.id, work_id)
+    # 跑完的一轮会从 active_run_id 上摘下来，但对话记录还得能翻出来看、失败也要能重试
     run = db.get(ShareRun, work.active_run_id) if work.active_run_id else None
+    if run is None:
+        run = repo.latest_run(db, principal.user.id, work.id)
     revisions = repo.list_revisions(db, principal.user.id, work.id)
     published = db.get(ShareRevision, work.published_revision_id) if work.published_revision_id else None
     return {
@@ -444,9 +447,13 @@ def post_answer(
     user = principal.user
     work = _get_work(db, user.id, work_id)
     run = _get_run(db, user.id, work_id, run_id)
-    if run.state != "waiting_user":
+    # 确认阶段同样收自由补充：页面只有一个输入框，「再调整一下」就是一句普通的话，
+    # 收进来后回到 clarifying，AI 改完需求会再确认一次。
+    if run.state not in ("waiting_user", "awaiting_confirmation"):
         raise ApiError("CONFLICT", "现在没有在等待你的回答", status_code=409,
                        details={"state": run.state})
+    if not body.answers and not (body.message or "").strip():
+        raise ApiError("SCHEMA_INVALID", "还没有要发送的内容")
     if run.pending_round_id != body.round_id:
         raise ApiError("REVISION_CONFLICT", "这组问题已经更新，请刷新后重新提交", status_code=409,
                        details={"current_round_id": run.pending_round_id})

@@ -48,16 +48,17 @@ function route() {
   const params = new URLSearchParams(location.search);
   const onShares = params.get("view") === "shares";
   const onSettings = params.get("view") === "settings";
+  // 列表被详情/设置/分享舞台盖住时停掉它的轮询（审查 C-06）：抽屉展开时列表可见，继续轮询
+  setListPollPaused(onSettings || !!params.get("item") || onShares);
   if (onShares) {
-    $("homeView").hidden = true;
+    // 分享舞台直接搭在首页之上：homeView 留着，金蔷薇在强遮罩后面当背景
     hideSettings();
-    openSharesView(params.get("share") || null);
+    $("homeView").hidden = false;
+    openSharesView(params.get("share") || null, params.get("new") === "1");
     return;
   }
-  if (isSharesOpen()) { hideSharesView(); renderHomeAfterShares(); }
+  if (isSharesOpen()) hideSharesView();
   const wasOnSettings = !$("settingsView").hidden;
-  // 列表被详情/设置盖住时停掉它的轮询（审查 C-06）：抽屉展开时列表可见，继续轮询
-  setListPollPaused(onSettings || !!params.get("item"));
   if (onSettings) {
     $("homeView").hidden = true;
     showSettings();
@@ -100,21 +101,22 @@ function closeMenus() {
   $("userMenu").hidden = true;
 }
 
-// 品牌「金蔷薇」：任何二级视图（详情/设置）或展开的抽屉下一键回到金蔷薇主页面
-function renderHomeAfterShares() {
-  $("sharesView").hidden = true;
-  $("homeView").hidden = false;
-}
-
+// 品牌「金蔷薇」：任何二级视图（详情/设置/分享舞台）或展开的抽屉下一键回到金蔷薇主页面
 function goHome() {
   const drawerWasOpen = isDrawerOpen();
   const atHome = location.pathname === "/inbox" && !location.search &&
-    $("settingsView").hidden && $("detailView").hidden && !drawerWasOpen;
+    $("settingsView").hidden && $("detailView").hidden && !drawerWasOpen && !isSharesOpen();
   settingsFromDrawer = false;
   if (atHome) return;
-  try { history.pushState({}, "", "/inbox"); } catch (e) { /* 忽略 */ }
-  route();
+  // 先收抽屉再揭开舞台：遮罩还盖着的时候收，列表不会在返回首页那一瞬闪一下
   if (drawerWasOpen) closeDrawer();
+  navigate("/inbox");
+}
+
+// 视图切换的唯一入口：分享舞台与对话记录都靠它换 URL，再交给 route() 渲染
+export function navigate(url, state) {
+  try { history.pushState(state || {}, "", url); } catch (e) { /* 忽略 */ }
+  route();
 }
 
 // ---------- 登录 / 登出 ----------
@@ -166,10 +168,12 @@ function wireTopbar() {
     if (!e.target.closest(".menuwrap")) closeMenus();
   });
   document.addEventListener("keydown", (e) => {
-    // 弹窗的 Escape/点遮罩由共用 modal 模块负责，这里不重复关闭
+    // 弹窗的 Escape/点遮罩由共用 modal 模块负责，这里不重复关闭；
+    // 分享舞台和对话记录的 Escape 退出在 shares.js 里
     if (e.key === "Escape" && !isModalOpen()) closeMenus();
     if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
-      if (!$("appView").hidden && !$("homeView").hidden) submitCapture();
+      // 舞台上那副输入框也是首页结构的一部分，别把对话当成采集提交出去
+      if (!$("appView").hidden && !$("homeView").hidden && !isSharesOpen()) submitCapture();
     }
   });
 }
@@ -197,7 +201,7 @@ window.addEventListener("popstate", route);
   initDetail();
   initOnboarding();
   initSettings();
-  initShares();
+  initShares(navigate);
   window.__kbRefreshItems = refreshItems;
   try {
     const me = await api("/v1/auth/me");

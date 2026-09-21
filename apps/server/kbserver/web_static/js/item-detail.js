@@ -346,7 +346,7 @@ function sourceEditText(sm) {
   return body.split("\n").map((l) => l.replace(/\s+\^[sp]\d{4}\s*$/, "")).join("\n");
 }
 
-// 单篇详情里的「用这篇生成分享页」：带着当前条目直接进创作面板（docs/20 §3.1）
+// 单篇详情里的「用这篇生成分享页」：带着当前条目直接进分享舞台（docs/20 §3.1）
 async function openShareWithThisItem() {
   if (!detailId) return;
   const { openWorkbench } = await import("./shares.js");

@@ -22,10 +22,10 @@
     <button class="brand brandbtn" id="brandHome" title="返回主页">金蔷薇</button>
     <div class="spacer"></div>
     <div class="menuwrap">
-      <button class="icon ghost" id="sharesBtn" aria-label="我的作品" title="我的作品">
+      <button class="icon ghost" id="sharesBtn" aria-label="AI 对话" title="以前和 AI 的对话">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-             stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M4 5.5h16v11H4z"/><path d="M8 20h8"/><path d="M12 16.5V20"/>
+             stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+          <path d="M4 7h16"/><path d="M4 12h16"/><path d="M4 17h10"/>
         </svg>
       </button>
     </div>
@@ -426,7 +426,12 @@
           <!-- 搜索框与放大镜同排：插槽紧邻图标左侧，展开时右缘钉住、从图标处向左生长 -->
           <div class="listtoolbar" id="listToolbar">
             <button class="btn ghost small" id="selectToggle" aria-pressed="false"
-                    title="勾选多篇材料生成分享页">选择</button>
+                    title="勾选几篇材料，交给 AI 做成一个作品">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                   stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="18" cy="5.5" r="2.5"/><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="18.5" r="2.5"/>
+                <path d="M8.2 10.8 15.8 6.7M8.2 13.2l7.6 4.1"/>
+              </svg>分享</button>
             <span class="spacer"></span>
             <div class="searchslot" id="searchRow"><input class="search" id="searchBox" placeholder="搜索标题、链接或来源…" aria-label="搜索条目"></div>
             <button class="icon ghost" id="searchToggle" aria-label="搜索" title="搜索" aria-expanded="false">
@@ -931,18 +936,62 @@
     </div>
   </section>
 
-  <!-- ============ 作品：选材料 → 澄清需求 → 生成 → 预览/修改 → 分享（docs/20 §3） ============ -->
+  <!-- ============ 分享创作：整页复用首页构造，金蔷薇加遮罩退成背景 ============ -->
+  <!-- 中间是与 AI 的多轮对话，底部沿用首页那副胶囊输入框；右上角叉叉退出（同设置页） -->
+  <section id="shareStage" hidden>
+    <div class="stage-scrim" aria-hidden="true"></div>
+    <div class="stage-inner">
+      <div class="stage-top">
+        <span class="stage-title" id="stageTitle">分享创作</span>
+        <span class="spacer"></span>
+        <button class="btn ghost small" id="stageDelete" hidden>删除这次对话</button>
+        <button class="icon ghost" id="stageClose" aria-label="退出分享创作" title="退出">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="2" stroke-linecap="round" aria-hidden="true">
+            <path d="M6 6l12 12M18 6L6 18"/>
+          </svg>
+        </button>
+      </div>
+      <div class="stage-scroll" id="stageThread"></div>
+      <div class="stage-dock">
+        <div class="stage-status" id="stageStatus" hidden></div>
+        <div class="stage-actions" id="stageActions" hidden></div>
+        <div class="smartbox open">
+          <div class="capmain">
+            <textarea id="stageInput" rows="1" placeholder="说说你想做成什么样……" aria-label="对 AI 说"></textarea>
+          </div>
+          <div class="capbar">
+            <span class="small" id="stageHint"></span>
+            <span class="spacer"></span>
+            <button class="capsubmit" id="stageSend" aria-label="发送" title="发送">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                   stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <line x1="12" y1="19" x2="12" y2="5"/>
+                <polyline points="5 12 12 5 19 12"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 以前和 AI 的对话：同一套遮罩布局，列在中间一栏 ============ -->
   <section id="sharesView" hidden>
-    <div class="shares-inner">
-      <div class="shares-side">
-        <h2 class="shares-h2">我的作品</h2>
-        <p class="muted small">草稿默认只有你自己能看到。</p>
-        <ul class="shares-works" id="shareWorks"></ul>
+    <div class="stage-scrim" aria-hidden="true"></div>
+    <div class="stage-inner conv-panel">
+      <div class="stage-top">
+        <span class="stage-title">AI 对话</span>
+        <span class="spacer"></span>
+        <button class="icon ghost" id="sharesClose" aria-label="关闭对话记录" title="关闭">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="2" stroke-linecap="round" aria-hidden="true">
+            <path d="M6 6l12 12M18 6L6 18"/>
+          </svg>
+        </button>
       </div>
-      <div class="shares-main">
-        <div id="shareComposer" hidden></div>
-        <div id="shareWorkArea" hidden></div>
-      </div>
+      <p class="conv-note">每一次和 AI 的多轮问答都留在这里，点开就能接着说。生成的作品默认只有你自己能看到。</p>
+      <div class="stage-scroll"><ul class="conv-list" id="shareWorks"></ul></div>
     </div>
   </section>
 
@@ -952,7 +1001,7 @@
     <span class="spacer"></span>
     <button class="btn ghost small" id="shareSelClear">清空</button>
     <button class="btn ghost small" id="shareSelExit">退出选择</button>
-    <button class="btn primary small" id="shareSelCreate">生成分享页</button>
+    <button class="btn primary small" id="shareSelCreate">开始创作</button>
   </div>
 </main>
 

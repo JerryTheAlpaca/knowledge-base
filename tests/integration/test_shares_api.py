@@ -293,6 +293,67 @@ def test_start_before_brief_is_ready_is_actionable_409(client, share_env):
     assert resp.json()["error"]["details"]["state"] == "queued"
 
 
+def _to_confirmation(client, env, share_id: str, run_id: str) -> dict:
+    """澄清 → 回答一轮，停在「请确认方向」上。"""
+    run_stage(env, run_id)
+    conv = client.get(f"/v1/shares/{share_id}/runs/{run_id}/conversation",
+                      headers=env["headers"]).json()
+    q = conv["round"]["questions"][0]
+    resp = client.post(f"/v1/shares/{share_id}/runs/{run_id}/messages",
+                       json={"expected_conversation_version": conv["conversation_version"],
+                             "round_id": conv["round"]["round_id"],
+                             "answers": [{"question_id": q["id"],
+                                          "option_ids": [q["options"][0]["id"]], "text": ""}],
+                             "message": ""},
+                       headers={**env["headers"], "Idempotency-Key": new_id()})
+    assert resp.status_code == 202, resp.text
+    run = run_stage(env, run_id)
+    assert run.state == "awaiting_confirmation", run.error_detail
+    return client.get(f"/v1/shares/{share_id}", headers=env["headers"]).json()
+
+
+def test_confirmation_round_still_takes_a_free_note(client, share_env):
+    """确认阶段页面只有一个输入框：补一句要收进对话，空内容才拒。"""
+    env = share_env["a"]
+    share_id, run_id = create(client, env)
+    detail = _to_confirmation(client, env, share_id, run_id)
+    round_id = detail["round"]["round_id"]
+    conv_version = client.get(f"/v1/shares/{share_id}/runs/{run_id}/conversation",
+                              headers=env["headers"]).json()["conversation_version"]
+    body = {"expected_conversation_version": conv_version, "round_id": round_id,
+            "answers": [], "message": "  "}
+    resp = client.post(f"/v1/shares/{share_id}/runs/{run_id}/messages", json=body,
+                       headers={**env["headers"], "Idempotency-Key": new_id()})
+    assert resp.status_code == 422
+    body["message"] = "读者是同行，基础名词不用解释"
+    resp = client.post(f"/v1/shares/{share_id}/runs/{run_id}/messages", json=body,
+                       headers={**env["headers"], "Idempotency-Key": new_id()})
+    assert resp.status_code == 202, resp.text
+    with share_env["session_factory"]() as db:
+        run = db.get(ShareRun, run_id)
+        assert (run.state, run.stage) == ("queued", "clarifying")
+
+
+def test_finished_work_keeps_its_conversation(client, share_env):
+    """跑完后 active_run_id 摘掉，但那一轮问答还要能在「以前的对话」里看到。"""
+    env = share_env["a"]
+    share_id, run_id = create(client, env)
+    run = to_ready(client, env, share_id, run_id)
+    with share_env["session_factory"]() as db:
+        from kbserver.models import ShareWork
+        assert db.get(ShareWork, share_id).active_run_id is None
+
+    detail = client.get(f"/v1/shares/{share_id}", headers=env["headers"]).json()
+    assert detail["run"]["run_id"] == run.id
+    assert detail["run"]["state"] == "succeeded"
+    assert detail["brief"]["fields"]
+    messages = client.get(f"/v1/shares/{share_id}/runs/{run_id}/conversation",
+                          headers=env["headers"]).json()["messages"]
+    roles = [m["role"] for m in messages]
+    assert roles[:2] == ["assistant", "user"]     # 问过、答过，之后才有成品
+    assert len(roles) >= 3
+
+
 def test_full_flow_produces_private_draft_with_no_store(client, share_env):
     env = share_env["a"]
     share_id, run_id = create(client, env)
