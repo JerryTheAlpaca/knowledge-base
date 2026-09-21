@@ -231,6 +231,39 @@ def test_unreadable_material_names_the_item(client, share_env):
     assert details["unreadable_items"][0]["item_id"] == env["item_id"]
 
 
+def test_edited_material_is_still_readable(client, share_env):
+    """改过原文的材料：同路径会多出一份 segments.json，预检要认当前版本那份。
+
+    编辑原文、补充材料、重新提取都是「新登记一份 + 来源版本加一」，早先那份留在库里。
+    预检若取最早那份核对版本，就会把有正文的材料判成「还没有可读正文」。
+    """
+    env = share_env["a"]
+    store = ObjectStore()
+    with share_env["session_factory"]() as db:
+        item = db.get(Item, env["item_id"])
+        db.add(SourceRevision(item_id=item.id, user_id=item.user_id, revision=2,
+                              content_hash="edited",
+                              metadata_json={"title": "材料甲", "coverage": "full_text"},
+                              artifacts_json={}))
+        item.source_revision = 2
+        db.flush()
+        doc = {"source_revision": 2, "segments": [{"segment_id": "s0001", "text": "改过的正文。"}]}
+        sha, key, size = store.put_bytes(json.dumps(doc, ensure_ascii=False).encode("utf-8"))
+        db.add(StoredFile(file_id=new_id(), user_id=item.user_id, item_id=item.id,
+                         role="source_material", relative_path="segments.json",
+                         mime="application/json", bytes=size, sha256=sha, storage_key=key))
+        db.commit()
+
+    resp = client.post("/v1/shares", json={"item_ids": [env["item_id"]], "instructions": "做页"},
+                       headers={**env["headers"], "Idempotency-Key": new_id()})
+    assert resp.status_code == 202, resp.text
+    # worker 读到的必须是你改过的那份，而不是版本 1 的旧正文
+    with share_env["session_factory"]() as db:
+        item = db.get(Item, env["item_id"])
+        segs = share_worker._segments_of(db, store, item)
+    assert [s["text"] for s in segs] == ["改过的正文。"]
+
+
 # ---- 用户隔离 ----
 
 

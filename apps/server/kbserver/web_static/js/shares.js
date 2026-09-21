@@ -500,8 +500,9 @@ async function loadMaterials() {
     let it = null;
     try { it = await api("/v1/items/" + encodeURIComponent(id)); } catch (e) { it = null; }
     if (!it) { next.set(id, { title: "有一篇材料已经打不开了", meta: "", warn: true, fixable: false }); continue; }
-    // 界面只做粗筛；到底能不能读由服务端判定，422 会带回具体条目
-    const readable = ["ready", "extracted"].includes(it.pipeline_state);
+    // 粗筛只认「来源压根没抓到正文」：加工中、整理失败时原文照旧在，不能算缺正文。
+    // 到底能不能读由服务端判定，422 会带回具体条目
+    const readable = it.coverage !== "metadata_only";
     next.set(id, { title: it.title || "未命名材料", meta: it.source_label || "", warn: !readable });
   }
   if (mode !== "draft") return;

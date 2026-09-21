@@ -28,7 +28,6 @@ from ..models import (
     ShareRun,
     ShareWork,
     SourceRevision,
-    StoredFile,
     utcnow,
 )
 from ..repositories import shares as repo
@@ -36,6 +35,7 @@ from ..repositories import core as repo_core
 from ..security import share_tokens
 from ..api.deps import require_scope
 from ..storage.objects import ObjectStore
+from ..workers import share as share_worker
 
 router = APIRouter(prefix="/v1/shares", tags=["shares"])
 
@@ -182,6 +182,7 @@ def _check_items_readable(db: Session, user_id: str, item_ids: list[str], settin
     if len(item_ids) > settings.share_max_items:
         raise ApiError("SCHEMA_INVALID", f"一次最多选择 {settings.share_max_items} 篇材料")
     specs, unreadable = [], []
+    store = ObjectStore()
     for item_id in dict.fromkeys(item_ids):
         item = repo_core.get_item(db, user_id, item_id)
         if item is None or item.deleted_at is not None:
@@ -189,20 +190,14 @@ def _check_items_readable(db: Session, user_id: str, item_ids: list[str], settin
         source = db.query(SourceRevision).filter(
             SourceRevision.item_id == item.id,
             SourceRevision.revision == item.source_revision).one_or_none()
-        seg_file = db.query(StoredFile).filter(
-            StoredFile.item_id == item.id, StoredFile.relative_path == "segments.json").first()
-        readable = False
-        if source is not None and seg_file is not None:
-            try:
-                doc = json.loads(ObjectStore().read_object(seg_file.storage_key).decode("utf-8"))
-                readable = doc.get("source_revision") == item.source_revision and bool(
-                    [s for s in doc.get("segments") or [] if (s or {}).get("text")])
-            except Exception:
-                readable = False
-        if not readable:
+        # 与 worker 取正文同一套读法：segments.json 同路径会有多份登记（编辑原文、
+        # 补充材料、重新提取都会新登记一份），要按最新那份核对当前来源版本。
+        # 取最早那份会让改过正文的材料永远被判成不可读。
+        if source is None or not share_worker._segments_of(db, store, item):
+            meta = (source.metadata_json or {}) if source else {}
             unreadable.append({
                 "item_id": item.id,
-                "title": (source.metadata_json or {}).get("title") or "未命名材料",
+                "title": meta.get("title") or "未命名材料",
                 "reason": "no_text",
             })
             continue
