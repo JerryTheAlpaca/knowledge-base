@@ -59,6 +59,7 @@ async function checkOnly(taskPath, outDir) {
     interactions: source.interactions ?? [],
     maxScreenshots: check.max_screenshots ?? 6,
     readyTimeoutMs: check.ready_timeout_ms ?? 10000,
+    minBodyChars: check.min_body_chars,
     viewports: check.viewports?.length ? check.viewports.map(([w, h]) => ({ id: `${w}x${h}`, width: w, height: h })) : undefined,
   });
   const ok = result.ok && report.diagnostics.every((d) => d.severity === 'warning');
@@ -81,8 +82,9 @@ if (command === 'seal') {
 } else if (command === 'runner') {
   const spool = arg('spool');
   if (!spool) throw new Error('runner 需要 --spool <目录>');
-  // 交接目录由两个不同 uid 的容器共用：本进程建的目录/文件必须让对端能写能删
-  process.umask(0o000);
+  // 交接目录由两个不同 uid 的容器共用，两端同在一个组里（kbshare，gid 950）：
+  // 本进程建的文件让对端按组能读能删就够了，umask 002，不放开到任意进程可写（审查 C-02）
+  process.umask(0o002);
   await ensureSpool(spool);
   const done = await runSpool({ spoolDir: spool, once: Boolean(arg('once')) });
   console.log(JSON.stringify({ processed: done }));
@@ -90,16 +92,28 @@ if (command === 'seal') {
   const man = await loadManifest();
   let browser = 'unavailable';
   let detail = null;
+  let sandbox = null; // 拿不到结论就是 unknown（浏览器没起来，连沙箱都没起跑）
   try {
     // 自检走真实交付件：空白页没有生成子页面，等不到 ready 信号，测不出可用与否
     const res = await checkOnly(taskPath ?? path.join(repoRoot(), 'samples', 'prose', 'task.json'), await tmpDir());
+    sandbox = res.launch?.sandbox_enabled ?? null;
     browser = res.ok ? 'ok' : `degraded:${res.diagnostics.map((d) => d.code).join(',')}`;
     detail = res.diagnostics;
   } catch (err) {
     browser = `error:${err.code ?? err.message}`;
   }
-  console.log(JSON.stringify({ runtime_version: man.runtimeVersion, imports: [...man.imports.keys()], browser, detail }));
-  if (browser !== 'ok') process.exitCode = 1;
+  // 报的是「带沙箱的浏览器有没有真的起跑」：我们显式请求了 chromiumSandbox: true，
+  // 沙箱初始化不了就是启动失败，不会静默退回 --no-sandbox。setuid helper 或
+  // user namespaces 是否可用只有部署机说了算，所以 unknown/false 与 browser 不 ok
+  // 同等对待，都按非 ok 退出。
+  console.log(JSON.stringify({
+    runtime_version: man.runtimeVersion,
+    imports: [...man.imports.keys()],
+    browser,
+    sandbox_enabled: sandbox === null ? 'unknown' : sandbox,
+    detail,
+  }));
+  if (browser !== 'ok' || sandbox !== true) process.exitCode = 1;
 } else {
   console.log('用法：node src/cli.mjs <seal|build|check|runner|doctor> [--task 路径] [--out 目录] [--spool 目录] [--once]');
   process.exitCode = 2;

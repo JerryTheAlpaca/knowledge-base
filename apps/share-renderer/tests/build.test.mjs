@@ -61,6 +61,19 @@ test('单文件成品：可信外层 + sandbox srcdoc 子页面，CSP 哈希与�
   assert.ok(!/https?:\/\//.test(child), '子页面出现远程地址');
 });
 
+test('外层属性上下文：模型标题里的引号与尖括号逃不出 title 属性', async () => {
+  const title = '恶意" onload="alert(1) <x';
+  const { html } = await build({ source: pageSource({ title }) });
+  const text = html.toString('utf8');
+  const tag = /<iframe\b([^>]*)>/.exec(text);
+  assert.ok(tag, '成品里找不到外层 iframe 标签');
+  // 属性上下文没转义引号时，title 的值会在这里被截断并多出 onload 属性
+  const attrs = [...tag[1].matchAll(/([a-zA-Z-]+)="([^"]*)"/g)].map((m) => m[1]);
+  assert.deepEqual([...attrs].sort(), ['class', 'id', 'sandbox', 'srcdoc', 'title']);
+  assert.equal(/sandbox="([^"]*)"/.exec(tag[1])[1], 'allow-scripts');
+  assert.equal(unescapeAttr(/title="([^"]*)"/.exec(tag[1])[1]), title, '标题没有完整留在自己的属性值里');
+});
+
 test('图表与公式依赖按实际使用打包，字体转 data URL', async () => {
   const source = pageSource({
     html_body: '<main><h1>图</h1><canvas id="c" width="300" height="150"></canvas><div id="m"></div><p>正文足够长以便通过主体检查。</p></main>',

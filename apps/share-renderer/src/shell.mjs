@@ -13,7 +13,7 @@ export function escapeHtml(value) {
     .replaceAll('>', '&gt;');
 }
 
-/** iframe srcdoc 属性值：属性上下文里必须转义 & 与引号，其余按文本处理。 */
+/** 属性上下文用它（srcdoc、title 都是）：属性值里必须转义 & 与引号，其余按文本处理。 */
 export function escapeAttr(value) {
   return String(value ?? '')
     .replaceAll('&', '&amp;')
@@ -267,7 +267,7 @@ export function buildOuterDoc({
   ${gaps.length ? `<p class="kb-note">未覆盖：${gaps.map((n) => escapeHtml(n)).join('；')}</p>` : ''}
 </section>
 <main>
-  <iframe id="kb-frame" class="kb-frame" title="${escapeHtml(title)}" sandbox="allow-scripts" srcdoc="${escapeAttr(childDoc)}"></iframe>
+  <iframe id="kb-frame" class="kb-frame" title="${escapeAttr(title)}" sandbox="allow-scripts" srcdoc="${escapeAttr(childDoc)}"></iframe>
 </main>
 <footer class="kb-foot">由本人选中的材料整理生成 · 运行环境 ${escapeHtml(runtimeVersion)} · 页面在隔离环境中运行，不联网</footer>
 <script type="application/json" id="kb-meta">${jsonForScriptTag(meta)}</script>
