@@ -196,27 +196,24 @@ label { display: block; font-size: var(--fs-small); color: var(--text-2); margin
         filter: drop-shadow(0 0 30px rgba(232, 169, 60, .13)); }
 
 /* 采集框：没点进来是单行胶囊，一点进来（或框里已经有东西）就长成圆角矩形。
-   两态共用同一套 DOM：capmain 只放文字（在流里），capbar 只放「文件钮｜链接胶囊｜发送钮」
-   且钉在框的底边。于是形变只有一个布局属性在动——框的 padding-bottom（5px → 一行按钮高）；
-   按钮行钉着底边，框长多少它就往下走多少，两个按钮横向一步都不走。文字两端的让位不再做
-   过渡（占位提示一展开就没了，展开态没有文字会跟按钮重叠），逐帧重排文本这条开销就没了。
-   点进来那一下由 capture.js 的 focusin 挂 .open，形态不看测量：空框一离开焦点必回胶囊，
-   不会再出现卡在圆角矩形回不去的情况（2026-09-17）。 */
-.smartbox { --cap-bar: 44px;      /* 按钮行高度，也是展开时框底要留出来的位置 */
+   两态共用同一套 DOM：capmain 只放文字，capbar 只放「文件钮｜链接胶囊｜发送钮」。
+   胶囊态把 capbar 用负 margin 整行提上来，正好叠在文字行那条带上——文件钮在左、发送钮
+   在右，位置和不展开时一样；展开时它整行落回文字下方，两个按钮横向一步都不走。
+   所以形变只剩三件事：按钮行落下、圆角从 999 收到 30、文字行两侧让出的位置收回，
+   元素一律不跳位。点进来那一下由 capture.js 的 focusin 挂 .open，形态不看测量：
+   空框一离开焦点必回胶囊，不会再出现卡在圆角矩形回不去的情况（2026-09-17）。 */
+.smartbox { --cap-bar: 44px;      /* capbar 行高，胶囊态按它整行上叠 */
             --cap-left: 52px;     /* 胶囊态左端文件钮让出的宽度 */
             --cap-right: 60px;    /* 胶囊态右端发送钮让出的宽度（含 ::before 扩出来的命中区） */
             --t-morph: 110ms;
-            position: relative;
-            contain: layout paint;   /* 形变每帧只重排/重绘这块，不牵连上面的花冠和条目列表 */
             display: flex; flex-direction: column;
             border: 1px solid var(--border-strong); border-radius: var(--radius-pill);
             background: linear-gradient(165deg, rgba(56, 39, 17, .58) 0%, rgba(24, 16, 8, .92) 100%);
             padding: 5px 6px;
             box-shadow: 0 10px 34px rgba(0, 0, 0, .45), inset 0 1px 0 rgba(255, 225, 160, .07);
             transition: border-radius var(--t-morph) var(--ease),
-                        padding-bottom var(--t-morph) var(--ease),
                         border-color var(--t-fast), box-shadow var(--t-fast); }
-.smartbox.open { border-radius: 30px; padding-bottom: calc(var(--cap-bar) + 5px); }
+.smartbox.open { border-radius: 30px; }
 .smartbox:focus-within { border-color: var(--rose-deep);
                          box-shadow: 0 0 0 3px rgba(226, 176, 74, .12),
                                      0 8px 30px rgba(226, 176, 74, .10); }
@@ -225,21 +222,25 @@ label { display: block; font-size: var(--fs-small); color: var(--text-2); margin
 .smartbox textarea { flex: 1; min-width: 0; border: none; box-shadow: none; resize: none;
                      min-height: var(--cap-bar); max-height: 220px;
                      padding: 10px 12px; line-height: 24px;
-                     background: transparent; color: var(--text); caret-color: var(--accent); }
+                     background: transparent; color: var(--text); caret-color: var(--accent);
+                     transition: padding-left calc(var(--t-morph) * .55) var(--ease)
+                                            calc(var(--t-morph) * .45),
+                                 padding-right calc(var(--t-morph) * .55) var(--ease)
+                                             calc(var(--t-morph) * .45); }
 .smartbox textarea:focus { box-shadow: none; }
-/* 占位提示只在没人动它的胶囊态露脸：一展开立刻隐掉（不做淡出，留着反而会在形变头几十
-   毫秒里跟落下来的文件钮重叠），离开焦点回到胶囊时再出现 */
-.smartbox textarea::placeholder { color: #8a7554; }
+/* 占位提示只在没人动它的胶囊态露脸：一点进来就淡掉，展开的那一行留给用户自己的字 */
+.smartbox textarea::placeholder { color: #8a7554; transition: color var(--t-fast) var(--ease); }
 .smartbox.open textarea::placeholder { color: transparent; }
-/* 胶囊态：文字行两端让给钉在同一行位置上的文件钮与发送钮。这一步不渐变动——展开时框里
-   要么没字（只有刚消失的占位提示），要么已经落定了，逐帧重排文字换行没有意义。 */
+/* 胶囊态：文字行两端让给叠在同一行的文件钮与发送钮。让位晚起步（延 45%、走 55%）：
+   --ease 前段快，按钮在 45% 那一点已经离开字形带，此后收让位既不会把文字压在按钮底下，
+   也不会在框停住之后还留一段慢慢爬的尾巴（总时长只有 --t-morph，钉帧量过 clip）。 */
 .smartbox:not(.open) textarea { padding-left: var(--cap-left); padding-right: var(--cap-right); }
-/* 下排：钉在框底边，文件钮在左、发送钮在右，中间放链接胶囊（多了这行不换行，横向滚） */
-.capbar { position: absolute; left: 6px; right: 6px; bottom: 5px;
-          display: flex; align-items: center; gap: 6px; height: var(--cap-bar); padding: 0 2px; }
+/* 下排：文件钮在左、发送钮在右，中间放链接胶囊（胶囊多了一行装不下就横向滚） */
+.capbar { display: flex; align-items: center; gap: 6px; height: var(--cap-bar); padding: 0 2px;
+          transition: margin-top var(--t-morph) var(--ease); }
 /* 胶囊态整条 capbar 压在文字行上，它本身不能把点在输入框上的鼠标吃掉（实测点在左半边
    命中的是 capbar）；只让两个按钮重新接收点击，空的胶囊区顺带也不响应 */
-.smartbox:not(.open) .capbar { pointer-events: none; }
+.smartbox:not(.open) .capbar { margin-top: calc(-1 * var(--cap-bar)); pointer-events: none; }
 .smartbox:not(.open) .capbar .uploadpick,
 .smartbox:not(.open) .capbar .capsubmit { pointer-events: auto; }
 .chipzone { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0;
@@ -274,9 +275,8 @@ label { display: block; font-size: var(--fs-small); color: var(--text-2); margin
                          width: 18px; height: 18px; border-radius: 50%;
                          border: 2px solid rgba(36, 23, 3, .3); border-top-color: var(--on-accent);
                          animation: rot .8s linear infinite; }
-/* 采集框下面的状态行（录音摘要 / 上传进度）：没内容时整行撤走，不留一条空高 */
-.capmeta { display: flex; align-items: center; gap: 8px; padding: 6px 12px 0; min-height: 0; }
-.capmeta:not(:has(span:not(:empty))) { display: none; }
+.capmeta { display: flex; align-items: center; gap: 8px; padding: 0 12px; min-height: 0; }
+.capmeta:not(:has(span:not(:empty))) { height: 0; overflow: hidden; }
 /* —— 链接/文件/录音 chips —— */
 .chiprow { display: flex; flex-wrap: wrap; gap: 6px; padding: 4px 14px 8px; }
 .chip { display: inline-flex; align-items: center; gap: 4px; background: rgba(243, 233, 210, .06);
