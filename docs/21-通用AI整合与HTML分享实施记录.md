@@ -123,14 +123,24 @@
 - 静态检查是执行契约与找错，不是任意 JS 的安全证明；真实隔离靠 sandbox、CSP、
   不透明源与 runner 的网络命名空间。
 
-## 4. 启用步骤（尚未执行）
+## 4. 启用状态与剩下的步骤
 
-1. 备份数据库，应用迁移（`SHARE_ENABLED=false` 下先上线表结构）。
-2. 构建并跑一次 runner 镜像的合成样本：`docker compose build share_runner`
-   → `node src/cli.mjs check --task samples/rich/task.json`（容器内）。
-3. 配置分享域名、DNS、Caddy 片段与日志脱敏，确认不进认证 Cookie 中继。
-4. 用授权模型配置完成 §6.5.6 的真实缓存验证与 §16 针对性验收。
-5. 对测试账号开启 `SHARE_ENABLED`，跑过四类真实领域材料后再正式启用。
+已做（2026-09-21）：
+1. 迁移 `f1d3b5c7e9a2` 已随自动部署应用到生产库（公网 `/s/{无效令牌}` 返回
+   不可用页而不是 500，可证分享表已存在）。
+2. `deploy/docker-compose.yml` 里 api 与 worker 设 `SHARE_ENABLED: "true"`，
+   Web 生成入口随之开放。
+3. 服务器 `deploy/.env` 设 `COMPOSE_PROFILES=share`，让 `share_worker` 与
+   `share_runner` 参与构建与启动；启用前它们不进部署路径。
+
+仍待做：
+1. 用授权模型配置完成 §6.5.6 的真实多轮缓存命中验证（A39）与 §16 针对性验收。
+2. 记录 2GB 机器上 runner 的真实内存峰值与 ASR 同时运行时的表现，再决定
+   `mem_limit` 与是否升到 4GB。
+3. 需要公开分享链接时才配独立可注册域名、DNS 与 Caddy 片段；只用「下载 HTML」
+   不需要这一步，未配置时点「分享」会得到明确的「还没有配置独立的分享站点」提示，
+   私有预览与下载不受影响。
+4. 四类真实领域材料（专业概念整合、中医比较、数学讲解、跨领域）的人工内容复核。
 
 回滚只关新任务与新发布入口；已发布作品可继续由只读分享路径服务，
 不删除已保存作品、来源快照，也不立即 downgrade 数据表。
