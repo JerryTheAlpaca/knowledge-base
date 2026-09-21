@@ -956,12 +956,13 @@
       <div class="stage-dock">
         <div class="stage-status" id="stageStatus" hidden></div>
         <div class="stage-actions" id="stageActions" hidden></div>
-        <div class="smartbox open">
+        <p class="small" id="stageHint"></p>
+        <!-- 与首页采集框同一套两态：没字是胶囊，一打字长成圆角矩形（.open 由 shares.js 挂） -->
+        <div class="smartbox" id="stageBox">
           <div class="capmain">
             <textarea id="stageInput" rows="1" placeholder="说说你想做成什么样……" aria-label="对 AI 说"></textarea>
           </div>
           <div class="capbar">
-            <span class="small" id="stageHint"></span>
             <span class="spacer"></span>
             <button class="capsubmit" id="stageSend" aria-label="发送" title="发送">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"

@@ -277,7 +277,7 @@ function startDraft(ids) {
   pvOpen = false; pvDoc = null; pvDocKey = "";
   lastRevisionCount = 0;
   stopPolling();
-  $("stageInput").value = "";
+  resetStageInput();
   $("stageTitle").textContent = "分享创作";
   $("stageDelete").hidden = true;
   renderThread();
@@ -594,6 +594,7 @@ async function openWork(shareId, runId, replaceUrl) {
   } catch (e) { /* 忽略 */ }
   pvOpen = false; pvDoc = null; pvDocKey = "";
   lastRevisionCount = 0;
+  resetStageInput();
   await refreshWork();
   startPolling();
   $("stageInput").focus();
@@ -703,6 +704,14 @@ function autosize() {
   const t = $("stageInput");
   t.style.height = "";
   t.style.height = Math.min(t.scrollHeight, 220) + "px";
+  // 没字就是胶囊，一打字长成圆角矩形：跟首页采集框同一套两态
+  const box = $("stageBox");
+  if (box) box.classList.toggle("open", !!t.value.trim());
+}
+
+function resetStageInput() {
+  $("stageInput").value = "";
+  autosize();
 }
 
 async function onSend() {
@@ -837,6 +846,10 @@ export function initShares(navigator) {
   const input = $("stageInput");
   if (input) {
     input.addEventListener("input", autosize);
+    // 胶囊⇄矩形这一步会让文字重新折行，中途量的 scrollHeight 偏大，形变落定再量一次
+    input.addEventListener("transitionend", (e) => {
+      if (e.propertyName === "padding-right") autosize();
+    });
     // 回车发送、Shift+回车换行：和首页采集框一致的低位摩擦
     input.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {

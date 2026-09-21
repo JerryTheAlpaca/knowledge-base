@@ -728,7 +728,10 @@ body.share-open .dock, body.share-open .drawer { display: none; }
 .stage-status .reason { font-size: var(--fs-small); color: var(--warn); }
 .stage-actions { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .stage-actions[hidden] { display: none; }
-.stage-dock .small { padding: 0 4px; }
+/* 对话输入框：左端没有文件钮，胶囊态不用为它让出那 52px */
+#stageBox { --cap-left: 14px; }
+#stageHint { margin: 0; padding: 0 4px; }
+#stageHint:empty { display: none; }
 
 /* —— 以前和 AI 的对话 —— */
 .conv-note { flex: none; margin: 0; font-size: var(--fs-small); color: var(--text-2); }
