@@ -205,7 +205,7 @@ label { display: block; font-size: var(--fs-small); color: var(--text-2); margin
 .smartbox { --cap-bar: 44px;      /* capbar 行高，胶囊态按它整行上叠 */
             --cap-left: 52px;     /* 胶囊态左端文件钮让出的宽度 */
             --cap-right: 60px;    /* 胶囊态右端发送钮让出的宽度（含 ::before 扩出来的命中区） */
-            --t-morph: 140ms;
+            --t-morph: 110ms;
             display: flex; flex-direction: column;
             border: 1px solid var(--border-strong); border-radius: var(--radius-pill);
             background: linear-gradient(165deg, rgba(56, 39, 17, .58) 0%, rgba(24, 16, 8, .92) 100%);
@@ -228,7 +228,9 @@ label { display: block; font-size: var(--fs-small); color: var(--text-2); margin
                                  padding-right calc(var(--t-morph) * .55) var(--ease)
                                              calc(var(--t-morph) * .45); }
 .smartbox textarea:focus { box-shadow: none; }
-.smartbox textarea::placeholder { color: #8a7554; }
+/* 占位提示只在没人动它的胶囊态露脸：一点进来就淡掉，展开的那一行留给用户自己的字 */
+.smartbox textarea::placeholder { color: #8a7554; transition: color var(--t-fast) var(--ease); }
+.smartbox.open textarea::placeholder { color: transparent; }
 /* 胶囊态：文字行两端让给叠在同一行的文件钮与发送钮。让位晚起步（延 45%、走 55%）：
    --ease 前段快，按钮在 45% 那一点已经离开字形带，此后收让位既不会把文字压在按钮底下，
    也不会在框停住之后还留一段慢慢爬的尾巴（总时长只有 --t-morph，钉帧量过 clip）。 */
@@ -247,7 +249,8 @@ label { display: block; font-size: var(--fs-small); color: var(--text-2); margin
             transition: none; }
 /* 胶囊比按钮行晚一拍淡进来，避免粘贴多链接时胶囊从文字上擦过去。淡入挂在 chipzone
    自己身上：胶囊每次输入都由 innerHTML 重建，动画放子元素上会一路闪。 */
-.smartbox.open .chipzone { opacity: 1; transition: opacity 90ms var(--ease) 55ms; }
+.smartbox.open .chipzone { opacity: 1; transition: opacity calc(var(--t-morph) * .45) var(--ease)
+                                       calc(var(--t-morph) * .55); }
 .chipzone::-webkit-scrollbar { display: none; }
 /* 一条链接一个胶囊，横向排成一行，多了就横滚：行高恒定，多贴几条链接不会把框撑得抖动 */
 .smartbox .chiprow { padding: 0; flex: none; flex-wrap: nowrap; }
