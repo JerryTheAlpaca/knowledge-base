@@ -165,7 +165,9 @@ services:
         # 约 170KiB/s（首次拉取要 1 小时以上），镜像站约 15MB/s
         PLAYWRIGHT_BASE_IMAGE: mcr.m.daocloud.io/playwright:v1.60.0-noble
     restart: unless-stopped
-    command: ["node", "src/cli.mjs", "runner", "--spool", "/spool"]
+    # 镜像的 ENTRYPOINT 已经是 `node src/cli.mjs`，这里只给参数；
+    # 再写一遍完整命令会被当成子命令名，落进用法分支退出
+    command: ["runner", "--spool", "/spool"]
     network_mode: "none"          # 生成代码构建/检查期间不得访问公网、内网或云元数据
     read_only: true               # 根文件系统只读，固定入口与依赖都在镜像里
     tmpfs:
