@@ -654,8 +654,17 @@ def _keep_notes(synthesis: dict, references: list[dict]) -> list[str]:
 def spool_dirs(settings: Settings) -> Path:
     root = Path(settings.share_spool_dir)
     for sub in (".tmp", "ready", "working", "done", "failed"):
-        (root / sub).mkdir(parents=True, exist_ok=True)
+        _spool_dir(root / sub)
     return root
+
+
+def _spool_dir(path: Path) -> None:
+    """交接目录被两个不同 uid 的容器共用：目录本身要两端都可写（docs/20 §14.3）。"""
+    path.mkdir(parents=True, exist_ok=True)
+    try:
+        path.chmod(0o777)
+    except PermissionError:  # 属主是 runner 镜像里的用户，改不动也能写
+        pass
 
 
 def handoff_to_runner(session_factory, plan: SharePlan) -> None:
@@ -675,8 +684,9 @@ def handoff_to_runner(session_factory, plan: SharePlan) -> None:
     root = spool_dirs(settings)
     staging = Path(tempfile.mkdtemp(prefix="task-", dir=str(root / ".tmp")))
     try:
-        (staging / "input").mkdir(parents=True, exist_ok=True)
-        (staging / "assets").mkdir(parents=True, exist_ok=True)
+        _spool_dir(staging)
+        _spool_dir(staging / "input")
+        _spool_dir(staging / "assets")
         (staging / "input" / "page_source.json").write_bytes(canonical(page_source))
         asset_entries = []
         for asset in checkpoint.get("asset_catalog") or []:

@@ -25,6 +25,12 @@ COPY samples ./samples
 # 由部署后 `share_runner doctor` 实测，构建期是 root、验不到同一条路径）
 RUN node -e "import('./src/manifest.mjs').then(async m => { await m.loadManifest(); console.log('manifest ok'); })"
 
+# 空数据卷首次挂载时按镜像里同名目录的属主与权限初始化。spool 要同时被服务端
+# worker 容器（另一个 uid）写入，所以在这里预先建好并对两端放开写权限。
+RUN mkdir -p /spool/ready /spool/working /spool/done /spool/failed /spool/.tmp \
+ && chown -R pwuser:pwuser /spool \
+ && chmod -R 0777 /spool
+
 # 基础镜像里的 pwuser 已具备可用的 Chromium sandbox
 USER pwuser
 ENV NODE_ENV=production

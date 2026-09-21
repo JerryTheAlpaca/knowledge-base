@@ -2,6 +2,7 @@
 // runner 固定入口：不接受模型给出的目录、文件名或命令行参数（docs/20 §14.3）。
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { renderTask } from './build.mjs';
 import { checkInBrowser } from './browser.mjs';
@@ -86,15 +87,17 @@ if (command === 'seal') {
 } else if (command === 'doctor') {
   const man = await loadManifest();
   let browser = 'unavailable';
+  let detail = null;
   try {
-    const probe = await checkInBrowser({
-      htmlFile: await fixtureBlank(), outDir: await tmpDir(), interactions: [], maxScreenshots: 1,
-    });
-    browser = probe.ok ? 'ok' : `degraded:${probe.diagnostics.map((d) => d.code).join(',')}`;
+    // 自检走真实交付件：空白页没有生成子页面，等不到 ready 信号，测不出可用与否
+    const res = await checkOnly(taskPath ?? path.join(repoRoot(), 'samples', 'prose', 'task.json'), await tmpDir());
+    browser = res.ok ? 'ok' : `degraded:${res.diagnostics.map((d) => d.code).join(',')}`;
+    detail = res.diagnostics;
   } catch (err) {
     browser = `error:${err.code ?? err.message}`;
   }
-  console.log(JSON.stringify({ runtime_version: man.runtimeVersion, imports: [...man.imports.keys()], browser }));
+  console.log(JSON.stringify({ runtime_version: man.runtimeVersion, imports: [...man.imports.keys()], browser, detail }));
+  if (browser !== 'ok') process.exitCode = 1;
 } else {
   console.log('用法：node src/cli.mjs <seal|build|check|runner|doctor> [--task 路径] [--out 目录] [--spool 目录] [--once]');
   process.exitCode = 2;
@@ -105,11 +108,6 @@ async function tmpDir() {
   return path.join(os.tmpdir(), `kb-share-doctor-${Date.now()}`);
 }
 
-async function fixtureBlank() {
-  const { writeFile: wf, mkdir: mk } = await import('node:fs/promises');
-  const dir = await tmpDir();
-  await mk(dir, { recursive: true });
-  const file = path.join(dir, 'blank.html');
-  await wf(file, '<!doctype html><meta charset="utf-8"><title>blank</title><p>runner 自检占位页面</p>');
-  return file;
+function repoRoot() {
+  return path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 }
