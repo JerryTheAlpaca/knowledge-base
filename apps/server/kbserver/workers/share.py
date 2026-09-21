@@ -355,9 +355,11 @@ def _cache_policy(plan: SharePlan, conv: ShareConversation | None) -> dict:
 
 
 def call_model(session_factory, plan: SharePlan, *, step_key: str,
-               messages: list[ConversationMessage], conv: ShareConversation | None,
-               max_output_tokens: int) -> tuple[dict, str]:
+               messages: list[ConversationMessage], conv: ShareConversation | None) -> tuple[dict, str]:
     """一次带 ProviderOperation 与检查点的模型调用，返回 (解析后的 JSON, 原始文本)。
+
+    不设 max_tokens：思考型模型的思维链与正文共用输出额度，写死小预算会在正文
+    出现之前必然截断（实测澄清 1200 全花在思考上）。被长度截断仍然判为无效。
 
     同一轮只允许一个在途调用；已发出但没收到响应的调用标 unknown_outcome，
     恢复时不盲目重发（docs/20 §13.1、验收 A20）。
@@ -394,7 +396,7 @@ def call_model(session_factory, plan: SharePlan, *, step_key: str,
     )
     repo.heartbeat(session_factory, plan.run_id, plan.lease_token)
     result = provider.generate_conversation(ConversationRequest(
-        messages=messages, max_output_tokens=max_output_tokens, temperature=0.2,
+        messages=messages, temperature=0.2,
         json_mode=True, cache_policy=_cache_policy(plan, conv),
     ))
     repo.heartbeat(session_factory, plan.run_id, plan.lease_token)
@@ -461,8 +463,8 @@ def clarify(session_factory, plan: SharePlan) -> None:
     request = request_messages(prefix=messages, history=[],
                               tail=[ConversationMessage(role="user", content=tail)])
     try:
-        doc, _raw = call_model(session_factory, plan, step_key=f"clarify-{round_no}", messages=request,
-                               conv=conv, max_output_tokens=settings.share_clarification_output_tokens)
+        doc, _raw = call_model(session_factory, plan, step_key=f"clarify-{round_no}",
+                               messages=request, conv=conv)
         errors = sharing.validate_clarification(doc, max_questions=settings.share_max_questions_per_round)
         if errors:
             # 每次回答默认只触发 1 次澄清调用，输出格式错误最多修复 1 次（§14.1）
@@ -474,8 +476,7 @@ def clarify(session_factory, plan: SharePlan) -> None:
                     ConversationMessage(role="user", content=share_prompts.clarification_repair_tail(errors)),
                 ])
             doc, _raw = call_model(session_factory, plan, step_key=f"clarify-{round_no}-fix",
-                                   messages=repair_request, conv=conv,
-                                   max_output_tokens=settings.share_clarification_output_tokens)
+                                   messages=repair_request, conv=conv)
             errors = sharing.validate_clarification(doc, max_questions=settings.share_max_questions_per_round)
             if errors:
                 raise OutputInvalid("clarification", errors)
@@ -524,7 +525,6 @@ def clarify(session_factory, plan: SharePlan) -> None:
 
 
 def synthesize(session_factory, plan: SharePlan) -> None:
-    settings = plan.settings
     conv, messages = _conversation(session_factory, plan, "content",
                                    system=share_prompts.CONTENT_SYSTEM,
                                    pack_text_value=share_prompts.pack_text(plan.pack))
@@ -534,7 +534,7 @@ def synthesize(session_factory, plan: SharePlan) -> None:
                               tail=[ConversationMessage(role="user", content=tail)])
     try:
         doc, _raw = call_model(session_factory, plan, step_key="synthesis", messages=request,
-                               conv=conv, max_output_tokens=settings.share_synthesis_output_tokens)
+                               conv=conv)
         errors = sharing.validate_synthesis(doc, pack=plan.pack)
         if errors:
             raise OutputInvalid("synthesis", errors)
@@ -599,8 +599,7 @@ def generate_page(session_factory, plan: SharePlan, *, repair: bool = False) -> 
     request = request_messages(prefix=messages, history=[],
                               tail=[ConversationMessage(role="user", content=tail)])
     try:
-        doc, _raw = call_model(session_factory, plan, step_key=step, messages=request, conv=conv,
-                               max_output_tokens=settings.share_page_output_tokens)
+        doc, _raw = call_model(session_factory, plan, step_key=step, messages=request, conv=conv)
         errors = sharing.validate_page_source(
             doc, allowed_imports=allowed_imports(settings),
             known_asset_ids={a["asset_id"] for a in assets},

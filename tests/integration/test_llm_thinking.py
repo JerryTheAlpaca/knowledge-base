@@ -4,6 +4,9 @@ thinking_mode 能力键：显式 True/False 时发送 {"thinking": {"type": ...}
 未设置时不带该字段（沿用供应商默认行为，兼容非 DeepSeek 服务）。
 thinking_effort 能力键：开思考时随请求发送 reasoning_effort（low/high/max），
 关闭思考或未设置时不发送。
+
+会话调用默认不带 max_tokens：思考模式的思维链与正文共用输出额度，写死小预算
+会在正文出现之前截断，长度上限交给服务商。
 """
 from __future__ import annotations
 
@@ -11,7 +14,12 @@ import json
 
 import httpx
 
-from kbserver.providers.llm import GenerateRequest, OpenAICompatibleProvider
+from kbserver.providers.llm import (
+    ConversationMessage,
+    ConversationRequest,
+    GenerateRequest,
+    OpenAICompatibleProvider,
+)
 
 
 def _capture_transport(bodies: list[dict]) -> httpx.MockTransport:
@@ -79,3 +87,27 @@ def test_thinking_effort_sent_only_when_enabled():
     _generate({"thinking_mode": True}, bodies3)
     assert bodies3[0]["thinking"] == {"type": "enabled"}
     assert "reasoning_effort" not in bodies3[0]
+
+
+def _conversation(caps: dict, bodies: list[dict], *, max_output_tokens: int | None = None) -> None:
+    provider = OpenAICompatibleProvider(
+        endpoint="https://api.deepseek.com/v1",
+        api_key="sk-test-1234567890",
+        model="deepseek-chat",
+        capabilities=caps,
+        transport=_capture_transport(bodies),
+    )
+    provider.generate_conversation(ConversationRequest(
+        messages=[ConversationMessage(role="user", content="u")],
+        max_output_tokens=max_output_tokens, json_mode=True,
+    ))
+
+
+def test_conversation_leaves_output_ceiling_to_provider():
+    bodies: list[dict] = []
+    _conversation({"thinking_mode": True}, bodies)
+    assert "max_tokens" not in bodies[0]
+
+    bodies2: list[dict] = []
+    _conversation({"thinking_mode": True}, bodies2, max_output_tokens=4096)
+    assert bodies2[0]["max_tokens"] == 4096

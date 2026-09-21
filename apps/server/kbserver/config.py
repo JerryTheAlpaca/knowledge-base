@@ -129,9 +129,6 @@ class Settings:
     share_max_items: int = int(os.environ.get("SHARE_MAX_ITEMS", "20"))
     share_max_instructions_chars: int = int(os.environ.get("SHARE_MAX_INSTRUCTIONS_CHARS", "4000"))
     share_max_questions_per_round: int = int(os.environ.get("SHARE_MAX_QUESTIONS_PER_ROUND", "3"))
-    share_clarification_output_tokens: int = int(os.environ.get("SHARE_CLARIFICATION_OUTPUT_TOKENS", "1200"))
-    share_synthesis_output_tokens: int = int(os.environ.get("SHARE_SYNTHESIS_OUTPUT_TOKENS", "8000"))
-    share_page_output_tokens: int = int(os.environ.get("SHARE_PAGE_OUTPUT_TOKENS", "16000"))
     share_max_waiting_drafts_per_user: int = int(os.environ.get("SHARE_MAX_WAITING_DRAFTS_PER_USER", "20"))
     share_context_compact_ratio: float = float(os.environ.get("SHARE_CONTEXT_COMPACT_RATIO", "0.8"))
     share_max_source_chars: int = int(os.environ.get("SHARE_MAX_SOURCE_CHARS", "200000"))
@@ -227,9 +224,6 @@ def get_settings() -> Settings:
         share_max_items=int(os.environ.get("SHARE_MAX_ITEMS", "20")),
         share_max_instructions_chars=int(os.environ.get("SHARE_MAX_INSTRUCTIONS_CHARS", "4000")),
         share_max_questions_per_round=int(os.environ.get("SHARE_MAX_QUESTIONS_PER_ROUND", "3")),
-        share_clarification_output_tokens=int(os.environ.get("SHARE_CLARIFICATION_OUTPUT_TOKENS", "1200")),
-        share_synthesis_output_tokens=int(os.environ.get("SHARE_SYNTHESIS_OUTPUT_TOKENS", "8000")),
-        share_page_output_tokens=int(os.environ.get("SHARE_PAGE_OUTPUT_TOKENS", "16000")),
         share_max_waiting_drafts_per_user=int(os.environ.get("SHARE_MAX_WAITING_DRAFTS_PER_USER", "20")),
         share_context_compact_ratio=float(os.environ.get("SHARE_CONTEXT_COMPACT_RATIO", "0.8")),
         share_max_source_chars=int(os.environ.get("SHARE_MAX_SOURCE_CHARS", "200000")),

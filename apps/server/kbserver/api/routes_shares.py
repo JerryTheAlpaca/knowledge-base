@@ -92,6 +92,8 @@ def _run_out(run: ShareRun | None) -> dict | None:
         "status_text": sharing.status_text(run.state, run.stage),
         "reason_code": run.reason_code,
         "reason_text": sharing.reason_text(run.reason_code),
+        # 笼统提示之外把实际原因带给界面，否则用户只看到「没有通过检查」
+        "error_detail": (run.error_detail or "")[:200] or None,
         "brief_version": run.brief_version,
         "confirmed_brief_version": run.confirmed_brief_version,
         "pending_round_id": run.pending_round_id,

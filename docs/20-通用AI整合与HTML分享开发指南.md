@@ -385,6 +385,7 @@ flowchart LR
 - `interactions` 是描述性测试数据，仅允许 click／fill／select／set_range 及有限 DOM 断言，不是待执行脚本。数量、步数和选择器长度有上限。
 - 模型不得生成 package.json、构建配置、安装命令、浏览器检查脚本或服务器代码。
 - 返回被输出长度截断时视为无效结果，不能补一个 JSON 括号后当成成功。可在有限修复内要求精简；持续超限如实失败。
+- 本系统不向服务商传 `max_tokens`：思考型模型的思维链与正文共用输出额度，按步骤写死小预算会在正文出现之前必然截断（实测澄清用 1200 时，28K 输入的那次调用把整份额度花在思考上、判为截断失败）。上限交给服务商按其默认值处理（DeepSeek 非思考 8K、思考 64K），控制篇幅靠提示词约定和修复轮次。
 
 ### 6.4 让 AI 知道可用环境
 
@@ -951,7 +952,6 @@ GC 的“核对没有引用”和“删除物理对象”之间也要防止新�
 | `SHARE_MAX_ITEMS` | 20 | 1 至 20 篇，可配置，不检查同主题 |
 | `SHARE_MAX_INSTRUCTIONS_CHARS` | 4000 | 自由要求长度 |
 | `SHARE_MAX_QUESTIONS_PER_ROUND` | 3 | 每轮最多的问题数 |
-| `SHARE_CLARIFICATION_OUTPUT_TOKENS` | 1200 | 简短理解、问题和摘要的初始输出预算，按实际模型能力验证 |
 | `SHARE_MAX_WAITING_DRAFTS_PER_USER` | 20 | 等待用户的草稿数量，独立于执行并发 |
 | `SHARE_CONTEXT_COMPACT_RATIO` | 0.8 | 以可用输入窗口为基准的初始压缩阈值，先预留输出 |
 | `SHARE_MAX_SOURCE_CHARS` | 200000 | 所选可读正文总字符上限；与模型上下文上限分别检查 |

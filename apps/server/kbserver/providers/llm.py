@@ -90,7 +90,8 @@ class GenerateRequest:
 @dataclass
 class ConversationRequest:
     messages: list[ConversationMessage]
-    max_output_tokens: int = 2000
+    # None＝不带 max_tokens，由服务商按其默认值处理（思考模式的默认值远高于非思考）
+    max_output_tokens: int | None = None
     temperature: float | None = None
     json_mode: bool = False
     # 调用方（分享编排器）用应用专用 HMAC 派生后传入；本适配器只按能力白名单发送
@@ -246,13 +247,15 @@ class OpenAICompatibleProvider:
             fields["prompt_cache_retention"] = retention
         return fields
 
-    def _body(self, messages: list[dict], *, max_output_tokens: int, temperature: float | None,
+    def _body(self, messages: list[dict], *, max_output_tokens: int | None,
+              temperature: float | None,
               json_mode: bool, cache_policy: dict | None = None) -> dict:
         body: dict = {
             "model": self.model,
             "messages": messages,
-            "max_tokens": max_output_tokens,
         }
+        if max_output_tokens is not None:
+            body["max_tokens"] = max_output_tokens
         if temperature is not None and self.allow_temperature:
             body["temperature"] = temperature
         if json_mode and self.json_mode:
