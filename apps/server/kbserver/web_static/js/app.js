@@ -98,8 +98,16 @@ export function openSettings(cardId) {
   }
 }
 
+// 顶层菜单只有这两个：账号菜单与详情页「更多操作」。它们和舞台/抽屉不在同一层，
+// 收菜单时要给这次 Escape 打记号，别让抽屉跟着一起收（与 shares.js、item-list.js
+// 共用 95c64ff 立下的 e.kbEscTaken 约定）
+function menuIsOpen() {
+  return !$("userMenu").hidden || !$("moreMenu").hidden;
+}
+
 function closeMenus() {
   $("userMenu").hidden = true;
+  $("moreMenu").hidden = true;   // 详情页「更多操作」也归这里，Esc 与点外部才一起有出口
 }
 
 // 品牌「金蔷薇」：任何二级视图（详情/设置/分享舞台）或展开的抽屉下一键回到金蔷薇主页面
@@ -170,8 +178,12 @@ function wireTopbar() {
   });
   document.addEventListener("keydown", (e) => {
     // 弹窗的 Escape/点遮罩由共用 modal 模块负责，这里不重复关闭；
-    // 分享舞台和对话记录的 Escape 退出在 shares.js 里
-    if (e.key === "Escape" && !isModalOpen()) closeMenus();
+    // 分享舞台和对话记录的 Escape 退出在 shares.js 里，它在捕获阶段先收，收了就给
+    // 这发按键打记号；这里读到记号就不再动菜单，抽屉那条同样读这个记号
+    if (e.key === "Escape" && !isModalOpen() && !e.kbEscTaken && menuIsOpen()) {
+      closeMenus();
+      e.kbEscTaken = true;   // 一次按键只收一层：菜单收掉，底下的舞台/抽屉别跟着收
+    }
     if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
       // 舞台上那副输入框也是首页结构的一部分，别把对话当成采集提交出去
       if (!$("appView").hidden && !$("homeView").hidden && !isSharesOpen()) submitCapture();

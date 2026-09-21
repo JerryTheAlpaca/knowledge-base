@@ -220,6 +220,11 @@ async function fetchSearch(text) {
   return r.items || [];
 }
 
+// 行画完之后的统一接缝：需要往行上补界面状态的（分享多选态的点亮）只在这里挂一次，
+// 不要在轮询、切回标签页、搜索各自的调用点补一遍——重画一次就把状态抹掉了（审查 U-01）
+let afterRowsRendered = null;
+export function onRowsRendered(fn) { afterRowsRendered = fn; }
+
 export async function refreshItems() {
   if (refreshing) return;
   refreshing = true;
@@ -240,6 +245,7 @@ export async function refreshItems() {
     // 「有任务在跑」由服务端给（workflow.has_active_job），前端不猜状态
     workingActive = items.some((it) => it.workflow && it.workflow.has_active_job);
     updateEmptyState(items);
+    if (afterRowsRendered) afterRowsRendered();
   } catch (e) {
     if (!(e && e.net && document.visibilityState === "hidden")) showErr(e);
   } finally {

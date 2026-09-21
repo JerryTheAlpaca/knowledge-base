@@ -87,6 +87,9 @@ export function closeDetail() {
   detailExiting = false;
   setListPollPaused(false);
   $("detailView").hidden = true;
+  // 「更多操作」跟着详情页一起收：菜单留着是 hidden=false 的空状态，
+  // 顶部那层 Esc 会以为还有菜单要收，把该收抽屉的那一发吃掉
+  $("moreMenu").hidden = true;
   $("homeMain").hidden = false;
   if (onboardingWasVisible) $("onboardingHost").hidden = false;
   window.scrollTo({ top: 0 });

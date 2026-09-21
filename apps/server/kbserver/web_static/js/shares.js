@@ -6,7 +6,7 @@
 // 预览走「主站鉴权取数据 → 可信容器设置 srcdoc」，iframe 只开 allow-scripts。
 
 import { $, api, esc, fmtShort, showErr, toast, isModalOpen, dismissToast, sanitizeFilename } from "./api.js";
-import { setListPollPaused, refreshItems } from "./item-list.js";
+import { setListPollPaused, refreshItems, onRowsRendered } from "./item-list.js";
 import { currentDetailId, closeDetail, openDetail } from "./item-detail.js";
 
 const SELECTED_KEY = "kb.share.selected.v1";
@@ -20,6 +20,7 @@ let activeShareId = null;
 let activeRunId = null;
 let pollTimer = 0;
 let workCache = null;      // GET /v1/shares/{id} 的结果
+let shareLink = null;      // 分享链接：null 还没去取 / false 取不到 / 字符串就是可用链接
 let convCache = null;      // 对话与待答问题
 let lastThreadSig = "";
 let lastMsgCount = 0;
@@ -30,6 +31,8 @@ let sending = false;
 let qStep = 0;             // 当前待答轮里显示到第几题
 let qAns = new Map();      // question_id -> { opt, other }：切题/重画都从这份状态还原
 let qRoundId = null;       // qStep/qAns 属于哪一轮，换轮就清空
+let draftKey = null;       // 这一件新作品的幂等键：进草稿生成一次，超时重试复用同一把
+let draftKeySig = "";      // 键对应的请求内容；换了材料或改了说法才算另一件事，才换新键
 let go = (url, state) => {
   // state 里带 view：退出时靠它判断这条历史是我们压进去的，可以直接 back 回去
   try { history.pushState(state || {}, "", url); } catch (e) { /* 忽略 */ }
@@ -56,6 +59,9 @@ function setSelectMode(on) {
   }
   document.body.classList.toggle("share-selecting", on);
   if (!on) showSelMenu(false);
+  // 点亮标记每次都按 selected 重画：进多选时列表早就画好了，不补一次就只剩计数对得上。
+  // 退出多选不清类——发光写在 body.share-selecting 作用域里，作用域一撤就整层灭掉
+  syncRowMarks();
   renderSelectionBar();
 }
 
@@ -66,6 +72,8 @@ function toggleItem(itemId) {
   renderSelectionBar();
 }
 
+// 把 selected 摊到当前画出来的行上。列表每次重画都会经 onRowsRendered 回到这里一次，
+// 勾选/清空/进出多选态这几个改 selected 的地方也各自调，卡片就不会和计数分家
 function syncRowMarks() {
   document.querySelectorAll("ul.items li.item").forEach((li) => {
     li.classList.toggle("picked", selected.has(li.dataset.id));
@@ -88,6 +96,8 @@ function renderSelectionBar() {
 }
 
 function installSelection() {
+  // 列表重画只有一个出口，就在这里挂一次：轮询、切回标签页、搜索都不用在各自地方补标记
+  onRowsRendered(syncRowMarks);
   document.querySelectorAll("ul.items").forEach((ul) => {
     // 捕获阶段先于 item-list 的行点击（打开详情），选择模式下把点击改成勾选
     ul.addEventListener("click", (e) => {
@@ -96,6 +106,15 @@ function installSelection() {
       if (!li) return;
       e.preventDefault();
       // 同一元素上的其他监听（打开详情）也要拦住，否则点第二行时已经跳到详情
+      e.stopImmediatePropagation();
+      toggleItem(li.dataset.id);
+    }, true);
+    // 键盘走同一条路：勾选态里 Tab 到卡片按回车/空格是勾选，不是跳详情
+    ul.addEventListener("keydown", (e) => {
+      if (!selectMode || (e.key !== "Enter" && e.key !== " ")) return;
+      const li = e.target.closest("li.item");
+      if (!li || e.target !== li) return;
+      e.preventDefault();
       e.stopImmediatePropagation();
       toggleItem(li.dataset.id);
     }, true);
@@ -214,6 +233,11 @@ function anyOverlayOpen() {
   return $("shareStage") && (!$("shareStage").hidden || !$("sharesView").hidden);
 }
 
+// 舞台（那一件作品的对话）是不是开着：作品轮询只在开着时才继续排下一轮
+function stageIsOpen() {
+  return !!$("shareStage") && !$("shareStage").hidden;
+}
+
 function syncChrome() {
   const open = anyOverlayOpen();
   document.body.classList.toggle("share-open", open);
@@ -274,7 +298,8 @@ export function openWorkbench(itemIds) {
   const ids = itemIds && itemIds.length ? itemIds : selectedIds();
   if (!ids.length) { toast("先在「已收集」里勾几篇材料", { type: "warn" }); return; }
   draftIds = ids.slice(0, 30);
-  selected.clear(); saveSelected(); syncRowMarks(); renderSelectionBar();
+  // setSelectMode 里会把标记和条子一起重画，这里只改集合
+  selected.clear(); saveSelected();
   setSelectMode(false);
   go("/inbox?view=shares&new=1", { view: "shares" });
 }
@@ -283,7 +308,11 @@ function startDraft(ids) {
   mode = "draft";
   draftIds = ids && ids.length ? ids : draftIds;
   workCache = null; convCache = null; activeShareId = null; activeRunId = null;
+  shareLink = null;
   matsState = new Map();
+  // 一件新作品一把幂等键：这一份草稿里超时重试都用它，换到下一份草稿才换键
+  // （键在第一次真的发出去时现造，见 startCreation）
+  draftKey = null; draftKeySig = "";
   pvOpen = false; pvDoc = null; pvDocKey = "";
   lastRevisionCount = 0;
   stopPolling();
@@ -309,7 +338,7 @@ function threadSig() {
     convCache ? convCache.messages.map((m) => m.seq) : null,
     revisions().length, workCache && workCache.round
       ? [workCache.round.round_id, qStep] : null,
-    workCache ? workCache.share.status : null, pvOpen,
+    workCache ? [workCache.share.status, shareLink] : null, pvOpen,
   ]);
 }
 
@@ -431,8 +460,8 @@ function previewHTML() {
   const body = '<div class="pv-body"' + (pvOpen ? "" : " hidden") + ">" +
     '<iframe id="shareFrame" class="share-frame" sandbox="allow-scripts" title="作品预览"></iframe>' +
     (published
-      ? '<p class="share-link">已分享：<a id="shareLink" href="#" target="_blank" rel="noopener noreferrer">' +
-        '打开链接</a> <button class="btn ghost small" id="shareRevoke">撤销</button></p>'
+      ? '<p class="share-link">已分享：' + linkHTML() +
+        ' <button class="btn ghost small" id="shareRevoke">撤销</button></p>'
       : "") + "</div>";
   return '<div class="t-card"><h4>做好了，先看一眼 <span class="small num">v' + esc(latest.revision) + "</span></h4>" +
     '<div class="pv-row">' +
@@ -441,6 +470,16 @@ function previewHTML() {
     '  <a class="btn small" href="/v1/shares/' + esc(activeShareId) + "/revisions/" + latest.revision +
     '/download" download>下载 HTML</a></div>' +
     (pvOpen ? body : "") + "</div>";
+}
+
+// 分享链接不在作品详情里（详情只有 has_link 这个布尔），要单独问一次 /link。
+// 没拿到真链接之前不渲染指向 # 的空锚点：刷新后点了没反应，用户只会以为链接坏了。
+// 锚点文字固定「打开链接」，不在发布当场换成整串 URL——那一行会横着长出去（审查 U-02）
+function linkHTML() {
+  if (typeof shareLink === "string" && shareLink) {
+    return '<a href="' + esc(shareLink) + '" target="_blank" rel="noopener noreferrer">打开链接</a>';
+  }
+  return '<span class="muted">' + (shareLink === null ? "正在取链接…" : "链接不可用") + "</span>";
 }
 
 function wireThread() {
@@ -484,9 +523,22 @@ function wireStepper() {
   });
   const total = ((workCache && workCache.round && workCache.round.questions) || []).length;
   const prevBtn = step.querySelector(".q-prev");
-  if (prevBtn) prevBtn.onclick = () => { if (qStep > 0) { qStep -= 1; renderThread(); } };
+  if (prevBtn) prevBtn.onclick = () => { if (qStep > 0) { qStep -= 1; renderThread(); focusStep("prev"); } };
   const nextBtn = step.querySelector(".q-next");
-  if (nextBtn) nextBtn.onclick = () => { if (qStep < total - 1) { qStep += 1; renderThread(); } };
+  if (nextBtn) nextBtn.onclick = () => { if (qStep < total - 1) { qStep += 1; renderThread(); focusStep("next"); } };
+}
+
+// 切一题就是把整块 innerHTML 重写一遍，焦点掉回 body，键盘用户每切一题要从头 Tab。
+// 重画完把焦点放回这一题：刚才那个切换钮还在就用它，否则落到当前题的第一个可选项上。
+// preventScroll：这一层自己可滚，让浏览器顺手滚动会把画面顶一下（审查 U-05）
+function focusStep(which) {
+  const step = document.querySelector(".q-step");
+  if (!step) return;
+  const btn = step.querySelector(".q-" + which);
+  if (btn && !btn.disabled) { btn.focus({ preventScroll: true }); return; }
+  const openOther = step.querySelector(".q-other:not([hidden]) .q-other-input");
+  const target = openOther || step.querySelector(".t-q input");
+  if (target) target.focus({ preventScroll: true });
 }
 
 // ---------- 底部：状态、随状态出现的按钮、输入框 ----------
@@ -591,11 +643,16 @@ function blockedMats() {
 }
 
 async function startCreation(itemIds, instructions) {
+  // 幂等键跟着这件草稿走：超时后原样再按一次回车还是同一把键，服务端把已建成的那份
+  // 还回来，不会建第二个作品、扣两份预算。换了材料或改了说法才是另一件事，换新键，
+  // 否则服务端按「同键不同内容」挡回，用户反倒卡在这句上发不出去（审查 U-04）
+  const sig = JSON.stringify([itemIds, instructions]);
+  if (!draftKey || sig !== draftKeySig) { draftKey = crypto.randomUUID(); draftKeySig = sig; }
   try {
     const created = await api("/v1/shares", {
       method: "POST",
       body: { item_ids: itemIds, instructions },
-      idempotencyKey: newKey("share"),
+      idempotencyKey: draftKey,
     });
     draftIds = [];
     await openWork(created.share_id, created.run_id, true);
@@ -616,10 +673,6 @@ async function startCreation(itemIds, instructions) {
     }
     showErr(e);
   }
-}
-
-function newKey(prefix) {
-  return prefix + "-" + Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
 
 // ---------- 以前的对话 ----------
@@ -666,6 +719,7 @@ async function openWork(shareId, runId, replaceUrl) {
     else if (location.pathname + location.search !== url) history.pushState({ view: "shares" }, "", url);
   } catch (e) { /* 忽略 */ }
   pvOpen = false; pvDoc = null; pvDocKey = "";
+  shareLink = null;
   lastRevisionCount = 0;
   resetStageInput();
   await refreshWork();
@@ -677,7 +731,12 @@ async function refreshWork() {
   if (!activeShareId) return;
   try {
     workCache = await api("/v1/shares/" + encodeURIComponent(activeShareId));
-  } catch (e) { showErr(e); stopPolling(); return; }
+  } catch (e) {
+    // 离开舞台之后才回来的那一次：这件作品没人在看，别在别的页面上弹一条无关提示
+    if (stageIsOpen()) showErr(e);
+    stopPolling();
+    return;
+  }
   activeRunId = workCache.run ? workCache.run.run_id : null;
   if (activeRunId) {
     try {
@@ -689,8 +748,22 @@ async function refreshWork() {
   // 版本多了一个就是刚做好：预览自己展开，不用再去点
   if (revisions().length > lastRevisionCount) pvOpen = true;
   lastRevisionCount = revisions().length;
+  const askLink = shareLink === null && !!workCache.share;
   renderThread();
   renderDock();
+  // 作品详情只给 has_link，真链接要再问一次 /link：先画完再问，不为它多等一个来回；
+  // 问过这一次就有了，轮询的刷新不会再问（审查 U-02）
+  if (askLink) { await fetchShareLink(); renderThread(); }
+}
+
+async function fetchShareLink() {
+  if (!workCache.share.has_link) { shareLink = false; return; }
+  const id = activeShareId;
+  let out = null;
+  try { out = await api("/v1/shares/" + encodeURIComponent(id) + "/link"); }
+  catch (e) { out = null; }
+  if (activeShareId !== id) return;   // 取的这段时间里已经换了一件作品
+  shareLink = (out && out.url) ? out.url : false;
 }
 
 // ---------- 预览 / 下载 / 发布 ----------
@@ -718,11 +791,10 @@ async function publishWork() {
       method: "POST",
       body: { revision_id: list[list.length - 1].revision_id,
         expected_work_version: workCache.version },
-      idempotencyKey: newKey("pub"),
+      idempotencyKey: crypto.randomUUID(),
     });
+    shareLink = out.url || false;   // 当场就拿得到，不用再问一次 /link；重画后锚点即真链接
     await refreshWork();
-    const link = $("shareLink");
-    if (link) { link.href = out.url; link.textContent = out.url; }
     copy(out.url);
     toast("分享链接已复制；只有拿到链接的人能看", { type: "ok" });
   } catch (e) { showErr(e); }
@@ -732,6 +804,7 @@ async function revokeWork() {
   try {
     await api(`/v1/shares/${encodeURIComponent(activeShareId)}/revoke`, { method: "POST", body: {} });
     toast("已撤销，旧链接不再可访问", { type: "ok" });
+    shareLink = null;
     await refreshWork();
   } catch (e) { showErr(e); }
 }
@@ -842,14 +915,17 @@ async function sendAnswer(free, answers) {
         expected_conversation_version: convCache ? convCache.conversation_version : 0,
         round_id: round.round_id, answers: answers || collectAnswers(), message: free,
       },
-      idempotencyKey: newKey("ans"),
+      idempotencyKey: crypto.randomUUID(),
     });
     await refreshWork();
     startPolling();
   } catch (e) { showErr(e); }
 }
 
+// 确认生成 / 让它自己定：和发送框同一把 sending 锁，连点第二次不会重复起一轮
 async function startGeneration(modeName) {
+  if (sending) return;
+  sending = true;
   try {
     await api(`/v1/shares/${encodeURIComponent(activeShareId)}/runs/${encodeURIComponent(activeRunId)}/start`, {
       method: "POST",
@@ -858,11 +934,12 @@ async function startGeneration(modeName) {
         expected_brief_version: workCache.brief ? workCache.brief.version : null,
         mode: modeName,
       },
-      idempotencyKey: newKey("start"),
+      idempotencyKey: crypto.randomUUID(),
     });
     await refreshWork();
     startPolling();
   } catch (e) { showErr(e); }
+  finally { sending = false; }
 }
 
 async function submitModify(instructions) {
@@ -873,7 +950,7 @@ async function submitModify(instructions) {
       method: "POST",
       body: { base_revision_id: list[list.length - 1].revision_id,
         instructions, expected_work_version: workCache.version },
-      idempotencyKey: newKey("mod"),
+      idempotencyKey: crypto.randomUUID(),
     });
     toast("已排入修改，好了会提醒你", { type: "ok" });
     await openWork(activeShareId, out.run_id, true);
@@ -892,7 +969,7 @@ async function stopRun() {
 async function retryRun() {
   try {
     const out = await api(`/v1/shares/${encodeURIComponent(activeShareId)}/runs/${encodeURIComponent(activeRunId)}/retry`,
-      { method: "POST", body: {}, idempotencyKey: newKey("retry") });
+      { method: "POST", body: {}, idempotencyKey: crypto.randomUUID() });
     await openWork(activeShareId, out.run_id, true);
   } catch (e) { showErr(e); }
 }
@@ -905,8 +982,10 @@ function startPolling() {
   stopPolling();
   const tick = async () => {
     pollTimer = 0;
-    if (!activeShareId) return;
+    if (!activeShareId || !stageIsOpen()) return;
     await refreshWork();
+    // 在飞的那一次回来时可能已经回了对话列表：舞台关了就不再续排，也别在列表页报错
+    if (!stageIsOpen()) return;
     const state = workCache && workCache.run ? workCache.run.state : "idle";
     if (ACTIVE.has(state)) pollTimer = window.setTimeout(tick, 3000);
   };
@@ -954,8 +1033,9 @@ export function initShares(navigator) {
   const send = $("stageSend");
   if (send) send.addEventListener("click", () => onSend());
   // Escape 一层层往外收：先收「完成」菜单，再退出舞台/对话记录，再退出多选。
-  // 挂捕获阶段并给这次按键打个记号：item-list.js 那条是同一次按键上的气泡监听，
-  // 不打记号就会连抽屉一起收掉（走查反馈：菜单开着按 Esc，抽屉跟着没了）
+  // 挂捕获阶段并给这次按键打个记号：账号菜单（app.js）和抽屉（item-list.js）都是
+  // 同一次按键上的气泡监听，不读这个记号就会一次收掉两层（走查反馈：菜单开着按
+  // Esc，抽屉跟着没了；审查 U-05 剩下的是菜单与舞台、详情页「更多操作」）
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape" || isModalOpen()) return;
     const menu = $("shareSelMenu");
@@ -967,8 +1047,4 @@ export function initShares(navigator) {
     }
     if (selectMode) { setSelectMode(false); e.kbEscTaken = true; }                    // 再收多选
   }, true);
-  document.addEventListener("click", (e) => {
-    const li = e.target.closest && e.target.closest("li.item");
-    if (selectMode && li) li.classList.toggle("picked", selected.has(li.dataset.id));
-  });
 }
