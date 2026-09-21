@@ -34,6 +34,7 @@ from ..extractors import subtitles as subfmt
 from ..models import AsrRun, AudioAsset, BundleRevision, Capture, Item, SourceRevision, Job, StoredFile, new_id, utcnow
 from ..repositories import core as repo
 from ..storage.objects import ObjectStore
+from ..workers import asr as asr_stage
 from ..workers.publish import auto_process_enabled
 
 router = APIRouter(prefix="/v1/items", tags=["items"])
@@ -927,16 +928,15 @@ def delete_item(item_id: str, principal=Depends(require_scope("items:edit")), db
         db.query(Job).filter(Job.item_id == item.id, Job.state.in_(["queued", "retry_wait"])).update(
             {"state": "cancelled"}, synchronize_session=False
         )
-        # 同步取消进行中的转写：否则 run 停留在 preparing 等活动状态，
-        # 管理页 ASR 总览会一直显示「进行中」（docs/13 §6.3）
-        db.query(AsrRun).filter(
+        # 取消转写走 cancel_asr 这同一个入口：它把「正在执行」的那份 Job 也一并标掉，
+        # 而 Worker 的续租与所有权检查都以 Job.state == running 为条件——上面那条通用
+        # 更新覆盖不到 running，不标就等于把整条音频下完解完才在收尾时丢弃（审查 C-07）。
+        # 条目回落与状态事件也由 cancel_asr 负责，这里不再抄一份状态集合常量。
+        for run in db.query(AsrRun).filter(
             AsrRun.item_id == item.id,
-            AsrRun.state.in_(["queued", "preparing", "transcribing", "paused"]),
-        ).update(
-            {"state": "cancelled", "pause_reason": "", "last_error": "条目已删除，任务作废",
-             "updated_at": utcnow()},
-            synchronize_session=False,
-        )
+            AsrRun.state.notin_(["succeeded", "failed", "cancelled"]),
+        ).all():
+            asr_stage.cancel_asr(db, run)
         # 删除条目时解除音频原件引用（docs/13 §6.3）：在线对象随后由清理任务回收
         db.query(AudioAsset).filter(
             AudioAsset.user_id == user.id, AudioAsset.item_id == item.id

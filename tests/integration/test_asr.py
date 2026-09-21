@@ -961,14 +961,13 @@ def test_claiming_a_cancelled_run_does_not_restart_it(client, user_a, asr_env, f
 
 
 def test_delete_item_mid_transcription_settles_without_publishing(client, user_a, asr_env, fresh_queue):
-    """条目在识别中途被删除：任务要被判掉，不许复活成活动状态，也不许发布成品。
+    """条目在识别中途被删除：执行中的那一段也要立刻停，不许复活，也不许发布成品。
 
-    delete_item 只把 queued/retry_wait 的任务标取消，执行中的那一份没人管——线上就是
-    这样留下一个 attempt 空转 6000 多次的已删除条目。这里走完整一圈：在飞 → 删除 →
-    租约回收 → 再被领取，最后必须停在终态，且没有多出一个整理结果版本。
+    删除路径与「取消」按钮同口径（workers/asr.py 的 cancel_asr）：正在执行的那份 Job
+    也一起标掉，Worker 的续租与所有权检查随之失败（审查 C-07）。这里刻意**不**手改
+    lease_until——租约原样有效还能停下来，才证明是这条路径把它停下来的，而不是
+    等租约过期后由下一轮领取收尾（那样整条音频早就下完解完了）。
     """
-    from datetime import timedelta
-
     asr_env.install()
     token = user_a["phone"]["token"]
     item_id = _capture_bili_url(client, token, "asrdel").json()["item_id"]
@@ -982,19 +981,23 @@ def test_delete_item_mid_transcription_settles_without_publishing(client, user_a
         rev_before, bundle_before = item.source_revision, item.bundle_revision
     job = worker.claim_job(sf, worker.ASR_TRANSCRIBE_STAGES)   # 模拟「正在跑这一段」
     assert job is not None and job.stage == "asr_transcribe"
+    stale_token = job.lease_token
     # 删除要 items:edit，手机令牌只有 captures/uploads 权限
     assert client.delete(f"/v1/items/{item_id}",
                          headers=auth(user_a["desktop"]["token"])).status_code == 200
-    with sf() as s:   # 删除接口不碰执行中的任务，靠租约回收后下一轮领取收尾
-        row = s.get(worker.Job, job.id)
-        assert row.state == "running"
-        row.lease_until = worker.utcnow() - timedelta(seconds=1)
-        s.commit()
-    assert worker.recover_expired_leases(sf) >= 1
-    worker.run_once(sf, AlwaysAllowGate())
     with sf() as s:
+        row = s.get(worker.Job, job.id)
+        assert row.state == "cancelled", "执行中的任务没被标掉：租约还有效，段会照跑"
+        assert row.lease_token == stale_token, "租约原样留着：停下来的原因是状态，不是过期"
         assert _get_run(s, item_id).state == "cancelled"
+    # 在飞的那一次拿已经到手的上下文继续收尾：必须停住，不推进检查点也不重新排队
+    asr_mod.execute_transcribe(sf, job.id, stale_token, AlwaysAllowGate())
+    with sf() as s:
+        run = _get_run(s, item_id)
+        assert run.state == "cancelled", run.state
+        assert run.next_chunk_index == 0, "检查点还在推进，说明没真的停"
         assert _item_job(s, item_id, "asr_transcribe").state == "cancelled"
         item = s.get(worker.Item, item_id)
         assert (item.source_revision, item.bundle_revision) == (rev_before, bundle_before)
-    assert worker.claim_job(sf, worker.ASR_TRANSCRIBE_STAGES) is None   # 不再被重领
+    # 也不会再被领起来跑第二段
+    assert worker.claim_job(sf, worker.ASR_TRANSCRIBE_STAGES) is None

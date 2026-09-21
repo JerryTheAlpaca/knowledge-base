@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from datetime import timedelta
 from pathlib import Path
@@ -443,3 +444,76 @@ def test_expired_lease_returns_to_queued_without_losing_stage(env):
         run = db.get(ShareRun, run_id)
         assert run.state == "queued" and run.lease_token is None
         assert run.stage == "clarifying"
+
+
+def _add_image_asset(env) -> str:
+    """给材料挂一张正文图片：素材目录才会真的带着 storage_key 进入装配。"""
+    store = ObjectStore()
+    sha, key, size = store.put_bytes(b"\x89PNG\r\n\x1a\n fake asset bytes")
+    with env["session_factory"]() as db:
+        db.add(StoredFile(file_id="f-img", user_id=env["user_id"], item_id=env["item_id"],
+                          role="source_material", relative_path="images/插图一.png",
+                          mime="image/png", bytes=size, sha256=sha, storage_key=key))
+        db.commit()
+    return key
+
+
+def test_model_requests_never_carry_private_object_keys(env):
+    """C-04：每一段发给模型的文本都不带私有对象 key（也不带它的样子）。
+
+    盯的是真实请求文本而不是构造处：稳定前缀早就剥掉 storage_key，尾部目录曾经
+    没剥——同一个函数里两套做法就是这条用例要钉住的自相矛盾。
+    """
+    asset_key = _add_image_asset(env)
+    run_id, work_id = new_run(env)
+    run = claim_and_run(env, run_id)
+    FakeProvider.next_docs = [synthesis_for(pack_of(run))]
+    confirm(env, run_id)
+    run = claim_and_run(env, run_id)          # synthesizing → generating → packaging
+    assert run.stage == "awaiting_runner", run.error_detail
+    assert FakeProvider.calls, "应抓到发给模型的请求"
+
+    sent = "\n".join(m["content"] for call in FakeProvider.calls for m in call)
+    assert "storage_key" not in sent
+    assert asset_key not in sent
+    assert not re.search(r"[0-9a-f]{2}/[0-9a-f]{64}", sent), "内部对象 key 的形态外发了"
+    # 只剥 key，不剥模型要用到的逻辑标识
+    assert '"asset_id"' in sent and '"a1"' in sent
+    # 断言本身有牙：同一份目录不剥 key 时，确实会被这段检查抓到
+    leaky = share_prompts.code_tail(synthesis={}, asset_catalog=[{"asset_id": "a1",
+                                                                  "storage_key": asset_key}],
+                                    reference_catalog=[], runbook="", instructions="")
+    assert asset_key in leaky and "storage_key" in leaky
+
+    # 剥的位置不能过头：编排器自己的清单与交接仍要按 key 读对象
+    with env["session_factory"]() as db:
+        stored = json.loads(ObjectStore().read_object(
+            db.get(ShareRun, run_id).input_manifest_key).decode("utf-8"))
+        assert {a["storage_key"] for s in stored["sources"] for a in s["assets"]} == {asset_key}
+        catalog = (db.get(ShareRun, run_id).checkpoint_json or {})["asset_catalog"]
+        assert [a["storage_key"] for a in catalog] == [asset_key]
+    task_dir = Path(get_settings().share_spool_dir) / "ready" / run.checkpoint_json["runner_task"]
+    assert (task_dir / "assets" / "a1.png").read_bytes().startswith(b"\x89PNG")
+    envelope = json.loads((task_dir / "task.json").read_text(encoding="utf-8"))
+    assert all("storage_key" not in a for a in envelope["assets"])
+
+
+def test_runner_envelope_carries_body_floor_and_wall_clock(env):
+    """交接信封给 runner 的两项自查边界：正文下限按材料规模、墙钟按渲染超时倍数。"""
+    run_id, work_id = new_run(env)
+    run = claim_and_run(env, run_id)
+    FakeProvider.next_docs = [synthesis_for(pack_of(run))]
+    confirm(env, run_id)
+    run = claim_and_run(env, run_id)
+    settings = get_settings()
+    task_dir = Path(settings.share_spool_dir) / "ready" / run.checkpoint_json["runner_task"]
+    check = json.loads((task_dir / "task.json").read_text(encoding="utf-8"))["check"]
+    # 材料 21 字符 → 落在 200 下限（min(800, max(200, chars // 25))）
+    with env["session_factory"]() as db:
+        source_chars = (db.get(ShareRun, run_id).checkpoint_json or {})["source_chars"]
+    assert source_chars == sum(len(t) for t in ("先分型，再谈用量。", "剂量随证候浮动。"))
+    assert check["min_body_chars"] == min(800, max(200, source_chars // 25)) == 200
+    assert check["task_timeout_ms"] == settings.share_render_timeout_seconds * 2 * 1000
+    assert 60_000 <= check["task_timeout_ms"] <= 180_000
+    # 与「服务端等 runner 的耐心」不是一回事：后者大得多
+    assert settings.share_runner_max_wait_seconds * 1000 > check["task_timeout_ms"]

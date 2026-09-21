@@ -18,6 +18,7 @@ from kbserver.models import (
     Item,
     ProviderProfile,
     ShareRun,
+    ShareWork,
     SourceRevision,
     StoredFile,
     User,
@@ -129,7 +130,8 @@ def run_stage(env, run_id: str) -> ShareRun:
         return db.get(ShareRun, run_id)
 
 
-def write_result(env, run: ShareRun, *, ok=True) -> None:
+def write_result(env, run: ShareRun, *, ok=True, html: bytes | None = None) -> None:
+    """模拟 runner 产物。html 可指定，用来让不同版本落在不同物理对象上。"""
     settings = get_settings()
     task_id = (run.checkpoint_json or {})["runner_task"]
     target = Path(settings.share_spool_dir) / ("done" if ok else "failed") / task_id
@@ -137,7 +139,8 @@ def write_result(env, run: ShareRun, *, ok=True) -> None:
 
     shutil.rmtree(target, ignore_errors=True)
     (target / "out").mkdir(parents=True, exist_ok=True)
-    html = b'<!doctype html><main><iframe id="kb-frame" sandbox="allow-scripts" srcdoc=""></iframe></main>'
+    if html is None:
+        html = b'<!doctype html><main><iframe id="kb-frame" sandbox="allow-scripts" srcdoc=""></iframe></main>'
     (target / "out" / "index.html").write_bytes(html)
     import hashlib
 
@@ -149,7 +152,7 @@ def write_result(env, run: ShareRun, *, ok=True) -> None:
     }), encoding="utf-8")
 
 
-def to_ready(client, env, share_id: str, run_id: str) -> ShareRun:
+def to_ready(client, env, share_id: str, run_id: str, *, html: bytes | None = None) -> ShareRun:
     """走一遍：澄清 → 回答 → 确认 → 生成 → runner → 可用草稿。"""
     run = run_stage(env, run_id)
     assert run.state == "waiting_user"
@@ -174,8 +177,21 @@ def to_ready(client, env, share_id: str, run_id: str) -> ShareRun:
     assert started.status_code == 202, started.text
     run = run_stage(env, run_id)
     assert run.stage == "awaiting_runner", run.error_detail
-    write_result(env, run)
+    write_result(env, run, html=html)
     return run_stage(env, run_id)
+
+
+def add_revision(client, env, share_id: str, *, html: bytes) -> ShareRun:
+    """在同一作品上再跑一轮修改，产出一个新版本（版本列表与保留期要用它）。"""
+    with env["session_factory"]() as db:
+        work = db.get(ShareWork, share_id)
+        base_id, version = work.latest_ready_revision_id, work.version
+    resp = client.post(f"/v1/shares/{share_id}/runs",
+                       json={"base_revision_id": base_id, "instructions": "再短一点",
+                             "expected_work_version": version},
+                       headers={**env["headers"], "Idempotency-Key": new_id()})
+    assert resp.status_code == 202, resp.text
+    return to_ready(client, env, share_id, resp.json()["run_id"], html=html)
 
 
 def _pack(run: ShareRun) -> dict:
@@ -462,6 +478,31 @@ def test_stale_work_version_conflicts_on_modify(client, share_env):
                        headers={**env["headers"], "Idempotency-Key": new_id()})
     assert resp.status_code == 409
     assert resp.json()["error"]["details"]["current_version"] == current_version
+
+
+def test_delete_work_expected_version_conflicts(client, share_env):
+    """C-12：expected_version 收了就必须校验，旧标签页不能静默删掉较新的作品。
+
+    不带这个参数仍然是宽容删除（前端现在就调不带版本的那条路，语义不动）。
+    """
+    env = share_env["a"]
+    share_id, run_id = create(client, env)
+    to_ready(client, env, share_id, run_id)
+    with share_env["session_factory"]() as db:
+        current_version = db.get(ShareWork, share_id).version
+    stale = client.delete(f"/v1/shares/{share_id}?expected_version={current_version - 1}",
+                          headers=env["headers"])
+    assert stale.status_code == 409
+    assert stale.json()["error"]["details"]["current_version"] == current_version
+    with share_env["session_factory"]() as db:
+        assert db.get(ShareWork, share_id).deleted_at is None, "对不上版本的删除也生效了"
+    ok = client.delete(f"/v1/shares/{share_id}?expected_version={current_version}",
+                       headers=env["headers"])
+    assert ok.status_code == 200, ok.text
+    with share_env["session_factory"]() as db:
+        assert db.get(ShareWork, share_id).deleted_at is not None
+    second_id, second_run = create(client, env, instructions="再来一份")
+    assert client.delete(f"/v1/shares/{second_id}", headers=env["headers"]).status_code == 200
 
 
 def test_cancel_stops_further_model_calls(client, share_env):

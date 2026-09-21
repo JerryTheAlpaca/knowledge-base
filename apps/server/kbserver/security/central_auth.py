@@ -173,6 +173,9 @@ def _logout_once(cookie_value: str, deadline: float) -> None:
         raise CentralAuthUnavailable(f"中心认证服务不可达：{type(exc).__name__}") from exc
     if resp.status_code >= 500:
         raise CentralAuthUnavailable(f"中心认证服务错误（HTTP {resp.status_code}）")
+    if resp.status_code in (401, 403):
+        # 中心本来就不认这颗凭据：调用方要能把它和「暂时联系不上」区分开
+        raise CentralAuthRejected("中心会话无效或已过期")
 
 
 def central_logout(cookie_value: str) -> None:

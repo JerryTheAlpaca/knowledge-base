@@ -3,6 +3,8 @@
 用 httpx.MockTransport 假装中心，不碰真实网络。盯的是两条互相拉扯的要求：
 部署/重启那一两秒的抖动要吃掉（否则 KB 整站 503），但明确未登录（401）
 一次都不许多试，也不许留下任何可被复用的「还算有效」的结论。
+最后两条走完整应用：退出这件事不能因为中心不可达而变成「点了没退出」，
+也不能被一条晚落地的在飞续期响应把凭据种回浏览器（审查 C-08）。
 """
 from __future__ import annotations
 
@@ -10,7 +12,9 @@ import time
 
 import httpx
 import pytest
+from fastapi.testclient import TestClient
 
+from kbserver.app import create_app
 from kbserver.security import central_auth
 
 OK_DOC = {"data": {"user": {"id": "u1", "username": "jerry"},
@@ -112,3 +116,84 @@ def test_logout_retries_because_a_missed_revoke_is_a_live_session(monkeypatch, c
     calls = _use_transport(monkeypatch, lambda: responses.pop(0))
     central_auth.central_logout("cookie-value")
     assert len(calls) == 2
+
+
+def test_logout_clears_local_state_even_if_central_is_unreachable(monkeypatch, central_env, engine):
+    """中心重启那一两秒点退出：本地要真的退出去，不能只回一个 503 就什么都不做。
+
+    原来 logout 依赖 current_principal，中心不可达时在依赖里先抛 503，处理器根本不
+    进来——既不记撤销也不清 Cookie，前端吞掉异常照样 showLogin（审查 C-08）。
+    写操作防护不因此放松：少了 CSRF 双提交照样 403，没有凭据照样 401。
+    """
+    calls = _use_transport(monkeypatch, lambda: httpx.Response(500))
+    client = TestClient(create_app())
+    client.cookies.set("test_session", "unreachable-logout")
+    client.cookies.set("kb_csrf", "csrf-token")
+    resp = client.post("/v1/auth/logout", headers={"X-CSRF-Token": "csrf-token"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["logged_out"] is True
+    assert len(calls) == 2, "本地清理之后仍然尽力通知过中心（不可达补试一次）"
+    assert central_auth.is_revoked("unreachable-logout")
+    planted = " ".join(resp.headers.get_list("set-cookie")).lower()
+    assert "test_session=" in planted, "没把会话 Cookie 过期掉"
+    assert "kb_csrf=" in planted, "没清 CSRF Cookie"
+    # CSRF 与 Origin 校验仍然生效
+    bare = TestClient(create_app())
+    bare.cookies.set("test_session", "unreachable-logout-2")
+    assert bare.post("/v1/auth/logout").status_code == 403
+    anon = TestClient(create_app())
+    anon.cookies.set("kb_csrf", "csrf-token")
+    no_cred = anon.post("/v1/auth/logout", headers={"X-CSRF-Token": "csrf-token"})
+    assert no_cred.status_code == 401
+
+
+def test_logout_reports_401_when_central_says_the_session_was_already_dead(
+        monkeypatch, central_env, engine):
+    """中心明确不认这颗凭据（401）：本地照清，但如实按 401 回，也不补试。"""
+    calls = _use_transport(monkeypatch, lambda: httpx.Response(401))
+    client = TestClient(create_app())
+    client.cookies.set("test_session", "already-out")
+    client.cookies.set("kb_csrf", "csrf-token")
+    resp = client.post("/v1/auth/logout", headers={"X-CSRF-Token": "csrf-token"})
+    assert resp.status_code == 401, resp.text
+    assert len(calls) == 1, "明确未登录一次都不许多问"
+    assert central_auth.is_revoked("already-out")
+    assert "test_session=" in " ".join(resp.headers.get_list("set-cookie"))
+
+
+def test_in_flight_renewal_must_not_resurrect_a_revoked_credential(monkeypatch, central_env, engine):
+    """晚落地的在飞续期响应不得覆盖已撤销凭据（审查 C-08 第一处）。
+
+    中心校验要一个公网 RTT；这期间用户点了退出，响应回来时那颗凭据已经作废，
+    中间件按域写回去就等于把刚 delete_cookie 掉的钥匙又塞回浏览器——KB 侧靠 5 分钟
+    撤销表挡得住，auth 站与同域其他应用挡不住。
+    """
+    real = central_auth.validate_central_session   # 打补丁之前先抓住真的那一个
+
+    def _me(cookie: str, *, in_flight_logout: bool) -> httpx.Response:
+        """走一次 Cookie 通道的 /v1/auth/me：中心每次都回一颗同值的滑动续期 Set-Cookie。"""
+        _use_transport(monkeypatch, lambda: httpx.Response(
+            200, json=OK_DOC, headers=[("set-cookie", f"test_session={cookie}; Path=/; Max-Age=3600")]))
+
+        def validate_then_logout(cookie_value: str):
+            data, renewal = real(cookie_value)
+            if renewal:   # 校验与写响应之间，这次退出完成了
+                central_auth.remember_revoked(renewal["value"])
+            return data, renewal
+
+        # 第二次调用要显式换回真的那个：monkeypatch 是整条用例结束才撤销的
+        monkeypatch.setattr(central_auth, "validate_central_session",
+                            validate_then_logout if in_flight_logout else real)
+        client = TestClient(create_app())
+        client.cookies.set("test_session", cookie)
+        resp = client.get("/v1/auth/me")
+        assert resp.status_code == 200, resp.text
+        return resp
+
+    resp = _me("in-flight-renewal", in_flight_logout=True)
+    planted = " ".join(resp.headers.get_list("set-cookie"))
+    # 会话 Cookie 不在响应里（补发 kb_csrf 不在这条要求之内）
+    assert "test_session=" not in planted, f"已撤销的凭据被种回浏览器：{planted}"
+    # 对照：没被撤销时滑动续期照常写回，别把这条路整个写死
+    live = _me("still-live-session", in_flight_logout=False)
+    assert "test_session=still-live-session" in " ".join(live.headers.get_list("set-cookie"))

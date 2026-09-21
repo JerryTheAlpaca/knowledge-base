@@ -576,14 +576,15 @@ def generate_page(session_factory, plan: SharePlan, *, repair: bool = False) -> 
     assets = [{"asset_id": a["asset_id"], "mime": a["mime"], "sha256": a["sha256"],
                "storage_key": a.get("storage_key")}
               for s in manifest.get("sources") or [] for a in s.get("assets") or []]
+    # 发给模型的素材目录一律剥掉 storage_key（domain/sharing.py 的口径：模型只用逻辑
+    # 标识）。原表留在 checkpoint["asset_catalog"] 里，交接 runner 时还要靠它读对象。
+    assets_for_model = [{k: v for k, v in a.items() if k != "storage_key"} for a in assets]
     synthesis = _read_json(ObjectStore(), plan.checkpoint["synthesis_key"])
     references = sharing.public_reference_view(synthesis, plan.pack)
     runbook = share_prompts.runbook_text(runtime_manifest(settings))
     conv, messages = _conversation(
         session_factory, plan, "code", system=share_prompts.code_system(runbook),
-        pack_text_value=canonical({"runbook": runbook,
-                                   "assets": [{k: v for k, v in a.items() if k != "storage_key"}
-                                              for a in assets]}).decode("utf-8"),
+        pack_text_value=canonical({"runbook": runbook, "assets": assets_for_model}).decode("utf-8"),
     )
     if repair:
         tail = share_prompts.repair_tail(
@@ -592,7 +593,7 @@ def generate_page(session_factory, plan: SharePlan, *, repair: bool = False) -> 
             source=plan.checkpoint.get("page_source") or {})
         step = f"repair-{plan.repair_count}"
     else:
-        tail = share_prompts.code_tail(synthesis=synthesis, asset_catalog=assets,
+        tail = share_prompts.code_tail(synthesis=synthesis, asset_catalog=assets_for_model,
                                        reference_catalog=references, runbook=runbook,
                                        instructions=plan.request_text)
         step = "page_source"
@@ -658,12 +659,39 @@ def spool_dirs(settings: Settings) -> Path:
 
 
 def _spool_dir(path: Path) -> None:
-    """交接目录被两个不同 uid 的容器共用：目录本身要两端都可写（docs/20 §14.3）。"""
+    """交接目录被两个不同 uid 的容器共用，靠共同组 kbshare（gid 950）读写（docs/20 §14.3、审查 C-02）。
+
+    2770 + setgid：对端按组就能写与删条目，新建的子目录还自动继承同一个组；
+    不再对机器上任意进程放开 0777。compose 里两个容器都 group_add 了这个 gid。
+    """
     path.mkdir(parents=True, exist_ok=True)
     try:
-        path.chmod(0o777)
-    except PermissionError:  # 属主是 runner 镜像里的用户，改不动也能写
+        path.chmod(0o2770)
+    except PermissionError:  # 属主是 runner 镜像里的用户，改不动也能按组读写
         pass
+
+
+_MIN_BODY_CHARS_FALLBACK = 300  # 取不到材料字符数时的保守值
+
+
+def _min_body_chars(source_chars) -> int:
+    """runner 正文最少字符数：按本轮可读材料规模给，200~800 之间。"""
+    try:
+        chars = int(source_chars)
+    except (TypeError, ValueError):
+        return _MIN_BODY_CHARS_FALLBACK
+    if chars <= 0:
+        return _MIN_BODY_CHARS_FALLBACK
+    return min(800, max(200, chars // 25))
+
+
+def _task_timeout_ms(settings: Settings) -> int:
+    """runner 的整任务墙钟（它自己的自我了断），取渲染超时的两倍、限在 60~180 秒。
+
+    与 share_runner_max_wait_seconds 不是一回事：后者是服务端等结果的耐心，
+    前者防止一个卡死的页面长期占住唯一的 runner 执行槽。
+    """
+    return min(180_000, max(60_000, settings.share_render_timeout_seconds * 2 * 1000))
 
 
 def handoff_to_runner(session_factory, plan: SharePlan) -> None:
@@ -706,8 +734,12 @@ def handoff_to_runner(session_factory, plan: SharePlan) -> None:
             "limitations": synthesis.get("limitations") or [],
             "revision_label": f"草稿 {work_id[:6]}",
             "limits": {"max_html_bytes": settings.share_max_html_bytes},
+            # 交给 runner 的两项自查边界：正文最少字符数（按材料规模给，不让空页面
+            # 自我认证）与整任务墙钟（runner 自我了断，不同于服务端等结果的耐心）。
             "check": {"enabled": True, "max_screenshots": settings.share_max_screenshots,
-                      "ready_timeout_ms": max(3000, settings.share_render_timeout_seconds * 1000)},
+                      "ready_timeout_ms": max(3000, settings.share_render_timeout_seconds * 1000),
+                      "min_body_chars": _min_body_chars(checkpoint.get("source_chars")),
+                      "task_timeout_ms": _task_timeout_ms(settings)},
         }
         envelope["input_hash"] = _spool_input_hash(staging, envelope)
         (staging / "task.json").write_bytes(canonical(envelope))

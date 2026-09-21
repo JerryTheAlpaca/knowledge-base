@@ -13,6 +13,7 @@ from .api.deps import CSRF_COOKIE
 from .config import get_settings
 from .domain.errors import ApiError, status_for
 from .models import new_id
+from .security import central_auth
 from .security.tokens import new_service_token
 
 
@@ -51,15 +52,24 @@ def create_app() -> FastAPI:
         认证依赖把中心续期 Cookie 暂存在 request.state.central_renewal，
         需要补发的 kb_csrf 暂存在 request.state.kb_csrf_issue；
         这里统一写回浏览器。续期 Cookie 的名称/域/路径已在认证层校验过。
+
+        写回之前再查一次撤销表：退出前已发出的请求（中心校验要一个公网 RTT）
+        可能晚于 logout 落地，不查就会把刚 delete_cookie 掉的那颗凭据又按父域
+        种回浏览器——KB 侧有 5 分钟撤销表兜着，同域的其他应用没有（审查 C-08）。
         """
         response = await call_next(request)
         renewal = getattr(request.state, "central_renewal", None)
         if renewal is not None:
-            kwargs = {"max_age": renewal["max_age"], "secure": renewal["secure"],
-                      "httponly": True, "samesite": "lax", "path": "/"}
-            if renewal.get("domain"):
-                kwargs["domain"] = renewal["domain"]
-            response.set_cookie(get_settings().auth_cookie_name, renewal["value"], **kwargs)
+            settings = get_settings()
+            presented = request.cookies.get(settings.auth_cookie_name) or ""
+            revoked = central_auth.is_revoked(renewal["value"]) or (
+                bool(presented) and central_auth.is_revoked(presented))
+            if not revoked:
+                kwargs = {"max_age": renewal["max_age"], "secure": renewal["secure"],
+                          "httponly": True, "samesite": "lax", "path": "/"}
+                if renewal.get("domain"):
+                    kwargs["domain"] = renewal["domain"]
+                response.set_cookie(settings.auth_cookie_name, renewal["value"], **kwargs)
         csrf_issue = getattr(request.state, "kb_csrf_issue", None)
         if csrf_issue:
             secure = get_settings().public_base_url.startswith("https://")

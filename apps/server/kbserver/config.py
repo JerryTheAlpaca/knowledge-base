@@ -120,6 +120,7 @@ class Settings:
 
     # 通用 AI 整合与 HTML 分享（docs/20 §14.1）：首轮实现与压测用的工程初始值，
     # 不是已验证容量；默认关闭，开发验收后由部署显式启用。
+    # 澄清/补充轮数首版不设上限：材料字符数、每轮问题数与用户主动确认就是边界（审查 C-06）。
     share_enabled: bool = os.environ.get("SHARE_ENABLED", "false").lower() in ("1", "true", "yes")
     share_public_base_url: str = os.environ.get("SHARE_PUBLIC_BASE_URL", "")
     share_spool_dir: Path = Path(os.environ.get("SHARE_SPOOL_DIR", "./data/share-spool"))
@@ -130,7 +131,6 @@ class Settings:
     share_max_instructions_chars: int = int(os.environ.get("SHARE_MAX_INSTRUCTIONS_CHARS", "4000"))
     share_max_questions_per_round: int = int(os.environ.get("SHARE_MAX_QUESTIONS_PER_ROUND", "3"))
     share_max_waiting_drafts_per_user: int = int(os.environ.get("SHARE_MAX_WAITING_DRAFTS_PER_USER", "20"))
-    share_context_compact_ratio: float = float(os.environ.get("SHARE_CONTEXT_COMPACT_RATIO", "0.8"))
     share_max_source_chars: int = int(os.environ.get("SHARE_MAX_SOURCE_CHARS", "200000"))
     share_max_input_bytes: int = int(os.environ.get("SHARE_MAX_INPUT_BYTES", str(50 * 1024 * 1024)))
     share_max_html_bytes: int = int(os.environ.get("SHARE_MAX_HTML_BYTES", str(10 * 1024 * 1024)))
@@ -150,7 +150,6 @@ class Settings:
     share_run_diagnostic_retention_days: int = int(os.environ.get("SHARE_RUN_DIAGNOSTIC_RETENTION_DAYS", "7"))
     share_spool_ttl_hours: int = int(os.environ.get("SHARE_SPOOL_TTL_HOURS", "24"))
     share_max_source_chunks: int = int(os.environ.get("SHARE_MAX_SOURCE_CHUNKS", "40"))
-    share_max_supplement_rounds: int = int(os.environ.get("SHARE_MAX_SUPPLEMENT_ROUNDS", "1"))
     share_max_interactions: int = int(os.environ.get("SHARE_MAX_INTERACTIONS", "8"))
     share_max_screenshots: int = int(os.environ.get("SHARE_MAX_SCREENSHOTS", "6"))
 
@@ -225,7 +224,6 @@ def get_settings() -> Settings:
         share_max_instructions_chars=int(os.environ.get("SHARE_MAX_INSTRUCTIONS_CHARS", "4000")),
         share_max_questions_per_round=int(os.environ.get("SHARE_MAX_QUESTIONS_PER_ROUND", "3")),
         share_max_waiting_drafts_per_user=int(os.environ.get("SHARE_MAX_WAITING_DRAFTS_PER_USER", "20")),
-        share_context_compact_ratio=float(os.environ.get("SHARE_CONTEXT_COMPACT_RATIO", "0.8")),
         share_max_source_chars=int(os.environ.get("SHARE_MAX_SOURCE_CHARS", "200000")),
         share_max_input_bytes=int(os.environ.get("SHARE_MAX_INPUT_BYTES", str(50 * 1024 * 1024))),
         share_max_html_bytes=int(os.environ.get("SHARE_MAX_HTML_BYTES", str(10 * 1024 * 1024))),
@@ -245,7 +243,6 @@ def get_settings() -> Settings:
             os.environ.get("SHARE_RUN_DIAGNOSTIC_RETENTION_DAYS", "7")),
         share_spool_ttl_hours=int(os.environ.get("SHARE_SPOOL_TTL_HOURS", "24")),
         share_max_source_chunks=int(os.environ.get("SHARE_MAX_SOURCE_CHUNKS", "40")),
-        share_max_supplement_rounds=int(os.environ.get("SHARE_MAX_SUPPLEMENT_ROUNDS", "1")),
         share_max_interactions=int(os.environ.get("SHARE_MAX_INTERACTIONS", "8")),
         share_max_screenshots=int(os.environ.get("SHARE_MAX_SCREENSHOTS", "6")),
     )

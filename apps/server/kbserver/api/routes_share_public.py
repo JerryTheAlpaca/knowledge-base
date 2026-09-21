@@ -1,6 +1,7 @@
 """分享站点的公开与短时预览只读路由（docs/20 §9.4、§9.5、§12）。
 
 - 只暴露 /s/{token} 与 /preview/{token}：不代理 /v1、中心登录中继或通用对象存储。
+- SHARE_ENABLED=false 时两种页面都不交付，与创建/发布侧共用同一个总开关。
 - 每次请求都核验令牌、发布状态与有效期；无效／撤销／到期统一返回不泄露标题的不可用页面。
 - 响应不种 Cookie、不转发传入 Cookie，禁用或脱敏这类路径的访问日志。
 - 即使使用独立域名，页面本身仍是可信外层 + sandbox iframe，域名不替代页面隔离。
@@ -86,7 +87,7 @@ def _published_revision(db: Session, token_hash: str) -> ShareRevision | None:
 @router.get("/s/{token}")
 def public_view(token: str, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
     settings = _settings()
-    if not _host_allowed(request, settings):
+    if not settings.share_enabled or not _host_allowed(request, settings):
         return _unavailable()
     revision = _published_revision(db, share_tokens.hash_share_token(token))
     return _deliver(revision) if revision else _unavailable()
@@ -96,7 +97,7 @@ def public_view(token: str, request: Request, db: Session = Depends(get_db)) -> 
 def preview_view(token: str, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
     """作者本人的短时预览：不公开列出，凭据有效即可取指定版本。"""
     settings = _settings()
-    if not _host_allowed(request, settings):
+    if not settings.share_enabled or not _host_allowed(request, settings):
         return _unavailable()
     payload = share_tokens.read_preview_token(settings.load_master_key(), token)
     if not payload:

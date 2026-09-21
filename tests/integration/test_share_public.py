@@ -15,15 +15,22 @@ from kbserver.config import get_settings
 from kbserver.models import (
     BundleRevision,
     Item,
+    ProviderOperation,
     ShareArtifact,
+    ShareConversation,
+    ShareMessage,
     ShareRevision,
+    ShareRun,
     ShareWork,
+    new_id,
     utcnow,
 )
+from kbserver.repositories import shares as repo
 from kbserver.storage.objects import ObjectStore
 from kbserver.workers import worker as worker_mod
 
 from tests.integration.test_shares_api import (  # 复用同一套替身与环境夹具
+    add_revision,
     create,
     share_env,  # noqa: F401
     to_ready,
@@ -196,3 +203,185 @@ def test_spool_temp_directories_are_swept(share_env, tmp_path):
     removed = share_retention._sweep_spool(settings, utcnow())
     assert removed >= 1
     assert not stale.exists()
+
+
+def _unique_html(label: str) -> bytes:
+    """每个用例自己的成品字节：对象按内容寻址，共用一段 HTML 会让「物理对象真的没了」
+    这种断言被别的用例的引用挡住，测不出回收。"""
+    return f'<!doctype html><main>{label} {new_id()}</main>'.encode("utf-8")
+
+
+def test_superseded_revision_beyond_retention_is_reclaimed(client, share_env):
+    """C-05：被新版本取代、又过了保留期的旧版本，产物要真的能回收。
+
+    原来这条分支根本不存在（保留期只用来「保护」），私有存储因此只增不减。
+    用例会先证明保留期内不动，再把旧版本推过 share_revision_retention_days。
+    """
+    env = share_env["a"]
+    store = ObjectStore()
+    share_id, run_id = create(client, env)
+    old_html = _unique_html("第一版")
+    to_ready(client, env, share_id, run_id, html=old_html)
+    with share_env["session_factory"]() as db:
+        work = db.get(ShareWork, share_id)
+        old_rev_id = work.latest_ready_revision_id
+        old_html_key = db.get(ShareRevision, old_rev_id).html_key
+        old_run_id = db.get(ShareRevision, old_rev_id).run_id
+        used_before = repo.user_storage_bytes(db, env["user_id"])
+    new_html = _unique_html("第二版")
+    add_revision(client, env, share_id, html=new_html)
+    with share_env["session_factory"]() as db:
+        latest_rev_id = db.get(ShareWork, share_id).latest_ready_revision_id
+        assert latest_rev_id != old_rev_id
+        # 旧版本还在保留期内：谁都不该动
+        worker_mod.retention_sweep(share_env["session_factory"], store)
+        assert db.query(ShareArtifact).filter_by(revision_id=old_rev_id, role="html").count() == 1
+        assert store.object_exists(old_html_key)
+    # 版本与产出它的那次任务一起变旧
+    stale = utcnow() - timedelta(days=get_settings().share_revision_retention_days + 1)
+    with share_env["session_factory"]() as db:
+        db.get(ShareRevision, old_rev_id).created_at = stale
+        db.get(ShareRun, old_run_id).updated_at = stale
+        db.commit()
+    worker_mod.retention_sweep(share_env["session_factory"], store)
+    with share_env["session_factory"]() as db:
+        assert db.query(ShareArtifact).filter_by(revision_id=old_rev_id).count() == 0
+        assert not store.object_exists(old_html_key), "旧版本 HTML 对象没被回收"
+        latest = db.get(ShareRevision, latest_rev_id)
+        assert store.object_exists(latest.html_key), "当前草稿被连带删掉了"
+        assert db.query(ShareArtifact).filter_by(revision_id=latest_rev_id, role="html").count() == 1
+        # 用户已用存储随之下降（配额判定用的就是这个数）
+        assert repo.user_storage_bytes(db, env["user_id"]) < used_before
+
+
+def test_published_and_latest_revisions_survive_retention_age(client, share_env, monkeypatch):
+    """已发布版本与最新草稿不受保留期影响：只有「被取代且过期」的那批才走。"""
+    monkeypatch.setenv("SHARE_PUBLIC_BASE_URL", "https://share.example")
+    env = share_env["a"]
+    store = ObjectStore()
+    share_id, run_id = create(client, env)
+    to_ready(client, env, share_id, run_id, html=_unique_html("已发布那版"))
+    with share_env["session_factory"]() as db:
+        work = db.get(ShareWork, share_id)
+        published_rev_id = work.latest_ready_revision_id
+        published_html = db.get(ShareRevision, published_rev_id).html_key
+        published_run_id = db.get(ShareRevision, published_rev_id).run_id
+    resp = client.post(f"/v1/shares/{share_id}/publish", json={"revision_id": published_rev_id},
+                       headers={**env["headers"], "Idempotency-Key": "pub-age"})
+    assert resp.status_code == 200, resp.text
+    add_revision(client, env, share_id, html=_unique_html("最新草稿"))
+    stale = utcnow() - timedelta(days=get_settings().share_revision_retention_days + 1)
+    with share_env["session_factory"]() as db:
+        db.get(ShareRevision, published_rev_id).created_at = stale
+        db.get(ShareRun, published_run_id).updated_at = stale
+        db.commit()
+    worker_mod.retention_sweep(share_env["session_factory"], store)
+    with share_env["session_factory"]() as db:
+        work = db.get(ShareWork, share_id)
+        assert work.published_revision_id == published_rev_id
+        assert store.object_exists(published_html), "已发布版本被回收了"
+        assert db.query(ShareArtifact).filter_by(revision_id=published_rev_id).count() >= 1
+        # 版本的依赖（整合稿、素材清单）登记在 run_id 上，也要跟着版本一起活着
+        latest = db.get(ShareRevision, work.latest_ready_revision_id)
+        assert store.object_exists(latest.synthesis_key)
+        assert store.object_exists(latest.input_manifest_key)
+
+
+def test_deleted_work_text_rows_purged_after_grace(client, share_env):
+    """C-12：删除作品的宽限期过后，run/会话/消息/版本这些文本行也一起回收。
+
+    宽限期内要还能回捞（对象与文本行都原样在），过期后 share_runs.request_text
+    ——用户最初写下的原文——必须真的消失。
+    """
+    env = share_env["a"]
+    store = ObjectStore()
+    # 别人的作品先建好：保留期清理会把夹具里没有 Bundle 的材料文件当孤儿收走，
+    # 之后再新建分享就取不到正文了。
+    other_id, other_run = create(client, share_env["b"])
+    to_ready(client, share_env["b"], other_id, other_run, html=_unique_html("别人的"))
+    share_id, run_id = create(client, env)
+    to_ready(client, env, share_id, run_id, html=_unique_html("要删掉的那版"))
+    with share_env["session_factory"]() as db:
+        revision_id = db.get(ShareWork, share_id).latest_ready_revision_id
+        html_key = db.get(ShareRevision, revision_id).html_key
+        request_text = db.get(ShareRun, run_id).request_text
+        assert request_text and db.query(ShareMessage).filter_by(run_id=run_id).count() >= 1
+        assert db.query(ProviderOperation).filter_by(share_run_id=run_id).count() >= 1
+    assert client.delete(f"/v1/shares/{share_id}", headers=env["headers"]).status_code == 200
+    # 宽限期内：作品看不见，但材料还在，删错了还能回捞
+    stats = worker_mod.retention_sweep(share_env["session_factory"], store)
+    assert stats["purged_works"] == 0
+    with share_env["session_factory"]() as db:
+        assert db.get(ShareRun, run_id).request_text == request_text
+        assert db.query(ShareRevision).filter_by(id=revision_id).count() == 1
+        assert store.object_exists(html_key)
+    with share_env["session_factory"]() as db:
+        db.get(ShareWork, share_id).deleted_at = utcnow() - timedelta(days=2)
+        db.commit()
+    stats = worker_mod.retention_sweep(share_env["session_factory"], store)
+    assert stats["purged_works"] >= 1
+    with share_env["session_factory"]() as db:
+        assert db.get(ShareRun, run_id) is None
+        assert db.query(ShareConversation).filter_by(work_id=share_id).count() == 0
+        assert db.query(ShareMessage).filter_by(run_id=run_id).count() == 0
+        assert db.query(ShareRevision).filter_by(work_id=share_id).count() == 0
+        assert db.query(ShareArtifact).filter_by(work_id=share_id).count() == 0
+        assert db.query(ProviderOperation).filter_by(share_run_id=run_id).count() == 0
+        assert not store.object_exists(html_key)
+        work = db.get(ShareWork, share_id)   # 作品行保留 tombstone，指针不再悬空
+        assert work.deleted_at is not None and work.latest_ready_revision_id is None
+        assert work.published_revision_id is None and work.active_run_id is None
+    # 别人的作品不受牵连
+    with share_env["session_factory"]() as db:
+        assert db.get(ShareWork, other_id).latest_ready_revision_id is not None
+        assert db.query(ShareRevision).filter_by(work_id=other_id).count() == 1
+        assert db.query(ShareArtifact).filter_by(work_id=other_id).count() >= 1
+
+
+def test_public_pages_require_share_enabled(published, monkeypatch):
+    """C-11：SHARE_ENABLED=false 是总开关，公开页与短时预览都不交付。"""
+    client = TestClient(_app())
+    token = client.post(f"/v1/shares/{published['share_id']}/revisions/1/preview-token",
+                        headers=published["env"]["headers"]).json()["preview_token"]
+    public_token = published["url"].rsplit("/s/", 1)[1]
+    public = _public_client()
+    assert public.get(f"/s/{public_token}").status_code == 200
+    assert public.get(f"/preview/{token}").status_code == 200
+    monkeypatch.setenv("SHARE_ENABLED", "false")
+    for path in (f"/s/{public_token}", f"/preview/{token}"):
+        resp = public.get(path)
+        assert resp.status_code == 404, path
+        assert "这个链接已经不可用" in resp.text
+
+
+def test_storage_key_index_comes_from_migrations(tmp_path):
+    """新索引由 alembic 迁移真的建出来：跑完整迁移链到 head，不在测试里另搭一套 schema。
+
+    其余用例走 Base.metadata.create_all，摸不到 migrations/versions/；这条在独立进程里
+    对一个空库执行 `alembic upgrade head`（Settings.database_url 在导入期就定死了，
+    同进程改环境变量到不了迁移），确认 SQLite 上这个索引真能建起来。
+    """
+    import os
+    import sqlite3
+    import subprocess
+    import sys
+
+    from kbserver import __file__ as kbserver_init
+
+    server_dir = Path(kbserver_init).resolve().parents[1]      # apps/server
+    db_path = tmp_path / "migrate-chain.db"
+    env = {**os.environ, "DATABASE_URL": f"sqlite:///{db_path.as_posix()}"}
+    done = subprocess.run([sys.executable, "-m", "alembic", "-c", "alembic.ini", "upgrade", "head"],
+                          cwd=str(server_dir), env=env, capture_output=True,
+                          text=True, encoding="utf-8", errors="replace")
+    assert done.returncode == 0, done.stderr[-2000:]
+
+    conn = sqlite3.connect(db_path)
+    try:
+        names = {row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='share_artifacts'")}
+        version = conn.execute("SELECT version_num FROM alembic_version").fetchone()
+    finally:
+        conn.close()
+    assert "ix_share_artifacts_storage_key" in names
+    assert version == ("e9a3c5f7b2d4",)

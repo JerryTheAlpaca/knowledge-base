@@ -146,36 +146,3 @@ def render_brief_lines(brief: dict, provenance: dict) -> list[dict]:
             "by": provenance.get(field, {}).get("by", "ai"),
         })
     return lines
-
-
-def estimate_messages_tokens(messages: Iterable[ConversationMessage]) -> int:
-    """粗估输入规模（中文按字符数近似）：只用于压缩判断，不作为精确 Token 统计展示。"""
-    from .templates import estimate_tokens
-
-    return sum(estimate_tokens(m.content) + 4 for m in messages)
-
-
-def should_compact(*, estimated_input_tokens: int, context_tokens: int, reserve_output_tokens: int,
-                   ratio: float) -> bool:
-    """接近可用输入窗口才压缩：先给输出留位置，再按阈值判断（§14.1）。"""
-    if context_tokens <= 0:
-        return False
-    available = max(1, context_tokens - reserve_output_tokens)
-    return estimated_input_tokens >= int(available * ratio)
-
-
-def compact_summary_messages(*, confirmed_constraints: list[str], user_quotes: list[str],
-                             evidence_index: list[str], recent: Iterable[ConversationMessage]) -> list[ConversationMessage]:
-    """开启新 context_epoch 时的起点：保留已确认约束、关键原话、证据索引与最近消息。
-
-    这是一次有代价的重启（可能多一次摘要调用并冷启动），必须记录原因，
-    不能每轮自动摘要来「省上下文」却不断破坏缓存。
-    """
-    body = ["【上下文续接】以下是本会话已确认的需求与依据，后续按它继续："]
-    for line in confirmed_constraints:
-        body.append(f"- 已确认：{line}")
-    for quote in user_quotes:
-        body.append(f"- 用户原话：{quote}")
-    for index in evidence_index:
-        body.append(f"- 证据索引：{index}")
-    return [ConversationMessage(role="user", content="\n".join(body)), *recent]

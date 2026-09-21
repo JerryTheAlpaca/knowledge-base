@@ -657,6 +657,8 @@ class ShareArtifact(Base, TimestampMixin):
     __table_args__ = (
         Index("ix_share_artifacts_work", "user_id", "work_id"),
         Index("ix_share_artifacts_sha", "sha256"),
+        # 回收时每批都要按 key 复查还有没有别的登记（share_retention._still_referenced）
+        Index("ix_share_artifacts_storage_key", "storage_key"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)

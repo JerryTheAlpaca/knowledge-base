@@ -2,7 +2,7 @@
 
 - GET  /login、/register：307 到中心登录/注册页（return_to 指回 KB 自身路径）。
 - GET  /v1/auth/me：当前账号（页面初始化与管理员入口依据）。
-- POST /v1/auth/logout：撤销中心会话并清理 Cookie（CSRF/Origin 校验后代理）。
+- POST /v1/auth/logout：先清本地 Cookie，再尽力通知中心撤销（CSRF/Origin 校验照旧）。
 - POST /v1/auth/device/start|poll：插件端发起/轮询。
 - GET  /v1/auth/device/info、POST /v1/auth/device/approve|cancel：浏览器授权页用。
 
@@ -24,6 +24,7 @@ from ..config import get_settings
 from ..db import get_db
 from ..api.deps import (
     CSRF_COOKIE,
+    _check_csrf,
     current_principal,
     ensure_local_user,
     require_device,
@@ -115,25 +116,24 @@ def _expire_cookie(response: Response, name: str, *, domain: str | None = None,
 
 
 @router.post("/v1/auth/logout")
-def auth_logout(request: Request, response: Response, principal=Depends(current_principal)):
-    """共享退出：撤销当前中心会话并清理 Cookie（中心会话通道）。
+def auth_logout(request: Request, response: Response):
+    """共享退出：先清本地，再尽力通知中心（docs/05 §4.2）。
 
-    设备 Token 通道不受浏览器退出影响（docs/05 §4.2：区分「退出网站」与「断开设备」）。
+    不经 current_principal：中心不可达时那里先抛 503，本处理器根本进不去，
+    用户点了退出其实什么都没清（前端吞掉异常照样 showLogin）。写操作防护不因此
+    放松——CSRF 双提交与 Origin 校验照旧执行。
+    设备 Token 通道不受浏览器退出影响（区分「退出网站」与「断开设备」）。
     """
     settings = get_settings()
-    # 认证依赖已把中心续期 Cookie 暂存到 request.state；退出不写回，
-    # 否则响应末尾又把刚清掉的凭据种回浏览器（中心每次校验都会回一颗续期 Cookie）。
+    _check_csrf(request)
+    # 认证层没跑就不会暂存续期 Cookie；这里显式置空，末尾也不写回浏览器
     request.state.central_renewal = None
     cookie = request.cookies.get(settings.auth_cookie_name)
-    if principal.auth_method == "central_session" and cookie:
-        # 先记下这颗凭据：晚到的在飞请求会把它随续期 Cookie 种回浏览器，
-        # 中心偶尔撤销得慢（甚至没撤销成），那时返回键回去就是登录态主页。
-        central_auth.remember_revoked(cookie)
-        try:
-            central_auth.central_logout(cookie)
-        except central_auth.CentralAuthUnavailable:
-            # 中心不可达也清理本地可见 Cookie；中心会话仍在时由中心自身过期兜底
-            pass
+    if not cookie:
+        raise ApiError("AUTH_EXPIRED", "未登录", status_code=401)
+    # 1) 本地：先记住这颗凭据——退出前已发出的请求晚落地一步时，中间件也不能把
+    #    它种回来；再清 Cookie。这两步不依赖中心，必须先做完。
+    central_auth.remember_revoked(cookie)
     # 会话 Cookie 可能种在父域（AUTH_COOKIE_DOMAIN，与中心一致）也可能只在本机；
     # 两种都过期掉，留一种就会把仍然有效的凭据留在浏览器里。
     _expire_cookie(response, settings.auth_cookie_name, httponly=True)
@@ -141,6 +141,15 @@ def auth_logout(request: Request, response: Response, principal=Depends(current_
         _expire_cookie(response, settings.auth_cookie_name, domain=settings.auth_cookie_domain,
                        httponly=True)
     _expire_cookie(response, CSRF_COOKIE)
+    # 2) 中心：尽力撤销。联系不上就由中心自身过期兜底，本地已经是退出的样子；
+    #    中心明确不认这颗凭据时如实按 401 回（本地清理已经完成，不谎称撤销过）。
+    try:
+        central_auth.central_logout(cookie)
+    except central_auth.CentralAuthUnavailable:
+        pass
+    except central_auth.CentralAuthRejected:
+        response.status_code = 401
+        return {"logged_out": True, "central": "already_signed_out"}
     return {"logged_out": True}
 
 

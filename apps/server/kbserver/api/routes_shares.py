@@ -763,6 +763,14 @@ def delete_work(work_id: str, expected_version: int | None = None,
                 db: Session = Depends(get_db)) -> dict:
     user = principal.user
     work = _get_work(db, user.id, work_id)
+    # expected_version 是删除的乐观锁：不带就按现在的宽容行为删（前端当前不传），
+    # 带了就必须对得上，否则旧标签页会把别人已经改过的作品静默删掉（审查 C-12）。
+    if expected_version is not None and work.version != expected_version:
+        raise ApiError(
+            "REVISION_CONFLICT",
+            "这件作品刚刚被其他标签页改过，请刷新后再删除",
+            details={"current_version": work.version, "expected_version": expected_version},
+        )
     if work.active_run_id:
         run = db.get(ShareRun, work.active_run_id)
         if run is not None and run.state in repo.OPEN_STATES:
@@ -773,7 +781,8 @@ def delete_work(work_id: str, expected_version: int | None = None,
     work.share_token_hash = None
     work.share_token_ciphertext = None
     work.version = work.version + 1
-    # 对象引用保留到期，由清理任务按存活引用回收（不在此处物理删除）
+    # 对象引用保留到期，由清理任务按存活引用回收（不在此处物理删除）；
+    # run/会话/消息/版本这些文本行同样留给清理任务在宽限期后回收，不在请求里同步删
     for artifact in db.query(ShareArtifact).filter_by(
             work_id=work.id, user_id=user.id).all():
         artifact.expires_at = utcnow() + timedelta(days=1)
