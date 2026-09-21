@@ -133,6 +133,13 @@
 3. 服务器 `deploy/.env` 设 `COMPOSE_PROFILES=share`，让 `share_worker` 与
    `share_runner` 参与构建与启动；启用前它们不进部署路径。
 
+部署侧踩到的一个真问题：`kb-auto-deploy.service` 原来是 `TimeoutStartSec=15min`，
+而 share_runner 的基础镜像约 1.9GB、国内到 MCR 实测约 1MB/s，首次拉取要 20–30 分钟——
+systemd 会在下载中途杀掉构建，下一轮定时器又从头再拉，表现为「代码推上去了、功能静默地
+一直没部署」。已把超时放宽到 45min（`deploy/systemd/kb-auto-deploy.service`），
+并在这次启用时先在窗口外 `docker pull` 基础镜像。服务器侧启用还需要
+`deploy/.env` 里的 `COMPOSE_PROFILES=share`（该文件不进仓库，删掉这行即回到不构建、不启动）。
+
 仍待做：
 1. 用授权模型配置完成 §6.5.6 的真实多轮缓存命中验证（A39）与 §16 针对性验收。
 2. 记录 2GB 机器上 runner 的真实内存峰值与 ASR 同时运行时的表现，再决定

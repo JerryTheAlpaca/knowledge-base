@@ -7,4 +7,8 @@ Wants=network-online.target
 Type=oneshot
 User=ubuntu
 ExecStart=/home/ubuntu/kb-inbox/deploy/auto-deploy.sh
-TimeoutStartSec=15min
+# 分享 runner 的基础镜像约 1.9GB（docs/20 §9.1、§14.3）：国内到 MCR 实测约 1MB/s，
+# 一次全新拉取就要 20–30 分钟。原来的 15min 会在下载中途杀掉构建，下一轮定时器
+# 又从头再拉，结果是「功能静默地永远没部署上」。留 45min 覆盖首次构建；
+# 层已缓存时后续构建仍是分钟级，超时长度不影响正常部署速度。
+TimeoutStartSec=45min
