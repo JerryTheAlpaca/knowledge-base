@@ -1,4 +1,4 @@
-// touch-bloom.js — 点一下花冠：指尖迸一小片金粉，手下那一块花瓣（好几层）一起向外轻翻
+// touch-bloom.js — 点一下花冠：指尖迸一小片金粉，手下那一块花瓣（好几层）一起向外胀一下
 //
 // 两朵共用（说明页首屏 .rose-bloom、收件箱首页 svg.rose）。两份内联副本只是 id 前缀不同，
 // 「花心 = .plant 里那个 translate(300 260) 的 g，一圈花瓣 = 一个带滤镜的 g 套一个 use#RingN」
@@ -23,13 +23,11 @@ export function attachBloomTouch(svg) {
   // 首次点击才量层：未登录时 loginView 是 hidden 的，那时候量什么都是 0
   let geo = null;
   function measure() {
-    const rings = layers.map((layer, i) => {
+    const rings = layers.map((layer) => {
       const b = layer.getBBox();
-      // 翻的方向跟着所属那层的 --dir（首屏有），收件箱那朵没有就按奇偶交替
-      const dir = parseFloat(layer.parentElement.style.getPropertyValue("--dir")) || (i % 2 ? -1 : 1);
       layer.style.transformBox = "fill-box";
-      layer.style.transformOrigin = "center";
-      return { layer, dir, reach: Math.max(-b.x, b.x + b.width, -b.y, b.y + b.height) };
+      layer.style.transformOrigin = "center";   // 原点必须在花心，scale 才是往外胀
+      return { layer, reach: Math.max(-b.x, b.x + b.width, -b.y, b.y + b.height) };
     }).sort((a, b) => b.reach - a.reach);
     rings.forEach((ring, at) => { ring.at = at; });
     const gap = (rings[0].reach - rings[rings.length - 1].reach) / (rings.length - 1) || 12;
@@ -39,13 +37,10 @@ export function attachBloomTouch(svg) {
   // 轻翻：整块一起胀出去再落回来，权重 k 决定这一层出多少力
   function nudge(ring, k) {
     if (ring.anim) ring.anim.cancel();
-    const out = 1 + 0.036 * k;
-    const deg = ring.dir * 1.6 * k;
     ring.anim = ring.layer.animate([
-      { transform: "scale(1) rotate(0deg)" },
-      { offset: 0.26, transform: `scale(${out.toFixed(4)}) rotate(${deg.toFixed(2)}deg)` },
-      { offset: 0.62, transform: `scale(${(1 + (out - 1) * 0.3).toFixed(4)}) rotate(${(-deg * 0.26).toFixed(2)}deg)` },
-      { transform: "scale(1) rotate(0deg)" },
+      { transform: "scale(1)" },
+      { offset: 0.26, transform: `scale(${(1 + 0.055 * k).toFixed(4)})` },
+      { transform: "scale(1)" },
     ], { duration: 760, easing: "cubic-bezier(.2, .72, .28, 1)" });
   }
 
