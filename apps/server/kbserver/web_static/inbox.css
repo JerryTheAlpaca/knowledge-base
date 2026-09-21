@@ -642,14 +642,19 @@ details.disclosure.slim .disclosure-body { padding: 0 8px 8px; }
 }
 
 /* ============ 作品：选材料 → 澄清 → 生成 → 预览 → 分享（docs/20 §3） ============ */
-/* 选择条排在抽屉底部（.drawer-body 内），跟着条目列表一起被面板裁切收放；
-   做成页面浮层的话，抽屉收起后它还会飘在采集框上。一进选择态就出现，0 篇也在。 */
-.share-selbar { flex: none; width: fit-content; max-width: 100%; margin: 10px auto 0;
+/* 选择条浮在抽屉面板下沿之上，不占列表的位置：占位会把条目整片顶上去（走查反馈）。
+   仍然挂在面板里，所以跟着面板一起被 clip 收放，抽屉收起就跟着没，不会飘在采集框上。
+   一进选择态就出现，0 篇也在。 */
+.share-selbar { position: absolute; left: 0; right: 0; margin-inline: auto;
+                bottom: calc(18px + env(safe-area-inset-bottom));
+                width: fit-content; max-width: calc(100vw - 32px);
                 display: flex; align-items: center; gap: 8px; flex-wrap: nowrap;
                 padding: 8px 12px; white-space: nowrap;
                 background: var(--surface); border: 1px solid var(--border-strong);
                 border-radius: 999px; box-shadow: var(--shadow-2, 0 8px 28px rgba(0,0,0,.10));
                 font-size: var(--fs-small); }
+/* 条子压在列表上了，就给滚动区补一段底部留白：最后一条也滚得上去 */
+body.share-selecting .drawer-scroll { padding-bottom: 78px; }
 .share-selbar .btn { padding-inline: 12px; }
 .share-selbar .spacer { flex: 1; min-width: 6px; }
 .share-selbar[hidden] { display: none; }
@@ -669,11 +674,14 @@ details.disclosure.slim .disclosure-body { padding: 0 8px 8px; }
               border-radius: var(--radius-card); box-shadow: var(--shadow-pop); }
 .share-menu[hidden] { display: none; }
 /* 选中态不加圆框，点一下整张卡片四周亮起来：一圈描边 + 外发光 + 内侧一点反光，
-   一次加光到位，不额外挂动画（走查反馈：加动画的点亮像闪一下） */
-ul.items li.item.picked { background: var(--accent-soft); border-color: var(--accent);
-                          box-shadow: 0 0 0 1.5px var(--accent),
-                                      0 0 20px rgba(226, 176, 74, .3),
-                                      inset 0 0 22px rgba(226, 176, 74, .1); }
+   一次加光到位，不额外挂动画（走查反馈：加动画的点亮像闪一下）。
+   整条收在 body.share-selecting 作用域下：退出多选态光是作用域没的就一次全灭，
+   不用 JS 去清 .picked（审查 U-01：反向漏光），行重画时由 shares.js 补标记 */
+body.share-selecting ul.items li.item.picked { background: var(--accent-soft);
+                                               border-color: var(--accent);
+                                               box-shadow: 0 0 0 1.5px var(--accent),
+                                                           0 0 20px rgba(226, 176, 74, .3),
+                                                           inset 0 0 22px rgba(226, 176, 74, .1); }
 ul.items li.item { position: relative; }
 body.share-selecting ul.items li.item { cursor: copy; }
 /* 「分享」是个开关，按下必须亮：文案不动（多一个字就把同排的搜索钮横向推走），

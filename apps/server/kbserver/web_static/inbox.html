@@ -467,9 +467,11 @@
             </div>
           </div>
           <!-- 选择模式底部条：一进选择态就出现（0 篇也在），「完成」再问一句要下载还是做 HTML。
-               跟着抽屉面板走，抽屉收起就一起收，不会飘在采集框上 -->
+               浮在列表之上不占位，跟着抽屉面板收放 -->
           <div class="share-selbar" id="shareSelBar" hidden>
-            <span class="seltext">
+            <!-- aria-live 挂在 seltext 这层：0 篇时 .selcount 本身是 display:none，
+                 读屏软件拿不到，包一层一直显示的元素才报得出「已选 N 篇」的变化 -->
+            <span class="seltext" aria-live="polite">
               <span class="selhint">点卡片勾选材料</span>
               <span class="selcount">已选 <b class="num" id="shareSelCount">0</b> 篇</span>
             </span>
