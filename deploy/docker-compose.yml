@@ -147,6 +147,9 @@ services:
       - share_spool:/spool
       # 运行手册与版本清单来自 runner 同一份文件（单一事实来源，避免两侧版本漂移）
       - ../apps/share-renderer/runtime-manifest.json:/runtime/runtime-manifest.json:ro
+    # kbshare gid（服务端与 runner 两个镜像里都建了同一个组，审查 C-02）：
+    # 交接卷由两个不同 uid 的容器读写，靠共同组拿 2770 权限，不靠 0777
+    group_add: ["950"]
     secrets:
       - master_key
     mem_limit: 384m
@@ -174,10 +177,25 @@ services:
       - /tmp:size=256m,mode=1777
     volumes:
       - share_spool:/spool
+    # 与 share_worker 同一个 kbshare gid：两端按组读写交接卷（审查 C-02）
+    group_add: ["950"]
     cap_drop:
       - ALL
+    # Chromium 的沙箱要自己建 user namespace（clone/unshare 带 CLONE_NEWUSER），再切
+    # 一个私有 mount namespace（chroot/mount）。这台宿主是 Ubuntu 24.04，默认开着
+    # kernel.apparmor_restrict_unprivileged_userns=1：不给 capability 时容器里建不了
+    # user namespace（在宿主机上用普通用户 unshare -Urm 也一样失败，root 可以），
+    # 沙箱只能走特权路径。SYS_ADMIN 只加在这一个容器上——它无网络、无凭据、
+    # 无 Docker socket、根只读，cgroup 也只看得到自己那一枝。
+    cap_add:
+      - SYS_ADMIN
     security_opt:
       - no-new-privileges:true
+      # 不放开整个 seccomp：这份 profile 逐条照抄 Docker 29 默认表，只在最前面加三条
+      # （clone/unshare 带 CLONE_NEWUSER 才放行、chroot/mount/umount2/pivot_root 放行）。
+      # setns、bpf、perf_event_open、open_by_handle_at 这些仍然一律不放。
+      # 换机器时把 KB_REPO_DIR 指到新的仓库目录（默认值见 :deploy/.env）
+      - seccomp=${KB_REPO_DIR:-/home/ubuntu/kb-inbox}/deploy/seccomp-share-runner.json
     pids_limit: 128
     mem_limit: 512m               # 试运行上限；实测峰值后再定部署值（docs/20 §14.2）
     memswap_limit: 512m

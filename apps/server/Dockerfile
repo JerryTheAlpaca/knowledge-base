@@ -21,7 +21,12 @@ COPY migrations ./migrations
 COPY alembic.ini ./
 
 # 非 root 运行；预创建数据卷挂载点，避免 Docker 以 root 重建挂载点导致非 root 容器无权写入
-RUN useradd --create-home appuser && mkdir -p /data/db /data/objects /data/tmp /data/deletions \
+# kbshare（gid 固定 950，与 apps/share-renderer/Dockerfile 同一个组）：分享任务交接卷
+# share_spool 由本镜像的 share_worker 与 runner 容器的 pwuser 共同读写，两端同 gid 就用
+# 组权限 2770 交接，不必把目录放开到 0777（审查 C-02）。
+RUN groupadd -g 950 kbshare \
+    && useradd --create-home --groups kbshare appuser \
+    && mkdir -p /data/db /data/objects /data/tmp /data/deletions \
     && chown -R appuser /data /app
 USER appuser
 
