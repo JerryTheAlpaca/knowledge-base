@@ -882,10 +882,11 @@ def _repairable(diagnostics: list[str]) -> bool:
 
 
 def cleanup_runner_task(settings: Settings, task_id: str | None) -> None:
+    """采纳结果或判定超时后调用：runner 已把产物移到 done/failed，输入侧可以一并回收。"""
     if not task_id:
         return
     root = Path(settings.share_spool_dir)
-    for sub in ("done", "failed", "ready"):
+    for sub in ("done", "failed", "ready", "working"):
         shutil.rmtree(root / sub / task_id, ignore_errors=True)
 
 

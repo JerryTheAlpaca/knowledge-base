@@ -102,6 +102,16 @@
 | Alembic 迁移 | 临时库上 upgrade→downgrade→upgrade 往返通过，CHECK/索引/FK 均落库 |
 | 浏览器端到端走查 | 用本机走查服务（伪中心登录 + 假模型响应）+ **真实 runner**：勾选两篇材料 → 生成分享页 → 回答 2 个问题 → 确认摘要 → 成品出现在预览 iframe → 子页面「来源」按钮打开外层来源面板 → 下载/分享按钮可用 → 390px 视口无横向溢出 → 页面无 JS 报错 |
 | 回归 | 音频原件保留、Bundle 到期清理等既有用例在改动后仍通过（曾出现自引用导致 Bundle 永不回收，已修） |
+| 生产容器内 `share_runner doctor` | `browser: ok`：非 root（pwuser）＋ Chromium sandbox 开启＋`network_mode: none`，用真实交付件走完构建与浏览器检查，不是空白占位页 |
+| 生产容器内跑代表样本 | `check --task samples/rich`（chart.js＋KaTeX＋声明式交互）在 runner 容器内 `ok: true`、诊断 0 条、四张截图（桌面/移动各 2） |
+| 2GB 机器上的 runner 内存 | 上述一次完整构建＋浏览器检查峰值 226MiB，限额 512MiB；同期宿主机 available 约 1.0GB |
+| 生产容器内 spool 交接往返 | 常驻 runner 领取伪造任务（rich 样本）→ 产出 1.49MB 单文件成品＋四张截图 → 服务端 worker 读回 `result.json` 并清理，两端跨 uid 都可读写可删 |
+
+上面两轮的权限演练各暴露一个真实缺陷，都已修：数据卷首次挂载时 root 属主导致
+runner 建不出 `ready/`；runner 建的 `out/screenshots` 是 0755，服务端 worker
+删不掉，成品回收会卡在 `PermissionError`（现 runner 进程 umask 置 0）。
+另外交接目录里 `working/<task>` 的输入此前只靠 TTL 兜底，现在采纳结果或判定
+超时就随手回收。
 
 ## 3. 尚未验证与已知限制
 
@@ -111,9 +121,9 @@
 - 生产分享域名尚未确定：`SHARE_PUBLIC_BASE_URL` 为空时「生成分享链接」返回
   明确的配置未完成原因，私有预览与下载可用。Caddy 片段里的域名是示例，
   必须换成与账号站不同可注册域名后才可用。
-- 2 核 2GB 上的真实内存峰值、runner 限额与 ASR 重型任务准入互斥**未实测**；
-  当前 512MiB/单并发是试运行初值。§14.2 提到的共享重型任务槽位只做了
-  `SHARE_RENDER_CONCURRENCY` 与串行 runner，未做跨 ASR 的租约式互斥。
+- 2 核 2GB 上的 runner 峰值已实测（上表 226MiB），但**与 ASR 等重型任务同时运行**
+  时的表现、以及 §14.2 的跨任务重型槽位互斥**未实测**：当前只做了
+  `SHARE_RENDER_CONCURRENCY` 与串行 runner，512MiB/单并发是试运行初值。
 - 真实 Safari/iPhone 检查、代表样本（专业概念／中医／数学／跨领域）的
   人工内容复核未做（M5）；Chromium 移动视口不等于 iOS 实机。
 - 首版限制：Web 只能用服务器已有且属于本人的材料；修改接口不增减材料；
@@ -139,11 +149,25 @@ systemd 会在下载中途杀掉构建，下一轮定时器又从头再拉，表
 一直没部署」。已把超时放宽到 45min（`deploy/systemd/kb-auto-deploy.service`），
 并在这次启用时先在窗口外 `docker pull` 基础镜像。服务器侧启用还需要
 `deploy/.env` 里的 `COMPOSE_PROFILES=share`（该文件不进仓库，删掉这行即回到不构建、不启动）。
+该单元已按 45min 装到服务器（`/etc/systemd/system/kb-auto-deploy.service`）。
+
+还有两个只在真机上才暴露的问题（都已修）：
+
+1. compose 里给 `share_runner` 又写了一遍 `node src/cli.mjs`，叠加镜像的
+   `ENTRYPOINT` 后参数错位，容器以「用法」分支退出码 2 反复重启；改成只传参数。
+2. 交接卷首次挂载时是 root 属主，非 root 的 runner 连 `ready/` 都建不出来；
+   而 worker 与 runner 是两个不同 uid 的容器，任务目录和 runner 的产物目录
+   （`out/screenshots` 等）必须对端可写、可删。现在镜像里预建 `/spool` 目录树
+   并设成 pwuser:pwuser 0777（空卷挂载时按镜像属主与权限初始化），worker 侧
+   统一 `_spool_dir()` 建目录＋放开权限，runner 进程 `umask 0`。
+
+当前按「主要下载 HTML 文件」使用：`SHARE_ENABLED=true` 已开，分享站点仍未配置，
+点「生成分享链接」会得到明确原因，私有预览与下载不受影响。
 
 仍待做：
 1. 用授权模型配置完成 §6.5.6 的真实多轮缓存命中验证（A39）与 §16 针对性验收。
-2. 记录 2GB 机器上 runner 的真实内存峰值与 ASR 同时运行时的表现，再决定
-   `mem_limit` 与是否升到 4GB。
+2. runner 单次检查的内存峰值已记录（上表 226MiB），还差**与 ASR 等重型任务同时
+   运行**时的表现，据此再决定 `mem_limit` 与是否升到 4GB。
 3. 需要公开分享链接时才配独立可注册域名、DNS 与 Caddy 片段；只用「下载 HTML」
    不需要这一步，未配置时点「分享」会得到明确的「还没有配置独立的分享站点」提示，
    私有预览与下载不受影响。
