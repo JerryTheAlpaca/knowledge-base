@@ -1,0 +1,38 @@
+{
+  "schema_version": "1.0",
+  "kind": "build_check",
+  "task_id": "sample-prose",
+  "lease_id": "sample",
+  "runtime_version": "share-runtime-1.0.0",
+  "page_source": "input/page_source.json",
+  "assets": [],
+  "references": [
+    {
+      "ref_id": "ref1",
+      "title": "示例材料一：分型与用量",
+      "author": "某医家",
+      "source_label": "网页",
+      "url": "https://example.org/material-one",
+      "quote": "先分型，再谈用量。",
+      "revision": 3
+    },
+    {
+      "ref_id": "ref2",
+      "title": "示例材料二：证候与条件",
+      "source_label": "公众号",
+      "url": "https://example.org/material-two",
+      "quote": "剂量随证候浮动，不能一概而论。",
+      "revision": 2
+    }
+  ],
+  "coverage_notes": [
+    "两篇均已读取完整正文（本行为构建器透传的来源覆盖说明）"
+  ],
+  "limitations": [],
+  "revision_label": "样本 v1",
+  "check": {
+    "enabled": true,
+    "max_screenshots": 4
+  },
+  "input_hash": "893b409ce1893bd1d9ef4801b44323f22e9947a5c37dc46c5d7a8b125c7f2965"
+}

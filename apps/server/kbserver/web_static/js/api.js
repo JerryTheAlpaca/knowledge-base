@@ -13,13 +13,15 @@ export const esc = (s) => String(s == null ? "" : s)
 const FALLBACK_MESSAGE = "刚才没有完成，请再试一次。";
 
 export class ApiUiError extends Error {
-  constructor(message, { code = "", action = null, status = 0, net = false } = {}) {
+  constructor(message, { code = "", action = null, status = 0, net = false, details = null } = {}) {
     super(message);
     this.userMessage = message;
     this.code = code;
     this.action = action;
     this.status = status;
     this.net = net;
+    // 服务端具名原因里的可操作条目（如「哪几篇材料还没有可读正文」）
+    this.details = details;
   }
 }
 
@@ -55,7 +57,8 @@ export async function api(path, opts = {}) {
     // 用户语言契约：只显示受控 user_message；非协议响应统一降级（§10.3）
     throw new ApiUiError(
       (env && env.user_message) || FALLBACK_MESSAGE,
-      { code: (env && env.code) || "", action: (env && env.action) || null, status: res.status },
+      { code: (env && env.code) || "", action: (env && env.action) || null, status: res.status,
+        details: (env && env.details) || null },
     );
   }
   return data;

@@ -92,6 +92,8 @@ def auth_me(request: Request, principal=Depends(current_principal), db: Session 
         "is_admin": principal.is_admin,
         "has_device": principal.has_device,
         "auth_login_url": settings.auth_login_url or None,
+        # 未启用的功能不在界面上露出入口：否则点到底只得到一句「还没有启用」
+        "shares_enabled": settings.share_enabled,
     }
 
 

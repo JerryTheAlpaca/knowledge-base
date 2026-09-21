@@ -118,8 +118,48 @@ class Settings:
         "api.x.ai",
     )
 
+    # 通用 AI 整合与 HTML 分享（docs/20 §14.1）：首轮实现与压测用的工程初始值，
+    # 不是已验证容量；默认关闭，开发验收后由部署显式启用。
+    share_enabled: bool = os.environ.get("SHARE_ENABLED", "false").lower() in ("1", "true", "yes")
+    share_public_base_url: str = os.environ.get("SHARE_PUBLIC_BASE_URL", "")
+    share_spool_dir: Path = Path(os.environ.get("SHARE_SPOOL_DIR", "./data/share-spool"))
+    share_runtime_manifest: Path = Path(
+        os.environ.get("SHARE_RUNTIME_MANIFEST", "apps/share-renderer/runtime-manifest.json")
+    )
+    share_max_items: int = int(os.environ.get("SHARE_MAX_ITEMS", "20"))
+    share_max_instructions_chars: int = int(os.environ.get("SHARE_MAX_INSTRUCTIONS_CHARS", "4000"))
+    share_max_questions_per_round: int = int(os.environ.get("SHARE_MAX_QUESTIONS_PER_ROUND", "3"))
+    share_clarification_output_tokens: int = int(os.environ.get("SHARE_CLARIFICATION_OUTPUT_TOKENS", "1200"))
+    share_synthesis_output_tokens: int = int(os.environ.get("SHARE_SYNTHESIS_OUTPUT_TOKENS", "8000"))
+    share_page_output_tokens: int = int(os.environ.get("SHARE_PAGE_OUTPUT_TOKENS", "16000"))
+    share_max_waiting_drafts_per_user: int = int(os.environ.get("SHARE_MAX_WAITING_DRAFTS_PER_USER", "20"))
+    share_context_compact_ratio: float = float(os.environ.get("SHARE_CONTEXT_COMPACT_RATIO", "0.8"))
+    share_max_source_chars: int = int(os.environ.get("SHARE_MAX_SOURCE_CHARS", "200000"))
+    share_max_input_bytes: int = int(os.environ.get("SHARE_MAX_INPUT_BYTES", str(50 * 1024 * 1024)))
+    share_max_html_bytes: int = int(os.environ.get("SHARE_MAX_HTML_BYTES", str(10 * 1024 * 1024)))
+    share_max_active_per_user: int = int(os.environ.get("SHARE_MAX_ACTIVE_PER_USER", "1"))
+    share_max_queued_per_user: int = int(os.environ.get("SHARE_MAX_QUEUED_PER_USER", "5"))
+    share_render_concurrency: int = int(os.environ.get("SHARE_RENDER_CONCURRENCY", "1"))
+    share_max_repairs: int = int(os.environ.get("SHARE_MAX_REPAIRS", "2"))
+    share_render_timeout_seconds: int = int(os.environ.get("SHARE_RENDER_TIMEOUT_SECONDS", "60"))
+    share_max_render_retries: int = int(os.environ.get("SHARE_MAX_RENDER_RETRIES", "1"))
+    share_runner_poll_seconds: float = float(os.environ.get("SHARE_RUNNER_POLL_SECONDS", "2"))
+    share_runner_max_wait_seconds: int = int(os.environ.get("SHARE_RUNNER_MAX_WAIT_SECONDS", "900"))
+    share_preview_ttl_seconds: int = int(os.environ.get("SHARE_PREVIEW_TTL_SECONDS", "300"))
+    share_max_storage_bytes_per_user: int = int(
+        os.environ.get("SHARE_MAX_STORAGE_BYTES_PER_USER", str(500 * 1024 * 1024))
+    )
+    share_revision_retention_days: int = int(os.environ.get("SHARE_REVISION_RETENTION_DAYS", "30"))
+    share_run_diagnostic_retention_days: int = int(os.environ.get("SHARE_RUN_DIAGNOSTIC_RETENTION_DAYS", "7"))
+    share_spool_ttl_hours: int = int(os.environ.get("SHARE_SPOOL_TTL_HOURS", "24"))
+    share_max_source_chunks: int = int(os.environ.get("SHARE_MAX_SOURCE_CHUNKS", "40"))
+    share_max_supplement_rounds: int = int(os.environ.get("SHARE_MAX_SUPPLEMENT_ROUNDS", "1"))
+    share_max_interactions: int = int(os.environ.get("SHARE_MAX_INTERACTIONS", "8"))
+    share_max_screenshots: int = int(os.environ.get("SHARE_MAX_SCREENSHOTS", "6"))
+
     def ensure_dirs(self) -> None:
-        for d in (self.objects_dir, self.tmp_dir, self.deletions_dir, self.database_url_path()):
+        for d in (self.objects_dir, self.tmp_dir, self.deletions_dir, self.share_spool_dir,
+                  self.database_url_path()):
             d.mkdir(parents=True, exist_ok=True)
 
     def database_url_path(self) -> Path:
@@ -180,4 +220,38 @@ def get_settings() -> Settings:
         asr_busy_cooldown_seconds=int(os.environ.get("ASR_BUSY_COOLDOWN_SECONDS", "120")),
         asr_idle_min_available_mib=int(os.environ.get("ASR_IDLE_MIN_AVAILABLE_MIB", "384")),
         asr_busy_min_available_mib=int(os.environ.get("ASR_BUSY_MIN_AVAILABLE_MIB", "256")),
+        share_enabled=os.environ.get("SHARE_ENABLED", "false").lower() in ("1", "true", "yes"),
+        share_public_base_url=os.environ.get("SHARE_PUBLIC_BASE_URL", ""),
+        share_spool_dir=Path(os.environ.get("SHARE_SPOOL_DIR", "./data/share-spool")),
+        share_runtime_manifest=Path(os.environ.get("SHARE_RUNTIME_MANIFEST", "apps/share-renderer/runtime-manifest.json")),
+        share_max_items=int(os.environ.get("SHARE_MAX_ITEMS", "20")),
+        share_max_instructions_chars=int(os.environ.get("SHARE_MAX_INSTRUCTIONS_CHARS", "4000")),
+        share_max_questions_per_round=int(os.environ.get("SHARE_MAX_QUESTIONS_PER_ROUND", "3")),
+        share_clarification_output_tokens=int(os.environ.get("SHARE_CLARIFICATION_OUTPUT_TOKENS", "1200")),
+        share_synthesis_output_tokens=int(os.environ.get("SHARE_SYNTHESIS_OUTPUT_TOKENS", "8000")),
+        share_page_output_tokens=int(os.environ.get("SHARE_PAGE_OUTPUT_TOKENS", "16000")),
+        share_max_waiting_drafts_per_user=int(os.environ.get("SHARE_MAX_WAITING_DRAFTS_PER_USER", "20")),
+        share_context_compact_ratio=float(os.environ.get("SHARE_CONTEXT_COMPACT_RATIO", "0.8")),
+        share_max_source_chars=int(os.environ.get("SHARE_MAX_SOURCE_CHARS", "200000")),
+        share_max_input_bytes=int(os.environ.get("SHARE_MAX_INPUT_BYTES", str(50 * 1024 * 1024))),
+        share_max_html_bytes=int(os.environ.get("SHARE_MAX_HTML_BYTES", str(10 * 1024 * 1024))),
+        share_max_active_per_user=int(os.environ.get("SHARE_MAX_ACTIVE_PER_USER", "1")),
+        share_max_queued_per_user=int(os.environ.get("SHARE_MAX_QUEUED_PER_USER", "5")),
+        share_render_concurrency=int(os.environ.get("SHARE_RENDER_CONCURRENCY", "1")),
+        share_max_repairs=int(os.environ.get("SHARE_MAX_REPAIRS", "2")),
+        share_render_timeout_seconds=int(os.environ.get("SHARE_RENDER_TIMEOUT_SECONDS", "60")),
+        share_max_render_retries=int(os.environ.get("SHARE_MAX_RENDER_RETRIES", "1")),
+        share_runner_poll_seconds=float(os.environ.get("SHARE_RUNNER_POLL_SECONDS", "2")),
+        share_runner_max_wait_seconds=int(os.environ.get("SHARE_RUNNER_MAX_WAIT_SECONDS", "900")),
+        share_preview_ttl_seconds=int(os.environ.get("SHARE_PREVIEW_TTL_SECONDS", "300")),
+        share_max_storage_bytes_per_user=int(
+            os.environ.get("SHARE_MAX_STORAGE_BYTES_PER_USER", str(500 * 1024 * 1024))),
+        share_revision_retention_days=int(os.environ.get("SHARE_REVISION_RETENTION_DAYS", "30")),
+        share_run_diagnostic_retention_days=int(
+            os.environ.get("SHARE_RUN_DIAGNOSTIC_RETENTION_DAYS", "7")),
+        share_spool_ttl_hours=int(os.environ.get("SHARE_SPOOL_TTL_HOURS", "24")),
+        share_max_source_chunks=int(os.environ.get("SHARE_MAX_SOURCE_CHUNKS", "40")),
+        share_max_supplement_rounds=int(os.environ.get("SHARE_MAX_SUPPLEMENT_ROUNDS", "1")),
+        share_max_interactions=int(os.environ.get("SHARE_MAX_INTERACTIONS", "8")),
+        share_max_screenshots=int(os.environ.get("SHARE_MAX_SCREENSHOTS", "6")),
     )

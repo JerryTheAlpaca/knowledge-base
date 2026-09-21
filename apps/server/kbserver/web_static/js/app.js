@@ -10,6 +10,7 @@ import { initItemList, refreshItems, scheduleRefresh, setListPollPaused,
 import { initDetail, openDetail, closeDetail, currentDetailId } from "./item-detail.js";
 import { initOnboarding, maybeShowOnboarding, reopenOnboarding } from "./onboarding.js";
 import { initSettings, showSettings, hideSettings } from "./settings.js";
+import { initShares, openSharesView, hideSharesView, isSharesOpen } from "./shares.js";
 
 let meInfo = null;
 // 从展开的条目抽屉进入设置：返回时恢复抽屉而不是落回金蔷薇主页
@@ -30,6 +31,12 @@ function showApp(me) {
   $("whoChip").textContent = name;
   $("menuUserName").textContent = name;
   $("menuAdmin").hidden = !me.is_admin;
+  // 分享创作未启用时不露出入口（选择模式与作品列表都只在启用后出现）
+  const sharesOn = !!me.shares_enabled;
+  const sharesBtn = $("sharesBtn");
+  if (sharesBtn) sharesBtn.hidden = !sharesOn;
+  const selectBtn = $("selectToggle");
+  if (selectBtn) selectBtn.hidden = !sharesOn;
 }
 
 // ---------- 视图路由：/inbox、/inbox?view=settings、/inbox?item=xx ----------
@@ -39,7 +46,15 @@ let routeFirstLoad = true;
 function route() {
   closeModal(null);  // 换视图时关闭遗留弹窗（确认/记录/补充）
   const params = new URLSearchParams(location.search);
+  const onShares = params.get("view") === "shares";
   const onSettings = params.get("view") === "settings";
+  if (onShares) {
+    $("homeView").hidden = true;
+    hideSettings();
+    openSharesView(params.get("share") || null);
+    return;
+  }
+  if (isSharesOpen()) { hideSharesView(); renderHomeAfterShares(); }
   const wasOnSettings = !$("settingsView").hidden;
   // 列表被详情/设置盖住时停掉它的轮询（审查 C-06）：抽屉展开时列表可见，继续轮询
   setListPollPaused(onSettings || !!params.get("item"));
@@ -86,6 +101,11 @@ function closeMenus() {
 }
 
 // 品牌「金蔷薇」：任何二级视图（详情/设置）或展开的抽屉下一键回到金蔷薇主页面
+function renderHomeAfterShares() {
+  $("sharesView").hidden = true;
+  $("homeView").hidden = false;
+}
+
 function goHome() {
   const drawerWasOpen = isDrawerOpen();
   const atHome = location.pathname === "/inbox" && !location.search &&
@@ -177,6 +197,8 @@ window.addEventListener("popstate", route);
   initDetail();
   initOnboarding();
   initSettings();
+  initShares();
+  window.__kbRefreshItems = refreshItems;
   try {
     const me = await api("/v1/auth/me");
     showApp(me);

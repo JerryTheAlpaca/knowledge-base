@@ -36,3 +36,6 @@ __pycache__/
 
 # Agent workspace data
 .workbuddy/
+
+# 分享作品 runner 的样本构建产物
+apps/share-renderer/samples/*/dist/

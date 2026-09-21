@@ -1,0 +1,68 @@
+{
+  "schema_version": "1.0",
+  "runtime_version": "share-runtime-1.0.0",
+  "description": "分享作品固定运行环境（docs/20 §7）。镜像构建阶段按 package-lock.json 安装，任务执行阶段不安装、不取 CDN。",
+  "target_browsers": [
+    "桌面与移动端的现代浏览器（自动检查使用 Chromium：1440×900 与 390×844）",
+    "iOS Safari 属上线前人工验收项，不由 Chromium 移动视口代替"
+  ],
+  "build": {
+    "platform": "browser",
+    "format": "iife",
+    "bundle": true,
+    "splitting": false,
+    "sourcemap": false,
+    "minify": false,
+    "target": "es2020"
+  },
+  "packages": [
+    {
+      "name": "chart.js",
+      "version": "4.5.1",
+      "license": "MIT",
+      "license_file": "node_modules/chart.js/LICENSE.md",
+      "imports": [
+        {
+          "specifier": "chart.js",
+          "entry": "node_modules/chart.js/dist/chart.js",
+          "default_as": "Chart",
+          "register_all": true,
+          "note": "导入即自动注册全部控制器与元素（等价 chart.js/auto），成品内不保留远程引用。",
+          "example": "import Chart from 'chart.js';\nnew Chart(document.querySelector('#c'), { type: 'bar', data: { labels: ['甲','乙'], datasets: [{ label: '占比', data: [3, 7] }] }, options: { responsive: true, animation: false } });"
+        }
+      ],
+      "transitive": [
+        { "name": "@kurkle/color", "version": "0.3.4", "license": "MIT", "note": "chart.js 内部颜色处理，页面不能直接 import" }
+      ]
+    },
+    {
+      "name": "katex",
+      "version": "0.18.7",
+      "license": "MIT",
+      "license_file": "node_modules/katex/LICENSE",
+      "imports": [
+        {
+          "specifier": "katex",
+          "entry": "node_modules/katex/dist/katex.mjs",
+          "default_as": "default",
+          "note": "只负责排版，不是计算引擎；渲染必须传 trust:false（构建器固定注入）。",
+          "example": "import katex from 'katex';\nkatex.render('E = mc^2', document.querySelector('#f'), { displayMode: true, throwOnError: false, trust: false });"
+        }
+      ],
+      "styles": [
+        {
+          "id": "katex-css",
+          "file": "node_modules/katex/dist/katex.min.css",
+          "note": "使用 katex 依赖时由构建器自动内联，并把 woff2 字体转成 data: URL；页面不需要自己引入样式。"
+        }
+      ]
+    }
+  ],
+  "denied_runtime": [
+    "网络请求（fetch / XMLHttpRequest / WebSocket / EventSource / sendBeacon）",
+    "导航与打开窗口（location / window.open / form 提交 / 顶层跳转）",
+    "动态导入 import() 与 Worker / Service Worker",
+    "eval 与 new Function",
+    "远程字体、远程图片、远程 CSS、iframe 与外部对象"
+  ]
+}

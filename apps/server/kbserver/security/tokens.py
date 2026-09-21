@@ -30,6 +30,7 @@ DESKTOP_SCOPES = [
 BIND_LOCAL_SCOPE = "profiles:bind-local"
 OPTIONAL_DEVICE_SCOPES = [BIND_LOCAL_SCOPE]
 # Web 收件箱：桌面同级权限 + uploads:create（收件箱要上传补充材料，docs/02 §2.1）
+# shares:* 只在 Web 通道开放：本地插件首版不需要，也不自动扩大旧设备 Token 权限（docs/20 §12）
 WEB_SCOPES = [
     "items:read",
     "receipts:write",
@@ -38,6 +39,8 @@ WEB_SCOPES = [
     "items:edit",
     "profiles:manage",
     "devices:manage",
+    "shares:read",
+    "shares:write",
 ]
 
 

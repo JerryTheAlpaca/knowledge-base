@@ -58,6 +58,7 @@ from ..storage.objects import ObjectStore
 from . import asr as asr_stage
 from . import enrich as enrich_stage
 from . import idle as idle_mod
+from . import share_retention
 from .publish import auto_process_enabled
 from .publish import bundle_files as _bundle_files
 from .publish import publish_segments_revision as _publish_segments_revision
@@ -778,6 +779,11 @@ def retention_sweep(session_factory, store: ObjectStore) -> dict[str, int]:
             ).one_or_none()
             if receipt is not None and receipt.received_at >= acked_cutoff:
                 continue  # 已回执且未超过回执后保留期
+            if share_retention._still_referenced(db, bundle.manifest_key,
+                    exclude_bundle_id=bundle.id):
+                # 分享快照或别的清单还在引用同一对象：只解除本 Bundle 的到期意图
+                bundle.expires_at = None
+                continue
             store.delete_object(bundle.manifest_key)
             db.delete(bundle)
             stats["expired_bundles"] += 1
@@ -820,6 +826,8 @@ def retention_sweep(session_factory, store: ObjectStore) -> dict[str, int]:
             Upload.state == "completed", Upload.expires_at > now
         ).all():
             referenced.add(key)
+        # 分享作品引用：同一物理对象可被多条引用持有，解除一个引用不等于删除文件
+        referenced |= share_retention.share_referenced_keys(db)
         # 分批删除孤儿对象与登记，避免单次长事务（审查 C-08）
         orphans = [(fid, key) for fid, key in db.query(StoredFile.id, StoredFile.storage_key).all()
                    if key not in referenced]
@@ -855,6 +863,11 @@ def retention_sweep(session_factory, store: ObjectStore) -> dict[str, int]:
             asr_stage._cleanup_by_work_dir(settings, work_dir_rel)
             stats["asr_work_dirs"] += 1
         db.commit()
+    # 分享对象生命周期：解除过期引用后按同一存活判断回收物理对象（docs/20 §13.2）
+    try:
+        stats.update(share_retention.reclaim_expired_share_objects(session_factory, store))
+    except Exception as exc:  # noqa: BLE001 —— 分享回收失败不影响原有清理与任务
+        print(f"[worker] 分享对象回收异常：{type(exc).__name__}: {exc}")
     return stats
 
 

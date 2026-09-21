@@ -60,6 +60,10 @@ def _normalize_for_quote(text: str) -> str:
     return re.sub(r"\s+", "", text)
 
 
+# 分享作品复用同一套逐字比对规则（docs/20 §5.4）
+normalize_for_quote = _normalize_for_quote
+
+
 def _excerpt_check(
     item: dict,
     *,

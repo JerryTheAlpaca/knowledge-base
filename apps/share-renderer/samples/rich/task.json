@@ -1,0 +1,31 @@
+{
+  "schema_version": "1.0",
+  "kind": "build_check",
+  "task_id": "sample-rich",
+  "lease_id": "sample",
+  "runtime_version": "share-runtime-1.0.0",
+  "page_source": "input/page_source.json",
+  "assets": [],
+  "references": [
+    {
+      "ref_id": "ref1",
+      "title": "示例材料：统计口径说明",
+      "source_label": "网页",
+      "url": "https://example.org/stats",
+      "quote": "样本量不足时只给定性结构。",
+      "revision": 1
+    }
+  ],
+  "coverage_notes": [
+    "图形与数值均为示例数据，来源材料未提供统计数字"
+  ],
+  "limitations": [
+    "没有取得原始统计数据，因此只画结构不画统计图"
+  ],
+  "revision_label": "样本 v1",
+  "check": {
+    "enabled": true,
+    "max_screenshots": 6
+  },
+  "input_hash": "87222b3f46bca1a208272c2acd4a3b0e6eda93f53cbbeca4e4719fa16dd0a074"
+}

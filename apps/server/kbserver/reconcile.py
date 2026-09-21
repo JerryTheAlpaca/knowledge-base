@@ -18,15 +18,20 @@ from datetime import timedelta
 from sqlalchemy.orm import Session
 
 from .domain import provider_ops
-from .models import Item, Job, ProviderOperation, utcnow
+from .models import Item, Job, ProviderOperation, ShareRun, utcnow
 
 TERMINAL_JOB_STATES = {"failed", "cancelled"}
+# 分享任务里这些状态仍会被恢复路径处置，不在此列（docs/20 §13.1）
+OPEN_SHARE_STATES = {"queued", "retry_wait", "running", "waiting_user",
+                     "awaiting_confirmation", "waiting_resources", "waiting_key"}
 
 
 def stuck_operations(db: Session, *, min_age_hours: float = 1.0) -> list[dict]:
     """找出任务已终止或任务行丢失、仍停留在 sent/prepared 的供应商操作。
 
     任务还在队列/重试中的由 enrich 恢复路径自动处置，不在此列出。
+    job_id 为空不代表没有任务：分享调用挂在 share_run_id + step_key 上
+    （docs/20 §11.5），两者都为空才是连接测试。
     """
     cutoff = utcnow() - timedelta(hours=min_age_hours)
     rows = (
@@ -40,6 +45,9 @@ def stuck_operations(db: Session, *, min_age_hours: float = 1.0) -> list[dict]:
     )
     out: list[dict] = []
     for op in rows:
+        run = db.get(ShareRun, op.share_run_id) if op.share_run_id else None
+        if run is not None and run.state in OPEN_SHARE_STATES:
+            continue  # 分享任务仍有恢复机会，不在此处置
         job = db.get(Job, op.job_id) if op.job_id else None
         if job is not None and job.state not in TERMINAL_JOB_STATES:
             continue  # 任务还有恢复机会，不在此处置
@@ -49,6 +57,8 @@ def stuck_operations(db: Session, *, min_age_hours: float = 1.0) -> list[dict]:
             "operation_id": op.id,
             "user_id": op.user_id,
             "state": op.state,
+            "step_key": op.step_key,
+            "share_run_state": run.state if run else None,
             "job_state": job.state if job else None,
             "item_deleted": bool(item is not None and item.deleted_at is not None),
             "item_state": item.pipeline_state if item else None,

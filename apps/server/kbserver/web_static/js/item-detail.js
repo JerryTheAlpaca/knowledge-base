@@ -346,6 +346,13 @@ function sourceEditText(sm) {
   return body.split("\n").map((l) => l.replace(/\s+\^[sp]\d{4}\s*$/, "")).join("\n");
 }
 
+// 单篇详情里的「用这篇生成分享页」：带着当前条目直接进创作面板（docs/20 §3.1）
+async function openShareWithThisItem() {
+  if (!detailId) return;
+  const { openWorkbench } = await import("./shares.js");
+  openWorkbench([detailId]);
+}
+
 // ---------- 更多操作菜单（§7.5）：按能力动态展示，危险操作在底部 ----------
 function renderMoreMenu(it) {
   const wf = it.workflow || {};
@@ -359,6 +366,7 @@ function renderMoreMenu(it) {
     if (labels[code]) items.push({ code, label: labels[code] });
   }
   if (it.audio_original_retained && it.audio_original_download) items.push({ code: "download-audio", label: "下载上传的录音原件" });
+  items.push({ code: "share-page", label: "用这篇生成分享页" });
   items.push({ code: "view-records", label: "查看处理记录" });
   const menu = $("moreMenu");
   menu.innerHTML = items.map((x) =>
@@ -676,6 +684,7 @@ export function initDetail() {
     $("moreMenu").hidden = true;
     const code = b.dataset.more;
     if (code === "view-records") openRecords();
+    else if (code === "share-page") openShareWithThisItem();
     else if (code === "delete") doDelete();
     else if (code === "download-audio") window.location.href = detailData.item.audio_original_download;
     else if (code === "refetch") doRefetch();

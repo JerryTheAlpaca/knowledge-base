@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from sqlalchemy import (
     JSON,
     Boolean,
+    CheckConstraint,
     DateTime,
     Float,
     ForeignKey,
@@ -324,10 +325,13 @@ class Job(Base, TimestampMixin):
 
 
 class ProviderOperation(Base, TimestampMixin):
-    """模型调用执行状态（不含金额；docs/05 §5.2）。
+    """模型调用执行状态（不含金额；docs/05 §5.2、docs/20 §11.5）。
 
     prepared=已规划未发送；sent=请求已发出（结果未知前不再自动重发）；
     succeeded / failed / unknown_outcome。中断恢复语义见 workers/enrich.py。
+    分享任务用 share_run_id + step_key 归属（与 job_id 互斥），一轮里的整理、
+    代码生成、修复、澄清各自可追踪；job_id 与 share_run_id 都为空仍是
+    现有的模型连接测试。
     """
 
     __tablename__ = "provider_operations"
@@ -335,11 +339,31 @@ class ProviderOperation(Base, TimestampMixin):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
     job_id: Mapped[str | None] = mapped_column(ForeignKey("jobs.id"), index=True, nullable=True)  # 连接测试等无任务调用为空
+    share_run_id: Mapped[str | None] = mapped_column(
+        ForeignKey("share_runs.id"), index=True, nullable=True
+    )
+    step_key: Mapped[str] = mapped_column(String(40), default="")  # clarify|synthesis|page_source|repair-N|...
     profile_id: Mapped[str | None] = mapped_column(ForeignKey("provider_profiles.id"), nullable=True)
     request_fingerprint: Mapped[str] = mapped_column(String(64))
     provider_task_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
     state: Mapped[str] = mapped_column(String(30), default="prepared")  # prepared|sent|succeeded|failed|unknown_outcome
     detail: Mapped[str] = mapped_column(String(200), default="")  # 结束原因的简短说明（不含敏感信息）
+    # 会话续接与缓存诊断（docs/20 §6.5.5）：把这次回复绑定到准确的历史版本。
+    # usage_json 只含技术计数，不保存供应商原始响应与用户文本。
+    conversation_id: Mapped[str | None] = mapped_column(
+        ForeignKey("share_conversations.id"), index=True, nullable=True
+    )
+    context_epoch: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    input_message_seq: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    prefix_hash: Mapped[str] = mapped_column(String(64), default="")
+    usage_json: Mapped[dict] = mapped_column(JSON, default=dict)
+
+    __table_args__ = (
+        CheckConstraint(
+            "not (job_id is not null and share_run_id is not null)",
+            name="ck_provider_ops_single_owner",
+        ),
+    )
 
 
 class LocalKeyBinding(Base, TimestampMixin):
@@ -492,3 +516,203 @@ class AsrRun(Base, TimestampMixin):
     input_fingerprint: Mapped[str] = mapped_column(String(120), default="")
     last_error: Mapped[str] = mapped_column(Text, default="")
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
+
+
+# ---- 通用 AI 整合与 HTML 分享（docs/20 §11）----
+#
+# 多篇材料的作品不借用 Item/Job：任务归属、对象引用与会话历史各有独立表，
+# 避免「拿第一篇材料充当整份作品的归属」（docs/20 §2.1）。
+# share_works 上的三个当前指针列不建外键：与子表互相引用会让 SQLite 无法定序
+# 建表，一致性由提交时的短事务核对（归属 + 版本 + 未删除）保证。
+
+
+class ShareWork(Base, TimestampMixin):
+    """一件作品：归属、最新可用草稿、已发布版本与分享状态。"""
+
+    __tablename__ = "share_works"
+    __table_args__ = (Index("ix_share_works_user_status", "user_id", "share_status"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    title: Mapped[str] = mapped_column(String(200), default="")
+    latest_ready_revision_id: Mapped[str | None] = mapped_column(String(36), nullable=True, default=None)
+    published_revision_id: Mapped[str | None] = mapped_column(String(36), nullable=True, default=None)
+    # 同一作品首版最多一个未结束创作任务（含等待用户回答；等待不占执行并发）
+    active_run_id: Mapped[str | None] = mapped_column(String(36), nullable=True, default=None)
+    version: Mapped[int] = mapped_column(Integer, default=1)  # 乐观锁：修改、发布、撤销、删除
+    # 分享令牌：摘要用于核验，密文让作者能再次复制；都不是账号 Token
+    share_token_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True)
+    share_token_ciphertext: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
+    share_token_dek: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
+    share_token_nonces_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    share_master_key_version: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    share_status: Mapped[str] = mapped_column(String(20), default="private")  # private|published|revoked
+    share_expires_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
+
+
+class ShareRun(Base, TimestampMixin):
+    """一次创作任务：状态机、检查点与租约（docs/20 §11.2、§13.1）。
+
+    waiting_user / awaiting_confirmation 不属于领取候选，也不计入执行并发；
+    等待期间清空 lease_token/lease_until，回答后重新排队，不因久未回复自动推进。
+    """
+
+    __tablename__ = "share_runs"
+    __table_args__ = (
+        Index("ix_share_runs_state_not_before", "state", "not_before"),
+        Index("ix_share_runs_user_work", "user_id", "work_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    work_id: Mapped[str] = mapped_column(ForeignKey("share_works.id"), index=True)
+    base_revision_id: Mapped[str | None] = mapped_column(String(36), nullable=True, default=None)
+    request_text: Mapped[str] = mapped_column(Text, default="")  # 私有用户要求，不进公开作品
+
+    content_conversation_id: Mapped[str | None] = mapped_column(
+        ForeignKey("share_conversations.id"), nullable=True, default=None
+    )
+    code_conversation_id: Mapped[str | None] = mapped_column(
+        ForeignKey("share_conversations.id"), nullable=True, default=None
+    )
+
+    brief_version: Mapped[int] = mapped_column(Integer, default=0)
+    brief_key: Mapped[str | None] = mapped_column(String(200), nullable=True, default=None)
+    pending_round_key: Mapped[str | None] = mapped_column(String(200), nullable=True, default=None)
+    pending_round_id: Mapped[str | None] = mapped_column(String(36), nullable=True, default=None)
+    confirmed_brief_version: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    confirmation_kind: Mapped[str | None] = mapped_column(
+        String(24), nullable=True, default=None
+    )  # confirm|delegate_preferences|explicit_modify
+    confirmation_message_id: Mapped[str | None] = mapped_column(String(36), nullable=True, default=None)
+
+    resume_stage: Mapped[str] = mapped_column(String(30), default="")
+    resume_checkpoint_hash: Mapped[str] = mapped_column(String(64), default="")
+
+    state: Mapped[str] = mapped_column(String(30), default="queued")
+    # queued|running|waiting_user|awaiting_confirmation|retry_wait|waiting_resources|
+    # waiting_key|succeeded|failed|cancelled|unknown_outcome
+    stage: Mapped[str] = mapped_column(String(30), default="preparing")
+    # preparing|clarifying|synthesizing|generating|packaging|checking|repairing
+    reason_code: Mapped[str] = mapped_column(String(32), default="")
+
+    input_manifest_key: Mapped[str] = mapped_column(String(200), default="")
+    input_hash: Mapped[str] = mapped_column(String(64), default="")
+
+    profile_id: Mapped[str | None] = mapped_column(ForeignKey("provider_profiles.id"), nullable=True, default=None)
+    profile_version: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    model_config_json: Mapped[dict] = mapped_column(JSON, default=dict)  # 非秘密配置，不存明文 Key
+
+    runtime_version: Mapped[str] = mapped_column(String(40), default="")
+    prompt_version: Mapped[str] = mapped_column(String(40), default="")
+    recipe_hash: Mapped[str] = mapped_column(String(64), default="")
+
+    attempt: Mapped[int] = mapped_column(Integer, default=0)
+    repair_count: Mapped[int] = mapped_column(Integer, default=0)
+    not_before: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    lease_token: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
+    lease_until: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True, default=None)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True, default=None)
+
+    checkpoint_json: Mapped[dict] = mapped_column(JSON, default=dict)  # 已完成步骤的对象引用/哈希
+    cancel_requested_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True, default=None)
+    error_detail: Mapped[str] = mapped_column(Text, default="")
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
+
+
+class ShareRevision(Base, TimestampMixin):
+    """不可变的可用版本：只有打包并检查通过的才成为版本（docs/20 §11.3）。"""
+
+    __tablename__ = "share_revisions"
+    __table_args__ = (UniqueConstraint("work_id", "revision", name="uq_share_revision"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    work_id: Mapped[str] = mapped_column(ForeignKey("share_works.id"), index=True)
+    revision: Mapped[int] = mapped_column(Integer)
+    run_id: Mapped[str] = mapped_column(ForeignKey("share_runs.id"), index=True)
+    base_revision_id: Mapped[str | None] = mapped_column(String(36), nullable=True, default=None)
+    confirmed_brief_key: Mapped[str] = mapped_column(String(200), default="")  # 本版本依据的不可变需求摘要
+    input_manifest_key: Mapped[str] = mapped_column(String(200), default="")
+    synthesis_key: Mapped[str] = mapped_column(String(200), default="")
+    source_code_key: Mapped[str] = mapped_column(String(200), default="")
+    html_key: Mapped[str] = mapped_column(String(200), default="")
+    html_sha256: Mapped[str] = mapped_column(String(64), default="")
+    html_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    public_references_key: Mapped[str] = mapped_column(String(200), default="")
+    check_report_key: Mapped[str] = mapped_column(String(200), default="")
+    runtime_version: Mapped[str] = mapped_column(String(40), default="")
+
+
+class ShareArtifact(Base, TimestampMixin):
+    """分享对象的商品引用（docs/20 §11.4）：复用 ObjectStore，不创建虚假 Item。
+
+    同一个物理对象可被多条引用持有；解除一条引用不等于删除物理文件。
+    默认 private，只有最终白名单产物可被公开路由按 ID 读取。
+    """
+
+    __tablename__ = "share_artifacts"
+    __table_args__ = (
+        Index("ix_share_artifacts_work", "user_id", "work_id"),
+        Index("ix_share_artifacts_sha", "sha256"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    work_id: Mapped[str] = mapped_column(ForeignKey("share_works.id"), index=True)
+    run_id: Mapped[str | None] = mapped_column(ForeignKey("share_runs.id"), nullable=True, default=None)
+    revision_id: Mapped[str | None] = mapped_column(ForeignKey("share_revisions.id"), nullable=True, default=None)
+    role: Mapped[str] = mapped_column(String(40))
+    storage_key: Mapped[str] = mapped_column(String(200))
+    sha256: Mapped[str] = mapped_column(String(64))
+    bytes: Mapped[int] = mapped_column(Integer, default=0)
+    mime: Mapped[str] = mapped_column(String(120), default="application/octet-stream")
+    visibility: Mapped[str] = mapped_column(String(12), default="private")  # private|public
+    expires_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True, default=None)
+
+
+class ShareConversation(Base, TimestampMixin):
+    """可续接的模型会话（docs/20 §11.6）：真实消息历史，不是不断覆盖的摘要。"""
+
+    __tablename__ = "share_conversations"
+    __table_args__ = (UniqueConstraint("work_id", "purpose", name="uq_share_conversation"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    work_id: Mapped[str] = mapped_column(ForeignKey("share_works.id"), index=True)
+    purpose: Mapped[str] = mapped_column(String(16))  # content|code
+    profile_id: Mapped[str | None] = mapped_column(ForeignKey("provider_profiles.id"), nullable=True, default=None)
+    profile_version: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    api_protocol: Mapped[str] = mapped_column(String(32), default="openai-compatible-chat")
+    # 换 profile/endpoint/model/提示版本或上下文压缩时开启新 epoch（旧供应商缓存不可复用）
+    context_epoch: Mapped[int] = mapped_column(Integer, default=1)
+    prefix_artifact_key: Mapped[str] = mapped_column(String(200), default="")
+    prefix_hash: Mapped[str] = mapped_column(String(64), default="")
+    last_message_seq: Mapped[int] = mapped_column(Integer, default=0)
+    version: Mapped[int] = mapped_column(Integer, default=1)  # 追加消息的乐观锁
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
+
+
+class ShareMessage(Base):
+    """一条真实消息：内容是私有对象，按 (会话, epoch, seq) 唯一续接。"""
+
+    __tablename__ = "share_messages"
+    __table_args__ = (
+        UniqueConstraint("conversation_id", "context_epoch", "seq", name="uq_share_message_seq"),
+        Index("ix_share_messages_user_conv", "user_id", "conversation_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    conversation_id: Mapped[str] = mapped_column(ForeignKey("share_conversations.id"), index=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("share_runs.id"), index=True)
+    context_epoch: Mapped[int] = mapped_column(Integer, default=1)
+    seq: Mapped[int] = mapped_column(Integer)
+    role: Mapped[str] = mapped_column(String(16))  # system|user|assistant（由服务器判定，不采信客户端 role）
+    content_key: Mapped[str] = mapped_column(String(200))
+    # 供应商协议必须原样回传的续接块（如签名/opaque reasoning item）：仅适配器可见
+    protocol_metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    reply_to_round_id: Mapped[str | None] = mapped_column(String(36), nullable=True, default=None)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)

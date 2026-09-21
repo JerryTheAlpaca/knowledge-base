@@ -11,3 +11,36 @@ kb.jerrythealpaca.cn {
 	# 也不要把空闲超时设得比一次块上传更短（应用侧只做单块与少量头部余量）。
 	reverse_proxy 127.0.0.1:8000
 }
+
+# 分享站点（docs/20 §9.4、§9.5、验收 A17/A32）：
+# 域名必须是与账号站「不同可注册域名」——中心登录 Cookie 带 Domain=jerrythealpaca.cn，
+# 只换成同主域下的子域并不能把它挡在门外，所以这里用 jerrythealpaca.com 的示例域名，
+# 部署时替换成实际持有的域名，并在 DNS 上加 A 记录。
+share.jerrythealpaca.com {
+	encode zstd gzip
+
+	# 只暴露受控分享路径：不代理 /v1、不代理中心登录中继、不暴露通用对象存储
+	@share paths /s/* /preview/*
+	handle @share {
+		# 传入凭据一律不转发；响应不种 Cookie（应用侧也只返回静态页面）
+		request_header delete Authorization
+		request_header delete Cookie
+
+		# 分享令牌与短时预览凭据是 bearer capability：不得进访问日志
+		log {
+			output file /var/log/caddy/share-access.log {
+				roll_size 10mb
+				roll_keep 3
+			}
+			sanitize_uri /s/* /s/[REDACTED]
+			sanitize_uri /preview/* /preview/[REDACTED]
+			# 不记录查询串之外的敏感头：Caddy 默认不记响应头
+		}
+
+		reverse_proxy 127.0.0.1:8000
+	}
+
+	handle {
+		respond "Not found" 404
+	}
+}

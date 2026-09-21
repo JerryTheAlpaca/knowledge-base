@@ -108,12 +108,76 @@ services:
     memswap_limit: 640m
     cpus: "0.75"
 
+  # 分享创作编排 Worker（docs/20 §4、§14.3）：有数据库与本人模型凭据访问权，
+  # 负责快照、需求对话、模型调用、状态与成品登记；不执行模型生成的程序。
+  share_worker:
+    # 与 share_runner 一起放在 share profile 下：默认不构建、不启动，
+    # 启用分享时部署侧设 COMPOSE_PROFILES=share 与 SHARE_ENABLED=true
+    profiles: ["share"]
+    build:
+      context: ../apps/server
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    command: ["python", "-m", "kbserver.workers.share"]
+    environment:
+      DATABASE_URL: sqlite:////data/db/app.db
+      OBJECTS_DIR: /data/objects
+      TMP_DIR: /data/tmp
+      DELETIONS_DIR: /data/deletions
+      MASTER_KEY_FILE: /run/secrets/master_key
+      MASTER_KEY_VERSION: "1"
+      WORKER_POLL_SECONDS: "2"
+      PYTHONUNBUFFERED: "1"
+      # 独立分享站点域名（与账号站不同可注册域名，docs/20 §9.4）；为空时
+      # 「生成分享链接」如实显示配置未完成，私有预览与下载不受影响
+      SHARE_PUBLIC_BASE_URL: https://share.jerrythealpaca.com
+      SHARE_RUNTIME_MANIFEST: /runtime/runtime-manifest.json
+      SHARE_SPOOL_DIR: /spool
+      SHARE_MAX_HTML_BYTES: "10485760"
+    volumes:
+      - data:/data
+      # 任务交接卷：只放源文件与已选素材，不放完整快照、模型 Key 或数据库
+      - share_spool:/spool
+      # 运行手册与版本清单来自 runner 同一份文件（单一事实来源，避免两侧版本漂移）
+      - ../apps/share-renderer/runtime-manifest.json:/runtime/runtime-manifest.json:ro
+    secrets:
+      - master_key
+    mem_limit: 384m
+    memswap_limit: 384m
+    cpus: "0.5"
+
+  # 页面打包／检查 runner（docs/20 §9.1、§14.2～§14.3）：无业务数据库、无凭据、
+  # 无外网。浏览器按任务启动后关闭；不挂载主 objects 卷，也不给 Docker socket。
+  share_runner:
+    profiles: ["share"]
+    build:
+      context: ../apps/share-renderer
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    command: ["node", "src/cli.mjs", "runner", "--spool", "/spool"]
+    network_mode: "none"          # 生成代码构建/检查期间不得访问公网、内网或云元数据
+    read_only: true               # 根文件系统只读，固定入口与依赖都在镜像里
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    volumes:
+      - share_spool:/spool
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 512m               # 试运行上限；实测峰值后再定部署值（docs/20 §14.2）
+    memswap_limit: 512m
+    cpus: "1.0"
+
   # HTTPS 反代：宿主机 systemd Caddy（/etc/caddy/Caddyfile，多站点共享），
   # kb.jerrythealpaca.cn 片段见 deploy/Caddyfile——部署时追加到宿主机 Caddyfile 后 reload。
   # 不用容器 Caddy：宿主机实例已在服务其他站点，避免抢 80/443。
 
 volumes:
   data:
+  # 分享任务交接目录（编排器写 ready，runner 原子领取，结果落 done/failed）
+  share_spool:
 
 secrets:
   master_key:
