@@ -117,16 +117,20 @@
 | Alembic 迁移 | 临时库上 upgrade→downgrade→upgrade 往返通过，CHECK/索引/FK 均落库 |
 | 浏览器端到端走查 | 用本机走查服务（伪中心登录 + 假模型响应）+ **真实 runner**：勾选两篇材料 → 生成分享页 → 回答 2 个问题 → 确认摘要 → 成品出现在预览 iframe → 子页面「来源」按钮打开外层来源面板 → 下载/分享按钮可用 → 390px 视口无横向溢出 → 页面无 JS 报错 |
 | 回归 | 音频原件保留、Bundle 到期清理等既有用例在改动后仍通过（曾出现自引用导致 Bundle 永不回收，已修） |
-| 生产容器内 `share_runner doctor` | `browser: ok`：非 root（pwuser）＋ Chromium sandbox 开启＋`network_mode: none`，用真实交付件走完构建与浏览器检查，不是空白占位页 |
+| 生产容器内 `share_runner doctor` | `browser: ok`：非 root（pwuser）＋`network_mode: none`，用真实交付件走完构建与浏览器检查，不是空白占位页。**当时补的一句「Chromium sandbox 开启」不成立**：那一版 `launch()` 没传 `chromiumSandbox`，而 Playwright 的默认值就是往启动参数里加 `--no-sandbox`，doctor 也验不到这个开关（docs/22 C-01）。现在显式传 `true`、doctor 报 `sandbox_enabled`，这一条要在部署机重跑一次才算数 |
 | 生产容器内跑代表样本 | `check --task samples/rich`（chart.js＋KaTeX＋声明式交互）在 runner 容器内 `ok: true`、诊断 0 条、四张截图（桌面/移动各 2） |
 | 2GB 机器上的 runner 内存 | 上述一次完整构建＋浏览器检查峰值 226MiB，限额 512MiB；同期宿主机 available 约 1.0GB |
-| 生产容器内 spool 交接往返 | 常驻 runner 领取伪造任务（rich 样本）→ 产出 1.49MB 单文件成品＋四张截图 → 服务端 worker 读回 `result.json` 并清理，两端跨 uid 都可读写可删 |
+| 生产容器内 spool 交接往返 | 常驻 runner 领取伪造任务（rich 样本）→ 产出 1.49MB 单文件成品＋四张截图 → 服务端 worker 读回 `result.json` 并清理，两端跨 uid 都可读写可删。**当时靠的是目录 0777 ＋ runner `umask 0`**，已按 docs/22 C-02 换成两端同 gid ＋ 2770 ＋ `umask 002`，这条同样要重跑一次确认（卷在宿主上的最终 mode、runner 实际进程组） |
 | 2026-09-21 分享页改成对话舞台后 | 服务端全量 371 passed（新增「确认阶段还能补一句」「跑完的作品保留对话」两例）；页面走查用的是本机静态服务 + 打桩 `/v1` 响应（未接真实模型与 runner）：多选→草稿→材料不可读的「移除/补充材料」→等待回答/确认/进行中/成品/失败五种状态的按钮与输入框文案→叉叉与 Esc 逐级返回→打字不被轮询顶掉→1280 与 390 视口均无横向溢出 |
 | 2026-09-21 多选点亮态与「完成」三选一 | 本机 `dev_inbox_server`（伪造会话 + 演示数据）走查：选中行 `box-shadow` 三段金光到位、`::after` 已无内容、行右内边距回到 16px；底部条在 320/360/390/1280 都是单行（高 50，三个子元素同一中线）且不越界；勾 3 篇 → 下载整理稿得到 2 个 `-整理稿.md`（缺 `preview.md` 那篇被跳过并在提示里报数），下载原文另登 `source-download`；「制作 HTML」进舞台草稿；Esc 逐级收菜单/舞台/多选；无 JS 报错 |
 
 上面两轮的权限演练各暴露一个真实缺陷，都已修：数据卷首次挂载时 root 属主导致
 runner 建不出 `ready/`；runner 建的 `out/screenshots` 是 0755，服务端 worker
-删不掉，成品回收会卡在 `PermissionError`（现 runner 进程 umask 置 0）。
+删不掉，成品回收会卡在 `PermissionError`。当时的解法是把交接目录设成 0777 并把
+runner 进程 `umask` 置 0——机器上任何本地进程都能读写别人的任务信封，等于把用户
+之间的隔离让给了权限（docs/22 C-02）。现在换成两端固定同一个共享组：两个镜像都建
+`kbshare`（gid 950）、compose 给 `share_worker` 与 `share_runner` 都 `group_add`，
+目录 2770 带 setgid、runner `umask 002`，对端按组可读写可删，不再对任意进程放开。
 另外交接目录里 `working/<task>` 的输入此前只靠 TTL 兜底，现在采纳结果或判定
 超时就随手回收。
 
@@ -174,12 +178,34 @@ systemd 会在下载中途杀掉构建，下一轮定时器又从头再拉，表
    `ENTRYPOINT` 后参数错位，容器以「用法」分支退出码 2 反复重启；改成只传参数。
 2. 交接卷首次挂载时是 root 属主，非 root 的 runner 连 `ready/` 都建不出来；
    而 worker 与 runner 是两个不同 uid 的容器，任务目录和 runner 的产物目录
-   （`out/screenshots` 等）必须对端可写、可删。现在镜像里预建 `/spool` 目录树
-   并设成 pwuser:pwuser 0777（空卷挂载时按镜像属主与权限初始化），worker 侧
-   统一 `_spool_dir()` 建目录＋放开权限，runner 进程 `umask 0`。
+   （`out/screenshots` 等）必须对端可写、可删。当时预建 `/spool` 目录树并按
+   0777 ＋ `umask 0` 放开，已按 docs/22 C-02 换成两端同组（见下面第 5 节）。
 
 当前按「主要下载 HTML 文件」使用：`SHARE_ENABLED=true` 已开，分享站点仍未配置，
 点「生成分享链接」会得到明确原因，私有预览与下载不受影响。
+
+启用沙箱那次要在部署机做的一次性动作（结论来自 §5 的实测，compose 已经改好）：
+
+1. 交接卷的组权限收口。现有卷是 0777、组是 appuser 的 gid 1000，靠的是「谁都能写」；
+   换成按组收口后要让老数据落到 `kbshare` 上，否则两端会各自卡在对方建的目录外。
+   没有在跑的任务时执行（只影响交接目录，对象与数据库都在 `data` 卷里）：
+
+   ```bash
+   sudo chgrp -R 950 /var/lib/docker/volumes/deploy_share_spool/_data
+   sudo chmod -R 2770 /var/lib/docker/volumes/deploy_share_spool/_data
+   ```
+
+   想更干净也可以直接把这个卷删掉重建（它只放 24 小时内回收的临时交接文件，没有长期
+   数据）：先 `docker compose stop share_worker share_runner`，再
+   `docker volume rm deploy_share_spool`，最后 `docker compose up -d` 让 Docker 按镜像里
+   `pwuser:kbshare 2770` 重新初始化。**别用 `docker compose down --volumes`**，那会连
+   `data` 卷（数据库与对象）一起删。
+2. 部署后复验沙箱：`sudo docker compose -f ~/kb-inbox/deploy/docker-compose.yml exec
+   share_runner node src/cli.mjs doctor` 要报 `"sandbox_enabled": true` 且退出码 0；
+   顺手 `docker stats --no-stream` 看一眼开沙箱后的内存峰值离 512m 还有多少余量。
+3. 换到别的云/目录时，`deploy/docker-compose.yml` 里 seccomp 那条走的是
+   `${KB_REPO_DIR:-/home/ubuntu/kb-inbox}`，在新机器 `deploy/.env` 里设 `KB_REPO_DIR`
+   指到仓库根即可，其余不用动。
 
 仍待做：
 1. 用授权模型配置完成 §6.5.6 的真实多轮缓存命中验证（A39）与 §16 针对性验收。
@@ -192,3 +218,79 @@ systemd 会在下载中途杀掉构建，下一轮定时器又从头再拉，表
 
 回滚只关新任务与新发布入口；已发布作品可继续由只读分享路径服务，
 不删除已保存作品、来源快照，也不立即 downgrade 数据表。
+
+## 5. 2026-09-21 审查修复（docs/22）
+
+按 docs/22 的「三批文件互不重叠 ＋ 两处串行」分工落地，条目编号沿用那份报告。
+
+容器侧（`apps/share-renderer/`）：
+
+- **C-01** `launchChromium()` 显式 `chromiumSandbox: true`。Playwright 的默认值是
+  `--no-sandbox`，之前注释与镜像声明里的「沙箱保持开启」不成立。`doctor` 现在报
+  `sandbox_enabled`，不为 true 就按失败退出。浏览器仍走 `--remote-debugging-pipe`，
+  没有为了拿进程句柄改 `launchServer + connect`——那要在 127.0.0.1 开 WebSocket，
+  而 runner 是 `network_mode: "none"`；墙钟到点改用限时 `close()` 收浏览器。
+- **C-03** 外层 `iframe title` 改用 `escapeAttr`，补一条标题含引号与尖括号的用例
+  （把外层改回 `escapeHtml` 这条会红）。
+- **C-09** `processTask` 外套整任务墙钟（信封 `check.task_timeout_ms`，兜底 120s），
+  结果只有一方落盘；`runSpool` 循环体加 try/catch，坏信封也记失败继续下一个。
+- **C-10** 交互断言目标在动作前后都命中不到时判 `ASSERTION_INVALID`（不再算通过），
+  `count_equals 0` 仍合法；正文下限从 30 字改成按材料规模给的 `check.min_body_chars`。
+- **C-14** runner 异常文本里的交接目录绝对路径统一换成 `<路径>` 并限长 240。
+
+服务端（`apps/server/kbserver/`）：
+
+- **C-04** 发给模型的素材目录统一用剥过 `storage_key` 的那一份；原表留在
+  `checkpoint["asset_catalog"]` 里，交接 runner 还要靠它读对象。用例盯的是实际
+  发出的请求文本，不是构造处。
+- **C-05** 回收判断改用对的字段并补上真实回收分支（被取代且过 `SHARE_REVISION_RETENTION_DAYS`
+  的版本、过了诊断保留期的旧任务产物），当前可用／已发布版本的产出链一起保住；
+  迁移 `e9a3c5f7b2d4` 给 `share_artifacts.storage_key` 加索引。
+- **C-06** 按「要么接线要么删掉」选了删：`share_max_supplement_rounds`、
+  `share_context_compact_ratio` 与三个没有调用方的压缩判断函数删除，口径写回
+  docs/20 §14.1。`list_messages` 不加条数上限（静默截断历史更糟）。
+- **C-07** 删除条目改走 `cancel_asr()` 同一个入口，`running` 的 Job 也标掉；
+  测试不再手改 `lease_until`，改成「租约还有效也能停」才算数。
+- **C-08** 中间件写回续期 Cookie 之前再查一次撤销表；logout 不再依赖
+  `current_principal`（中心不可达时那里先 503，用户点了退出其实什么都没清），
+  改成本地先记撤销、先清 Cookie，再尽力通知中心，CSRF 与 Origin 校验照旧。
+- **C-11** `/s/{token}` 与 `/preview/{token}` 先看 `SHARE_ENABLED`。
+- **C-12** `DELETE /v1/shares/{id}` 的 `expected_version` 真的比对了；删除作品过了
+  1 天宽限期后，run／会话／消息／版本／模型调用记录这些文本行由保留任务一起收掉。
+
+前端（`web_static/`）：U-01 点亮态改由「行画完」的单一接缝补标记、发光收进
+`body.share-selecting`；U-02 用现成的 `GET /v1/shares/{id}/link` 取真链接，没取到就
+不渲染空锚点；U-03 舞台关了就不再续排轮询、也不在列表页弹无关提示；U-04 幂等键跟着
+草稿走并统一 `crypto.randomUUID`，`startGeneration` 上同一把发送锁；U-05 勾选态下
+回车／空格是勾选，Esc 记号约定补上「菜单与舞台」和详情页「更多操作」两层，切题后
+恢复焦点，「已选 N 篇」带 `aria-live`。
+
+交接（**C-02**，跨两端所以单独做）：两个镜像都建 `kbshare`（gid 950）并把各自用户
+加进去，compose 给 `share_worker` 与 `share_runner` 都 `group_add: ["950"]`，服务端
+建目录 `chmod 2770`、runner 建目录同样 2770 且 `umask 002`；0777 与 `umask 0` 都去掉了。
+
+| 本轮跑过的检查 | 结果 |
+| --- | --- |
+| `python -m pytest tests -q`（服务端全量） | 384 passed |
+| `npm test`（runner） | 22 passed（原 17 ＋ 新增 5 条：外层属性注入、无效断言、正文下限、墙钟、坏信封） |
+| `node src/cli.mjs doctor`（本机 Windows） | `browser: ok`、`sandbox_enabled: true`，真实沙箱下走完构建与检查 |
+| `ruff check --select F,E9` 本轮改动文件 | 无新增告警（余下均为既有） |
+| `node --input-type=module --check` 改动的 js | 4 个文件解析通过（不等于运行时验证） |
+
+**部署机实测结果（2026-09-21 当日，用已在生产机上的镜像起一次性容器，参数与线上 `share_runner` 完全一致；没碰部署目录、数据卷和任何在跑的服务）**：
+
+- share profile 线上**是开着的**：`deploy-share_worker`、`deploy-share_runner` 都在 Up，runner 至今没有任务流量日志——也就是说那句「生产已实测沙箱开启」从来没真跑到过。
+- 生产同款参数 + 显式开沙箱 → **起不来**：`Chromium sandboxing failed!`。同一容器不开沙箱是对照组正常（Chromium 148，构建与渲染都过）。
+- 挡住的是三道，逐条测出来的：① Playwright 官方镜像里**根本没有 `chrome-sandbox` 这个 setuid helper**（`/ms-playwright` 下只有 `chrome` 与 `chrome-headless-shell`），SUID 那条路直接不存在；② 非特权 user namespace 被**宿主**挡住——Ubuntu 24.04 的 `kernel.apparmor_restrict_unprivileged_userns=1`，在宿主机上以普通用户 `unshare -Urm` 同样失败（root 可以），所以不是 Docker 或 seccomp 的问题；③ 只加 `CAP_SYS_ADMIN` 而沿用 Docker 默认 seccomp 表也不行（默认表把 `chroot`/`mount` 按 capability 挡在外面）。
+- 目前**唯一实测通过**的组合：`cap_add: SYS_ADMIN` ＋ 收紧版 seccomp profile（`deploy/seccomp-share-runner.json`：逐条照抄 Docker 29 默认表，只在最前面加三条——`clone`／`unshare` 带 CLONE_NEWUSER 才放行、`chroot/mount/umount2/pivot_root` 放行；不是 `seccomp=unconfined`），沙箱下真实渲染与干净收尾都验过。
+- 不给 SYS_ADMIN 的两条替代路（都还没验）：改宿主 sysctl 关掉那道缓解（全机生效，这台还跑着另两个站点），或只给这一个容器写一份带 `userns,` 的 AppArmor profile（宿主上没有现成的 docker profile 源可照抄，得手写）。
+- `share_spool` 卷在宿主上确认就是 `drwxrwxrwx`（属主宿主 uid 1001=容器 pwuser，组 gid 1000=容器 appuser），C-02 的收口是必需而不是洁癖；两个容器实际 uid 是 pwuser=1001 / appuser=1000，选用的 gid 950 不与现有组冲突。
+
+**推这份代码之前要先定沙箱怎么落**：这份实现的取舍是「沙箱起不来就明确失败，绝不静默降权」，而线上现在正是起不来的状态——直接推会让每次分享生成卡在浏览器检查那一步。
+
+剩下只能真机确认的还有：U-01／U-02／U-04／U-05 与 U-06 的走查清单（口径见 §2 那两行）。
+
+按报告口径本轮未动：C-13（部署失败分支不清理、`used_image_ids` 的空格匹配永不命中、
+`share_runner` 不按提交号打标签）、C-15（模型档位选择不看用途）、U-06（窄屏长标题下
+✕ 挤位、「完成」菜单打开后不重算位置），以及 🔵 低项（`tests/isolation.test.mjs`
+自行 `launch`、`read_artifact` 等死代码、空闲门禁 70 秒均值口径），随下一次相关改动带走。

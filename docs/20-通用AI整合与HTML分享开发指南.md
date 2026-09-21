@@ -625,7 +625,9 @@ JS／JSON 内联必须正确处理 `</script>`、`<` 等 HTML 解析边界；src
 
 部署最低要求：非 root、只读根文件系统、有限临时目录、CPU/内存/PID/时间限制、无外网网络命名空间、没有业务数据库和 secrets 挂载、没有 Docker socket。浏览器不带用户 profile，不以 `--no-sandbox` 作为生产默认解决办法。
 
-Playwright 的官方 Docker 文档说明默认 root 运行会关闭 Chromium sandbox，且测试镜像本身不应被视为运行不可信页面的完整隔离方案。因此必须验证非 root 与浏览器 sandbox，并加上任务文件和网络边界。[Playwright Docker](https://playwright.dev/docs/docker)
+沙箱要跑起来，容器还得能建 user namespace。Ubuntu 24.04 默认开着 `kernel.apparmor_restrict_unprivileged_userns=1`，不给 capability 时容器内建不了 user namespace（Playwright 官方镜像也不带 `chrome-sandbox` 这个 setuid helper，SUID 那条路直接没有）；实测通过的组合是给 `share_runner` 单独 `cap_add: SYS_ADMIN` ＋ 一份逐条照抄 Docker 默认表、只额外放行 `clone`/`unshare`(CLONE_NEWUSER) 与 `chroot`/`mount`/`umount2`/`pivot_root` 的收紧 seccomp profile（`deploy/seccomp-share-runner.json`），**不要**整表 `seccomp=unconfined`，也不要把这道放开扩散到 api／worker 那些有凭据和数据的容器。见 docs/21 §5 的实测记录。
+
+Chromium sandbox 必须显式请求：Playwright 的 `chromiumSandbox` 默认 false，只要不等于 true 就往启动参数里追加 `--no-sandbox`，容器里以非 root 运行并不会改变这个默认值。`src/browser.mjs` 传 `chromiumSandbox: true`；沙箱初始化不了时 Chromium 直接启动失败，不会静默退回无沙箱，所以「浏览器起得来」本身就是沙箱生效的凭据，`share_runner doctor` 按 `sandbox_enabled` 报出，不为 true 就按失败退出（docs/22 C-01）。开沙箱后要在部署机复测 `cap_drop: ALL` + 512 MiB + `pids_limit` 是否撑得住。浏览器启动沿用 `--remote-debugging-pipe`，不改成 `launchServer` + `connect`：后者要在 127.0.0.1 上开 WebSocket，而 runner 容器是 `network_mode: "none"`。测试镜像本身不应被视为运行不可信页面的完整隔离方案，仍要加上任务文件和网络边界。[Playwright Docker](https://playwright.dev/docs/docker)
 
 固定 runner 进程可串行等待任务；每次浏览器检查结束关闭浏览器进程，清除该任务上下文。任务交接目录只包含源文件、已选择素材及诊断，不包含完整 source_pack、模型 Key 或数据库。
 
@@ -674,7 +676,7 @@ form-action 'none';
 
 原因是当前中心登录配置使用主域 Cookie。Cookie 的 Domain 属性会覆盖子域，简单使用 `share.jerrythealpaca.cn` 并不能达到“不接触账号 Cookie”的目标。[MDN Set-Cookie](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Set-Cookie)
 
-分享站点仅提供受控分享路径，不暴露 `/v1`、中心登录中继或通用对象存储。反代删除传入 Cookie／Authorization，不返回 Set-Cookie。即使使用独立域名，也保留 iframe 和 CSP，域名不能替代页面隔离。
+分享站点仅提供受控分享路径，不暴露 `/v1`、中心登录中继或通用对象存储。反代删除传入 Cookie／Authorization，不返回 Set-Cookie。即使使用独立域名，也保留 iframe 和 CSP，域名不能替代页面隔离。`/s/{token}` 与 `/preview/{token}` 同样先看 `SHARE_ENABLED`：关掉功能时两条路由都返回不可用页面，不靠“没配域名”顺带兜住（docs/22 C-11）。
 
 尚未配置隔离分享站点时，本地开发和私有预览可以继续，下载可以交付；生产“生成分享链接”显示具体配置未完成原因，不偷偷退回主站直接执行生成页面。
 
@@ -705,6 +707,9 @@ form-action 'none';
 - 等待固定 ready 信号或超时，不仅用 networkidle 判断生成页面就绪。
 - 检查主体非空、基本章节可见、页面无全局横向溢出、正文和图表可读。
 - 按有限交互声明进行实际点击／选择／拖动，检查预期变化；没有交互则不制造测试。
+- 断言由模型自己写，因此要防止空页面自我认证：断言目标在动作前后都命中不到元素时判 `ASSERTION_INVALID`，算不通过而不是算通过；`count_equals 0` 仍然合法，判据是动作前至少命中一个元素（docs/22 C-10）。
+- 正文最少字符数由服务端按本轮可读材料规模放进信封 `check.min_body_chars`（200～800，取不到给 300），不用固定的 30 字下限。
+- 整个任务受信封 `check.task_timeout_ms` 的墙钟约束（服务端按 `SHARE_RENDER_TIMEOUT_SECONDS` 给，60～180 秒），到点收掉浏览器并落 `TASK_TIMEOUT` 失败结果；runner 的串行循环任何异常都不许带走进程，否则后面所有人的任务排在一个没人管的 runner 上等各自的服务端 deadline（docs/22 C-09）。
 - 保存前后截图和结构检查；长页面按有界数量分段截图，防止生成极高页面耗尽内存。
 - 断网下打开最终下载 HTML，验证正文、字体、图表与主要交互不依赖外部资源。
 
@@ -816,9 +821,9 @@ role 由服务器决定。模型返回的 JSON 是 assistant 消息；用户回�
 | `GET /v1/shares/{id}/revisions/{revision}/preview-content` | 未配置分享站点时，鉴权返回预览数据 JSON，由可信容器设置 srcdoc；不直接返回可执行 HTML 页面 |
 | `GET /v1/shares/{id}/revisions/{revision}/download` | 鉴权下载最终单文件 HTML |
 | `POST /v1/shares/{id}/publish` | 首次发布或更新到明确版本 |
-| `GET /v1/shares/{id}/link` | 本人再次获取可复制链接，no-store |
+| `GET /v1/shares/{id}/link` | 本人再次获取可复制链接，no-store；作品详情只回 `has_link`，界面刷新后要显式问这一条，不能把「打开链接」渲染成指向 `#` 的空锚点（docs/22 U-02） |
 | `POST /v1/shares/{id}/revoke` | 撤销当前链接 |
-| `DELETE /v1/shares/{id}` | 删除作品、停止任务、撤销分享，异步清理 |
+| `DELETE /v1/shares/{id}` | 删除作品、停止任务、撤销分享，异步清理；带 `expected_version` 时先比作品版本，不一致按 409 拒掉，不带则按现状直接删（docs/22 C-12） |
 | `GET /s/{token}` | 隔离站点公开只读查看；不接受账号凭据 |
 | `GET /preview/{token}` | 隔离站点短时私有预览；不公开列出 |
 
@@ -928,6 +933,9 @@ GC 的“核对没有引用”和“删除物理对象”之间也要防止新�
 - 失败任务诊断建议保留 7 天；要求与来源选择保留以支持重试。若其固定快照已到期，提示按当前材料创建新任务，不能声称复用了原输入。
 - runner 临时目录建议 24 小时内回收；运行中有有效租约的任务不删除。
 - 撤销链接只停止公开访问，不等于删除私有作品；删除作品立即撤销访问，再按对象引用规则回收。
+- 回收判断只有两条保护：产物所属版本在 `SHARE_REVISION_RETENTION_DAYS` 之内（或是当前可用／已发布版本），或所属任务仍受保护（未落定、诊断未满 `SHARE_RUN_DIAGNOSTIC_RETENTION_DAYS`，或是上面那些版本的产出任务）。两条都不满足就是被新版本取代的旧版本与已落定旧任务的中间产物，按批解除登记并回收物理对象——这两个集合原本被写成拿 `artifact.id`／`work_id` 去比 revision 集合，条件恒假恒真，等于只保护不回收（docs/22 C-05）。
+- 删除作品过了 1 天回捞宽限期后，除对象之外还要收掉文本行：`share_runs.request_text`（用户原始要求）、会话与消息行、版本行、模型调用记录一起清掉，作品行保留删除凭据并把指向已消失版本／任务的指针置空。只删对象不删行等于把用户写过的话永久留在库里（docs/22 C-12）。文本行回收放在保留任务里，不在删除请求中同步做。
+- `share_artifacts.storage_key` 有索引：存活复查按 key 逐批查四张归属表，2 核 2GB 上不能每轮全表扫。
 
 这些是本功能新增数据的初始默认值，不改变原始采集材料的既有保留策略。新增存储统计用于容量管理，不恢复模型金额账本。
 
@@ -953,7 +961,6 @@ GC 的“核对没有引用”和“删除物理对象”之间也要防止新�
 | `SHARE_MAX_INSTRUCTIONS_CHARS` | 4000 | 自由要求长度 |
 | `SHARE_MAX_QUESTIONS_PER_ROUND` | 3 | 每轮最多的问题数 |
 | `SHARE_MAX_WAITING_DRAFTS_PER_USER` | 20 | 等待用户的草稿数量，独立于执行并发 |
-| `SHARE_CONTEXT_COMPACT_RATIO` | 0.8 | 以可用输入窗口为基准的初始压缩阈值，先预留输出 |
 | `SHARE_MAX_SOURCE_CHARS` | 200000 | 所选可读正文总字符上限；与模型上下文上限分别检查 |
 | `SHARE_MAX_INPUT_BYTES` | 50 MiB | 正文与已选择素材快照总上限 |
 | `SHARE_MAX_HTML_BYTES` | 10 MiB | 按最终单文件实际字节，包含 Base64 膨胀 |
@@ -968,7 +975,7 @@ GC 的“核对没有引用”和“删除物理对象”之间也要防止新�
 
 增加内部边界：最多 40 个材料读取／分块步骤、最多 1 次补取、最多 8 项交互测试、每项最多 5 个动作、最多 6 张截图。达到限制时明确结束，不无限扩展任务。按供应商能力预留输入／输出，不以材料数量替代上下文控制。
 
-每次回答默认只触发 1 次澄清调用，输出格式错误最多修复 1 次，之后等待用户操作；不能自动跑空对话。不要按固定总轮数强制替用户结束需求讨论。缓存模式和有效期按 profile 能力配置，不提供一个强行发给所有供应商的全局 cache_control 字段。
+每次回答默认只触发 1 次澄清调用，输出格式错误最多修复 1 次，之后等待用户操作；不能自动跑空对话。不要按固定总轮数强制替用户结束需求讨论。首版就是这条口径：澄清／补充不设固定轮数上限，`SHARE_MAX_SUPPLEMENT_ROUNDS` 连同没有调用方的按阈值压缩判断一起删掉了（docs/22 C-06）；剩下的边界是材料总字符数、每轮问题数、每答一轮才调一次模型，以及用户自己确认或结束。真要做第 6.5 节的新上下文分段时，再按那时的实际用量补阈值配置，不先留一个没人读的环境变量。缓存模式和有效期按 profile 能力配置，不提供一个强行发给所有供应商的全局 cache_control 字段。
 
 ### 14.2 2 核 2GB 环境
 
@@ -978,7 +985,7 @@ GC 的“核对没有引用”和“删除物理对象”之间也要防止新�
 
 浏览器检查与 ASR 使用共享重型任务准入：首版可以用 SQLite 租约式槽位串行控制。ASR 领取新片段与 runner 领取检查任务都必须核对，避免双方同时看到空闲并一起启动。已运行的 ASR 片段完成后让出，不直接杀正在写检查点的任务。
 
-如果同机压测表明 2GB 无法稳定完成检查，可升级 4GB，或把相同 runner 镜像搬到受控执行机。不能为了运行把 API／账号数据挂进 runner，或关闭浏览器 sandbox。部署前留下吞吐、内存峰值和失败情况，不承诺未经实测的生成耗时。
+如果同机压测表明 2GB 无法稳定完成检查，可升级 4GB，或把相同 runner 镜像搬到受控执行机。不能为了运行把 API／账号数据挂进 runner，或关闭浏览器 sandbox——sandbox 需要的那点权限只给 `share_runner` 这一个容器（`CAP_SYS_ADMIN` ＋ 收紧 seccomp，见 §9.1），不扩散到有凭据与数据的容器。部署前留下吞吐、内存峰值和失败情况，不承诺未经实测的生成耗时。
 
 ### 14.3 目录与任务交接
 
@@ -987,6 +994,8 @@ GC 的“核对没有引用”和“删除物理对象”之间也要防止新�
 租约 ID／输入哈希／runtime_version 写入任务信封，输出回传相同标识，编排器仅接受匹配当前租约的结果。模型不得指定目录、文件名或命令行参数。任务目录禁止软链接和目录穿越；文件大小与数目有上限。
 
 runner 不挂载主 objects 卷，只接收当前任务允许的文件。固定 runner 驱动与浏览器用隔离目录／权限，禁止浏览器读取任务队列中其他作品；不以“都在一个 Docker 容器”代替逐任务边界。
+
+交接卷的权限按「两个 uid、一个组」来做，不把目录放开给机器上任意进程（docs/22 C-02）：服务端镜像与 runner 镜像都建 `kbshare`（gid 固定 950）并把各自的运行用户加进去，compose 给 `share_worker` 与 `share_runner` 同时 `group_add: ["950"]`；服务端建的每个交接目录 `chmod 2770`（带 setgid，子目录自动继承同一个组），runner 侧 `umask 002`。首版把 `chmod 0777` 与 `process.umask(0)` 换掉就是这条；`task.json` 里的 `input_hash` 只是完整性自检，它挡不住同时改内容与其哈希的信封，不能当授权判定用。卷在宿主机上的最终属主与 mode、runner 进程实际 uid，都要在部署机确认一次，本机推不出来。
 
 API、share_worker 与 runner 无 Docker socket。runner 通过文件交接启动固定构建／浏览器程序，不通过模型文本拼接 shell 命令。宿主机 Caddy 只追加本项目的分享站点配置，不覆盖其他站点。
 
