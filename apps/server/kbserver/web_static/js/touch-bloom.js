@@ -1,4 +1,4 @@
-// touch-bloom.js — 点一下花冠：指尖迸一小片金粉，就近那一圈花瓣向外轻翻
+// touch-bloom.js — 点一下花冠：指尖迸一小片金粉，手下那一块花瓣（好几层）一起向外轻翻
 //
 // 两朵共用（说明页首屏 .rose-bloom、收件箱首页 svg.rose）。两份内联副本只是 id 前缀不同，
 // 「花心 = .plant 里那个 translate(300 260) 的 g，一圈花瓣 = 一个带滤镜的 g 套一个 use#RingN」
@@ -31,15 +31,16 @@ export function attachBloomTouch(svg) {
       layer.style.transformOrigin = "center";
       return { layer, dir, reach: Math.max(-b.x, b.x + b.width, -b.y, b.y + b.height) };
     }).sort((a, b) => b.reach - a.reach);
+    rings.forEach((ring, at) => { ring.at = at; });
     const gap = (rings[0].reach - rings[rings.length - 1].reach) / (rings.length - 1) || 12;
     geo = { rings, gap, pad: rings[0].reach + gap * 0.6 };
   }
 
-  // 轻翻：胀出去一点再落回来，落在瓣尖上时最明显，落在两层中间就只是抖一下
+  // 轻翻：整块一起胀出去再落回来，权重 k 决定这一层出多少力
   function nudge(ring, k) {
     if (ring.anim) ring.anim.cancel();
-    const out = 1 + 0.028 * k;
-    const deg = ring.dir * 1.25 * k;
+    const out = 1 + 0.036 * k;
+    const deg = ring.dir * 1.6 * k;
     ring.anim = ring.layer.animate([
       { transform: "scale(1) rotate(0deg)" },
       { offset: 0.26, transform: `scale(${out.toFixed(4)}) rotate(${deg.toFixed(2)}deg)` },
@@ -93,12 +94,19 @@ export function attachBloomTouch(svg) {
     const p = new DOMPoint(e.clientX, e.clientY).matrixTransform(ctm.inverse());
     const r = Math.hypot(p.x, p.y);
     if (r > geo.pad) return;   // 方框四角是空的，点在花冠外就别冒粉
-    let near = geo.rings[0], bd = Infinity;
+    let hit = geo.rings[0], bd = Infinity;
     for (const ring of geo.rings) {
       const d = Math.abs(ring.reach - r);
-      if (d < bd) { bd = d; near = ring; }
+      if (d < bd) { bd = d; hit = ring; }
     }
-    nudge(near, 1 - 0.45 * Math.min(1, bd / geo.gap));
+    // 不是一圈应，是一整块应：压住的那层出全力，左右邻层搭一把，按层数退到零。
+    // 半径相近的层本来就叠在一起，只动一层看不出是花在动，好几层一起才看得出来。
+    for (const ring of geo.rings) {
+      const band = Math.max(0, 1 - Math.abs(ring.at - hit.at) / 3.4);
+      const near = 1 - Math.min(1, Math.abs(ring.reach - r) / (geo.gap * 2));
+      const w = band * (0.55 + 0.45 * near);
+      if (w > 0.06) nudge(ring, w);
+    }
     burst(e.clientX, e.clientY);
   });
 }
