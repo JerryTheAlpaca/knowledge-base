@@ -307,7 +307,8 @@ function threadSig() {
     mode, mode === "draft" ? [draftIds, matsVersion] : null,
     run ? [run.state, run.stage, run.reason_code, run.brief_version] : null,
     convCache ? convCache.messages.map((m) => m.seq) : null,
-    revisions().length, workCache && workCache.round ? workCache.round.round_id : null,
+    revisions().length, workCache && workCache.round
+      ? [workCache.round.round_id, qStep] : null,
     workCache ? workCache.share.status : null, pvOpen,
   ]);
 }
@@ -358,23 +359,57 @@ function workHTML() {
     }
     const understanding = m.understanding
       ? '<p class="munder">' + esc(m.understanding) + "</p>" : "";
-    const qs = (m.questions || []).map((q) => questionHTML(q, m.round_id,
-      answering() && m.round_id === pendingRound)).join("");
+    // 当前待答的这一组不在气泡里整排铺开，改由下面的问答卡一题一题来
+    const qs = answering() && m.round_id === pendingRound
+      ? "" : (m.questions || []).map((q) => questionHTML(q, m.round_id, false)).join("");
+    if (!understanding && !qs) return "";
     return '<div class="t-msg ai">' + understanding + qs + "</div>";
   }).join("");
-  return bubbles + briefHTML() + previewHTML();
+  return bubbles + stepperHTML() + briefHTML() + previewHTML();
+}
+
+// 待答轮：一次只显示一个问题，右上角「往左／往右」切上一题、下一题
+function stepperHTML() {
+  const round = mode === "work" && answering() ? (workCache && workCache.round) : null;
+  const qs = (round && round.questions) || [];
+  if (!qs.length) return "";
+  if (qRoundId !== round.round_id) { qRoundId = round.round_id; qStep = 0; qAns = new Map(); }
+  const i = Math.max(0, Math.min(qStep, qs.length - 1));
+  const chev = (back) => '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+    'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    (back ? '<polyline points="15 18 9 12 15 6"/>' : '<polyline points="9 18 15 12 9 6"/>') + "</svg>";
+  const head = '<div class="q-step-head"><span class="q-step-pos">第 ' + (i + 1) + " / " + qs.length +
+    " 个</span><span class=\"spacer\"></span>" +
+    '<button class="icon ghost q-nav q-prev"' + (i === 0 ? " disabled" : "") +
+      ' aria-label="上一个问题" title="上一个问题">' + chev(true) + "</button>" +
+    '<button class="icon ghost q-nav q-next"' + (i === qs.length - 1 ? " disabled" : "") +
+      ' aria-label="下一个问题" title="下一个问题">' + chev(false) + "</button></div>";
+  return '<div class="t-card q-step">' + head + questionHTML(qs[i], round.round_id, true) + "</div>";
 }
 
 function questionHTML(q, roundId, live) {
-  const options = (q.options || []).map((o) => live
-    ? '<label class="t-opt"><input type="radio" name="' + esc(roundId + ":" + q.id) + '" value="' +
-      esc(o.id) + '"><span>' + esc(o.label) + "</span></label>"
-    : '<span class="t-opt">' + esc(o.label) + "</span>").join("");
+  const a = live ? (qAns.get(q.id) || {}) : {};
+  const name = esc(roundId + ":" + q.id);
+  // 没有任何预设选项的开放题：直接把「其他」摊开让人写
+  const chosen = live ? (a.opt || ((q.options || []).length ? null : "__other__")) : null;
+  const opts = (q.options || []).map((o) => live
+    ? '<label class="t-opt"><input type="radio" name="' + name + '" value="' + esc(o.id) + '"' +
+      (chosen === o.id ? " checked" : "") + '><span>' + esc(o.label) + "</span></label>"
+    : '<span class="t-opt">' + esc(o.label) + "</span>");
+  if (live) {
+    opts.push('<label class="t-opt t-opt--other"><input type="radio" name="' + name +
+      '" value="__other__"' + (chosen === "__other__" ? " checked" : "") +
+      '><span>其他</span></label>');
+  }
+  const other = live ? '<div class="q-other"' + (chosen === "__other__" ? "" : " hidden") + ">" +
+    '<textarea class="q-other-input" rows="2" data-q="' + esc(q.id) +
+    '" placeholder="写下你自己的想法……" aria-label="其他：写下你的需求">' + esc(a.other || "") +
+    "</textarea></div>" : "";
   const required = q.required_for_generation ? '<span class="tag-block">需要先确认</span>' : "";
-  return '<div class="t-q" data-q="' + esc(q.id) + '" data-round="' + esc(roundId) + '">' +
+  return '<div class="t-q"' + (live ? ' data-q="' + esc(q.id) + '"' : "") + ">" +
     "<p>" + esc(q.text) + required + "</p>" +
     (q.reason ? '<p class="qreason">' + esc(q.reason) + "</p>" : "") +
-    (options ? '<div class="t-opts">' + options + "</div>" : "") + "</div>";
+    (opts.length ? '<div class="t-opts">' + opts.join("") + "</div>" : "") + other + "</div>";
 }
 
 function briefHTML() {
@@ -425,6 +460,33 @@ function wireThread() {
     hideSharesView();
     openDetail(b.dataset.fix);
   }));
+  wireStepper();
+}
+
+function wireStepper() {
+  const step = document.querySelector(".q-step");
+  if (!step) return;
+  const qEl = step.querySelector(".t-q");
+  const qid = qEl && qEl.dataset ? qEl.dataset.q : null;
+  const other = step.querySelector(".q-other");
+  step.querySelectorAll(".t-q input[type=radio]").forEach((r) => r.addEventListener("change", () => {
+    if (!qid) return;
+    const prev = qAns.get(qid) || {};
+    qAns.set(qid, { opt: r.value, other: prev.other || "" });
+    if (other) other.hidden = r.value !== "__other__";
+    if (r.value === "__other__") { const ta = step.querySelector(".q-other-input"); if (ta) ta.focus(); }
+  }));
+  const ta = step.querySelector(".q-other-input");
+  if (ta) ta.addEventListener("input", () => {
+    if (!qid) return;
+    const prev = qAns.get(qid) || { opt: "__other__" };
+    qAns.set(qid, { opt: prev.opt, other: ta.value });
+  });
+  const total = ((workCache && workCache.round && workCache.round.questions) || []).length;
+  const prevBtn = step.querySelector(".q-prev");
+  if (prevBtn) prevBtn.onclick = () => { if (qStep > 0) { qStep -= 1; renderThread(); } };
+  const nextBtn = step.querySelector(".q-next");
+  if (nextBtn) nextBtn.onclick = () => { if (qStep < total - 1) { qStep += 1; renderThread(); } };
 }
 
 // ---------- 底部：状态、随状态出现的按钮、输入框 ----------
@@ -694,12 +756,19 @@ function copy(text) {
 // ---------- 发送：这一句按当前状态决定算什么 ----------
 
 function collectAnswers() {
+  const round = workCache && workCache.round;
+  if (!round) return [];
   const out = [];
-  document.querySelectorAll("#stageThread .t-q").forEach((q) => {
-    if (!q.querySelector("input")) return;   // 只有当前待答的那一组可填
-    const picked = q.querySelector("input:checked");
-    if (picked) out.push({ question_id: q.dataset.q, option_ids: [picked.value], text: "" });
-  });
+  for (const q of round.questions || []) {
+    const a = qAns.get(q.id);
+    if (!a) continue;
+    if (a.opt === "__other__") {
+      const t = (a.other || "").trim();
+      if (t) out.push({ question_id: q.id, option_ids: [], text: t });
+    } else if (a.opt) {
+      out.push({ question_id: q.id, option_ids: [a.opt], text: "" });
+    }
+  }
   return out;
 }
 
@@ -741,16 +810,29 @@ async function onSend() {
       return;
     }
     if (!activeShareId) return;
-    if (!text) { el.focus(); return; }       // 对话里空着不算一句话
-    if (answering() || confirming()) await sendAnswer(text);
-    else if (revisions().length) await submitModify(text);
-    else toast("AI 还在读材料，等它问完再说", { type: "warn" });
+    if (answering()) {
+      // 回答这一组：只勾了选项、没写补充也发得出去；两边都空才提示
+      const answers = collectAnswers();
+      if (!text && !answers.length) {
+        toast("选一个选项，或点「其他」写两句；不想细说就直接写「你决定，按你的建议做」", { type: "warn" });
+        el.focus();
+        return;
+      }
+      await sendAnswer(text, answers);
+    } else if (confirming() || revisions().length) {
+      if (!text) { el.focus(); return; }
+      if (confirming()) await sendAnswer(text, []);
+      else await submitModify(text);
+    } else {
+      if (!text) { el.focus(); return; }
+      toast("AI 还在读材料，等它问完再说", { type: "warn" });
+    }
   } finally {
     sending = false;
   }
 }
 
-async function sendAnswer(free) {
+async function sendAnswer(free, answers) {
   const round = workCache && workCache.round;
   if (!round) return;
   try {
@@ -758,7 +840,7 @@ async function sendAnswer(free) {
       method: "POST",
       body: {
         expected_conversation_version: convCache ? convCache.conversation_version : 0,
-        round_id: round.round_id, answers: collectAnswers(), message: free,
+        round_id: round.round_id, answers: answers || collectAnswers(), message: free,
       },
       idempotencyKey: newKey("ans"),
     });

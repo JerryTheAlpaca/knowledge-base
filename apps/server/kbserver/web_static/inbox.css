@@ -714,12 +714,23 @@ body.share-open .dock, body.share-open .drawer { display: none; }
 .t-q { margin-top: 12px; }
 .t-q p { margin: 0; font-size: 14px; }
 .qreason { color: var(--text-2); font-size: var(--fs-small); margin-top: 3px; }
-.t-opts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
-.t-opt { display: inline-flex; align-items: center; gap: 6px; padding: 6px 11px;
-         border: 1px solid var(--border-strong); border-radius: 999px; font-size: var(--fs-small);
+.t-opts { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+/* 每个选项单独一行：整行可点，选中点亮 */
+.t-opt { display: flex; align-items: center; gap: 9px; padding: 9px 12px; text-align: left;
+         border: 1px solid var(--border-strong); border-radius: var(--radius-ctl); font-size: var(--fs-body);
          cursor: pointer; background: var(--surface); }
-.t-opt input { width: auto; min-height: 0; margin: 0; }
+.t-opt input { width: auto; min-height: 0; margin: 0; flex: none; }
 .t-opt:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
+.t-opt--other { border-style: dashed; }
+/* 一次一题的问答卡：右上角往左／往右切上一题、下一题 */
+.q-step .t-q { margin-top: 0; }
+.q-step-head { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+.q-step-pos { font-size: var(--fs-small); color: var(--text-2); }
+.q-step-head .spacer { flex: 1; }
+.q-nav:disabled { opacity: .32; }
+.q-other { margin-top: 8px; }
+.q-other[hidden] { display: none; }
+.q-other-input { font-size: var(--fs-body); min-height: 40px; resize: vertical; }
 .tag-ai, .tag-block { display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 999px;
                       background: var(--info-soft); color: var(--info); margin-left: 6px; }
 .tag-block { background: var(--warn-soft); color: var(--warn); }
