@@ -1,8 +1,11 @@
 // landing.js — 未登录说明页（#loginView）的动效编排
 //
-// 四件事：金尘画布、随滚动逐行入场、花茎生长点亮三个节点、末句「金蔷薇」落一次金粉。
+// 五件事：金尘画布、随滚动逐行入场、花茎生长点亮三个节点、末句「金蔷薇」落一次金粉、
+// 首屏那一点就冒粉的金蔷薇（touch-bloom.js，与收件箱首页共用同一套手感）。
 // 只有 inbox.html 引入本模块；收件箱界面（#appView）不 import 这里，
 // 已登录用户看到的登录视图始终不渲染，观察器也就停在「未相交」状态，不跑 rAF。
+
+import { attachBloomTouch } from "./touch-bloom.js";
 
 const RM = matchMedia("(prefers-reduced-motion: reduce)").matches;
 const view = document.getElementById("loginView");
@@ -277,3 +280,4 @@ topBar();
 finale();
 ctaGlow();
 anchors();
+attachBloomTouch(document.querySelector(".rose-bloom"));

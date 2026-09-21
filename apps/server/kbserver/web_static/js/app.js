@@ -11,6 +11,7 @@ import { initDetail, openDetail, closeDetail, currentDetailId } from "./item-det
 import { initOnboarding, maybeShowOnboarding, reopenOnboarding } from "./onboarding.js";
 import { initSettings, showSettings, hideSettings } from "./settings.js";
 import { initShares, openSharesView, hideSharesView, isSharesOpen } from "./shares.js";
+import { attachBloomTouch } from "./touch-bloom.js";
 
 let meInfo = null;
 // 从展开的条目抽屉进入设置：返回时恢复抽屉而不是落回金蔷薇主页
@@ -202,6 +203,7 @@ window.addEventListener("popstate", route);
   initOnboarding();
   initSettings();
   initShares(navigate);
+  attachBloomTouch(document.querySelector("svg.rose"));   // 点花冠冒金粉，与说明页首屏同一套手感
   window.__kbRefreshItems = refreshItems;
   try {
     const me = await api("/v1/auth/me");

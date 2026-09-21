@@ -52,6 +52,13 @@
 .gold-spark { position: fixed; z-index: 90; border-radius: 50%; pointer-events: none;
               box-shadow: 0 0 4px rgba(255, 249, 228, .95), 0 0 11px rgba(244, 202, 114, .8); }
 
+/* —— 点金蔷薇：touch-bloom.js 在两朵花的瓣圈内放一小团反光 + 一撮金粉 —— */
+/* 反光是「碰着了」的落点，比金粉更短，胀开即散，所以只在指尖那一小块地方亮一下 */
+.touch-flash { position: fixed; z-index: 89; width: 56px; height: 56px; margin: -28px 0 0 -28px;
+               border-radius: 50%; pointer-events: none; opacity: 0;
+               background: radial-gradient(circle, rgba(255, 248, 222, .5) 0%,
+                           rgba(244, 202, 114, .17) 38%, rgba(226, 176, 74, 0) 70%); }
+
 /* ============ 基底 ============ */
 html { background: var(--bg); }
 body { background: transparent; }
