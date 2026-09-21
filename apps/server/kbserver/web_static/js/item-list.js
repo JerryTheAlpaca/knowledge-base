@@ -363,7 +363,8 @@ export function initItemList() {
         !e.target.closest("#shareSelMenu")) closeDrawer();
   });
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && !isModalOpen() && isDrawerOpen()) {
+    // 分享那层（完成菜单 / 舞台 / 多选）在捕获阶段收掉这发 Escape 时，抽屉不跟着一起收
+    if (e.key === "Escape" && !isModalOpen() && !e.kbEscTaken && isDrawerOpen()) {
       if (searchOpen) { setSearchOpen(false); return; }  // 先收搜索，再收抽屉
       closeDrawer();
     }

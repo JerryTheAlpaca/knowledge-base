@@ -953,13 +953,20 @@ export function initShares(navigator) {
   }
   const send = $("stageSend");
   if (send) send.addEventListener("click", () => onSend());
+  // Escape 一层层往外收：先收「完成」菜单，再退出舞台/对话记录，再退出多选。
+  // 挂捕获阶段并给这次按键打个记号：item-list.js 那条是同一次按键上的气泡监听，
+  // 不打记号就会连抽屉一起收掉（走查反馈：菜单开着按 Esc，抽屉跟着没了）
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape" || isModalOpen()) return;
     const menu = $("shareSelMenu");
-    if (menu && !menu.hidden) { showSelMenu(false); return; }   // 先收菜单
-    if (!$("shareStage").hidden || !$("sharesView").hidden) { exitOverlay(); return; }
-    if (selectMode) setSelectMode(false);                      // 再收多选
-  });
+    if (menu && !menu.hidden) { showSelMenu(false); e.kbEscTaken = true; return; }   // 先收菜单
+    if (!$("shareStage").hidden || !$("sharesView").hidden) {                         // 再退舞台
+      exitOverlay();
+      e.kbEscTaken = true;
+      return;
+    }
+    if (selectMode) { setSelectMode(false); e.kbEscTaken = true; }                    // 再收多选
+  }, true);
   document.addEventListener("click", (e) => {
     const li = e.target.closest && e.target.closest("li.item");
     if (selectMode && li) li.classList.toggle("picked", selected.has(li.dataset.id));
