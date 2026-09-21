@@ -81,6 +81,8 @@ if (command === 'seal') {
 } else if (command === 'runner') {
   const spool = arg('spool');
   if (!spool) throw new Error('runner 需要 --spool <目录>');
+  // 交接目录由两个不同 uid 的容器共用：本进程建的目录/文件必须让对端能写能删
+  process.umask(0o000);
   await ensureSpool(spool);
   const done = await runSpool({ spoolDir: spool, once: Boolean(arg('once')) });
   console.log(JSON.stringify({ processed: done }));

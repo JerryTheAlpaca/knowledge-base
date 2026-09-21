@@ -1,6 +1,6 @@
 // 任务交接目录（docs/20 §14.3）：编排器写 ready，runner 原子领取到 working，结果写 done/failed。
 // 只传源文件与已选素材，不传完整 source_pack、模型 Key 或数据库。
-import { chmod, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { RenderError, renderTask } from './build.mjs';
@@ -19,11 +19,7 @@ export function spoolPaths(spoolDir) {
 
 export async function ensureSpool(spoolDir) {
   const dirs = spoolPaths(spoolDir);
-  for (const dir of Object.values(dirs)) {
-    await mkdir(dir, { recursive: true });
-    // 服务端 worker 容器与本容器 uid 不同，交接目录必须两端都能写
-    await chmod(dir, 0o777).catch(() => {});
-  }
+  for (const dir of Object.values(dirs)) await mkdir(dir, { recursive: true });
   return dirs;
 }
 
