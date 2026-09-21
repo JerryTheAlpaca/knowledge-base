@@ -335,8 +335,9 @@ ul.items { list-style: none; margin: 0; padding: 0;
            display: flex; flex-direction: column; gap: 10px; }
 ul.items > li { position: relative; background: var(--surface); border: 1px solid var(--border);
                 border-radius: var(--radius-inner); box-shadow: var(--shadow-card);
-                padding: 12px 46px 12px 16px; cursor: pointer; min-width: 0;
-                transition: border-color var(--t-fast), background var(--t-fast); }
+                padding: 12px 16px; cursor: pointer; min-width: 0;
+                transition: border-color var(--t-fast), background var(--t-fast),
+                            box-shadow var(--t-fast); }
 ul.items > li:hover { background: var(--surface-2); border-color: var(--border-strong); }
 ul.items > li.pre { opacity: 0; }
 ul.items > li.enter { animation: enter var(--t-slow) var(--ease) backwards; }
@@ -635,12 +636,13 @@ details.disclosure.slim .disclosure-body { padding: 0 8px 8px; }
 
 /* ============ 作品：选材料 → 澄清 → 生成 → 预览 → 分享（docs/20 §3） ============ */
 .share-selbar { position: fixed; left: 50%; transform: translateX(-50%); bottom: 22px; z-index: 40;
-                display: flex; align-items: center; justify-content: center; flex-wrap: wrap;
-                gap: 10px; max-width: calc(100vw - 32px); padding: 10px 14px;
+                display: flex; align-items: center; gap: 8px; flex-wrap: nowrap;
+                max-width: calc(100vw - 24px); padding: 8px 12px; white-space: nowrap;
                 background: var(--surface); border: 1px solid var(--border-strong);
                 border-radius: 999px; box-shadow: var(--shadow-2, 0 8px 28px rgba(0,0,0,.10));
                 font-size: var(--fs-small); }
-.share-selbar .spacer { flex: 1; min-width: 18px; }
+.share-selbar .btn { padding-inline: 12px; }
+.share-selbar .spacer { flex: 1; min-width: 6px; }
 .share-selbar[hidden] { display: none; }
 /* 「完成」先问一句要做什么：下载还是做 HTML，就地一个小菜单，不另开一层弹窗 */
 .share-menu { position: fixed; left: 50%; transform: translateX(-50%); bottom: 88px; z-index: 41;
@@ -648,21 +650,13 @@ details.disclosure.slim .disclosure-body { padding: 0 8px 8px; }
               background: var(--surface); border: 1px solid var(--border-strong);
               border-radius: var(--radius-card); box-shadow: var(--shadow-pop); }
 .share-menu[hidden] { display: none; }
-ul.items li.item.picked { background: var(--accent-soft); border-color: var(--accent); }
+/* 选中态不加圆框，点一下整张卡片四周亮起来：一圈描边 + 外发光 + 内侧一点反光，
+   一次加光到位，不额外挂动画（走查反馈：加动画的点亮像闪一下） */
+ul.items li.item.picked { background: var(--accent-soft); border-color: var(--accent);
+                          box-shadow: 0 0 0 1.5px var(--accent),
+                                      0 0 20px rgba(226, 176, 74, .3),
+                                      inset 0 0 22px rgba(226, 176, 74, .1); }
 ul.items li.item { position: relative; }
-/* 多选圆框：右侧那条带平时就留着（padding-right 恒定 46px），进不进多选文字都不横向移；
-   圆点只靠透明度切换，不用 display，避免勾选时行内高度重排 */
-ul.items > li::after { content: ""; position: absolute; right: 15px; top: 50%; margin-top: -11px;
-                       width: 22px; height: 22px; border-radius: 50%; box-sizing: border-box;
-                       border: 1.5px solid var(--border-strong); background: var(--surface);
-                       color: var(--on-accent); font-size: 14px; line-height: 1;
-                       display: flex; align-items: center; justify-content: center;
-                       opacity: 0; pointer-events: none;
-                       transition: opacity var(--t-fast), border-color var(--t-fast),
-                                   background var(--t-fast); }
-body.share-selecting ul.items > li::after { opacity: 1; }
-body.share-selecting ul.items > li.picked::after { content: "✓"; border-color: var(--accent);
-                                                   background: var(--accent); }
 body.share-selecting ul.items li.item { cursor: copy; }
 
 /* ============ 分享创作：金蔷薇压成背景，中间只剩和 AI 的对话（docs/20 §3） ============ */
