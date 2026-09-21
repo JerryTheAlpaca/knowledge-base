@@ -160,6 +160,10 @@ services:
     build:
       context: ../apps/share-renderer
       dockerfile: Dockerfile
+      args:
+        # 同一镜像、同一 manifest 摘要，只是换分发路径：官方 MCR 在这台机器上实测
+        # 约 170KiB/s（首次拉取要 1 小时以上），镜像站约 15MB/s
+        PLAYWRIGHT_BASE_IMAGE: mcr.m.daocloud.io/playwright:v1.60.0-noble
     restart: unless-stopped
     command: ["node", "src/cli.mjs", "runner", "--spool", "/spool"]
     network_mode: "none"          # 生成代码构建/检查期间不得访问公网、内网或云元数据

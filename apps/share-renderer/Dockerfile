@@ -3,21 +3,26 @@
 # 依赖在镜像构建阶段按 package-lock.json 固定安装；任务执行阶段不装包、不取 CDN。
 # 浏览器用 Playwright 自带的固定 Chromium 构建，以非 root 运行、保持 sandbox 开启
 # （Playwright 官方文档说明默认 root 运行会关闭 Chromium sandbox）。
-FROM mcr.microsoft.com/playwright:v1.60.0-noble
+#
+# 基础镜像默认走官方 MCR；国内到 MCR 实测约 170KiB/s，一次全新拉取会被部署超时砍掉。
+# 部署侧可用 PLAYWRIGHT_BASE_IMAGE 指到镜像站的同一 tag：两边 manifest 摘要一致
+# （sha256:9bd26ad9…），blob 按内容寻址，不是另一份构建。
+ARG PLAYWRIGHT_BASE_IMAGE=mcr.microsoft.com/playwright:v1.60.0-noble
+FROM ${PLAYWRIGHT_BASE_IMAGE}
 
 WORKDIR /app
 
-# 只复制依赖清单：源码改动不会让依赖层缓存失效，构建阶段也不执行仓库里的脚本
+# 只复制依赖清单：源码改动不会让依赖层缓存失效，构建阶段也不执行仓库里的脚本。
+# 不再跑 `playwright install`：基础镜像里已带同版本 Chromium，构建阶段不碰 Playwright CDN。
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev=false \
- && npx playwright install chromium \
- && npm cache clean --force
+RUN npm ci && npm cache clean --force
 
 COPY runtime-manifest.json ./
 COPY src ./src
 COPY samples ./samples
 
-# 镜像自检：清单里登记的依赖入口必须存在，浏览器必须能以非 root + sandbox 启动
+# 镜像自检：清单里登记的依赖入口必须存在（浏览器能否以非 root + sandbox 起跑
+# 由部署后 `share_runner doctor` 实测，构建期是 root、验不到同一条路径）
 RUN node -e "import('./src/manifest.mjs').then(async m => { await m.loadManifest(); console.log('manifest ok'); })"
 
 # 基础镜像里的 pwuser 已具备可用的 Chromium sandbox
