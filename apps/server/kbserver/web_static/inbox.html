@@ -759,19 +759,14 @@
           <span class="switch" aria-hidden="true"><i></i></span>
         </label>
       </div>
-      <!-- 两排结构恒定：capmain 只放文字，capbar 只放链接胶囊 + 文件钮 + 发送钮。
-           胶囊态靠 capbar 的负 margin 叠到文字行右端，展开时落回下面一行，
-           按钮始终贴着右端，形变只剩上下位移（见 inbox.css「采集框」一节） -->
+      <!-- 两排结构恒定：capmain 只放文字，capbar 只放文件钮 + 链接胶囊 + 发送钮。
+           胶囊态靠 capbar 的负 margin 叠到文字行那条带上（文件钮在左、发送钮在右），
+           展开时整行落回文字下方，两个按钮横向不动（见 inbox.css「采集框」一节） -->
       <div class="smartbox" id="smartBox">
         <div class="capmain">
           <textarea id="capText" rows="1" placeholder="粘贴链接，或写下想法……" aria-label="采集内容"></textarea>
         </div>
         <div class="capbar">
-          <div class="chipzone">
-            <div class="chiprow" id="urlChips" hidden></div>
-            <div class="chiprow" id="fileChips" hidden></div>
-            <div class="chiprow" id="audioChips" hidden></div>
-          </div>
           <button type="button" class="icon uploadpick" id="uploadPick" aria-label="添加文件或录音" title="添加文件或录音">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                  stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -780,6 +775,11 @@
               <line x1="12" y1="3" x2="12" y2="15"/>
             </svg>
           </button>
+          <div class="chipzone">
+            <div class="chiprow" id="urlChips" hidden></div>
+            <div class="chiprow" id="fileChips" hidden></div>
+            <div class="chiprow" id="audioChips" hidden></div>
+          </div>
           <button class="capsubmit" id="capSubmit" aria-label="提交" title="提交">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                  stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">

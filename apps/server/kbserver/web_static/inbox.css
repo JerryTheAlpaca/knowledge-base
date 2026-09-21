@@ -195,14 +195,16 @@ label { display: block; font-size: var(--fs-small); color: var(--text-2); margin
         overflow: visible;
         filter: drop-shadow(0 0 30px rgba(232, 169, 60, .13)); }
 
-/* 采集框：静止是单行胶囊，一开始输入就长成圆角矩形。
-   两态共用同一套 DOM：capmain 只放文字，capbar 只放「链接胶囊｜文件钮｜发送钮」。
-   胶囊态把 capbar 用负 margin 整行提上来，叠在文字行所在的那条带上；两个按钮始终贴着
-   右端不动，形变因此只剩三件事——capbar 落回下面一行、圆角从 999 收到 30、文字行让出的
-   右端收回来，元素一律不跳位。.open 由 capture.js 按有无内容切换，不参与测量：空框必回
-   胶囊，不会再出现卡在圆角矩形回不去的情况（2026-09-17）。 */
+/* 采集框：没点进来是单行胶囊，一点进来（或框里已经有东西）就长成圆角矩形。
+   两态共用同一套 DOM：capmain 只放文字，capbar 只放「文件钮｜链接胶囊｜发送钮」。
+   胶囊态把 capbar 用负 margin 整行提上来，正好叠在文字行那条带上——文件钮在左、发送钮
+   在右，位置和不展开时一样；展开时它整行落回文字下方，两个按钮横向一步都不走。
+   所以形变只剩三件事：按钮行落下、圆角从 999 收到 30、文字行两侧让出的位置收回，
+   元素一律不跳位。点进来那一下由 capture.js 的 focusin 挂 .open，形态不看测量：
+   空框一离开焦点必回胶囊，不会再出现卡在圆角矩形回不去的情况（2026-09-17）。 */
 .smartbox { --cap-bar: 44px;      /* capbar 行高，胶囊态按它整行上叠 */
-            --cap-btns: 104px;    /* 胶囊态右端两个按钮占掉的宽度 */
+            --cap-left: 52px;     /* 胶囊态左端文件钮让出的宽度 */
+            --cap-right: 60px;    /* 胶囊态右端发送钮让出的宽度（含 ::before 扩出来的命中区） */
             --t-morph: 340ms;
             display: flex; flex-direction: column;
             border: 1px solid var(--border-strong); border-radius: var(--radius-pill);
@@ -215,20 +217,22 @@ label { display: block; font-size: var(--fs-small); color: var(--text-2); margin
 .smartbox:focus-within { border-color: var(--rose-deep);
                          box-shadow: 0 0 0 3px rgba(226, 176, 74, .12),
                                      0 8px 30px rgba(226, 176, 74, .10); }
-/* 上排：文字独占一行，从胶囊到矩形都在这一行里长大 */
+/* 上排：文字独占一行，光标一进来就在这一行，从胶囊到矩形都在这里长高 */
 .capmain { display: flex; min-width: 0; }
 .smartbox textarea { flex: 1; min-width: 0; border: none; box-shadow: none; resize: none;
                      min-height: var(--cap-bar); max-height: 220px;
                      padding: 10px 12px; line-height: 24px;
                      background: transparent; color: var(--text); caret-color: var(--accent);
-                     transition: padding-right calc(var(--t-morph) * .55) var(--ease)
-                                          calc(var(--t-morph) * .45); }
+                     transition: padding-left calc(var(--t-morph) * .55) var(--ease)
+                                            calc(var(--t-morph) * .45),
+                                 padding-right calc(var(--t-morph) * .55) var(--ease)
+                                             calc(var(--t-morph) * .45); }
 .smartbox textarea:focus { box-shadow: none; }
 .smartbox textarea::placeholder { color: #8a7554; }
-/* 胶囊态：文字行右端让给叠在同一行的两个按钮。这条让位比 capbar 落下去晚起步
-   （延 = --t-morph 的 45%，本身只走 55%）：起步那段 capbar 还压着文字行，先把让位
-   留住，粘贴的长链接不会在过渡中途从按钮底下穿过去；capbar 已基本落定了才收回来。 */
-.smartbox:not(.open) textarea { padding-right: var(--cap-btns); }
+/* 胶囊态：文字行两端让给叠在同一行的文件钮与发送钮。这两条让位比 capbar 落下去晚起步
+   （延 = --t-morph 的 45%，本身只走 55%）：起步那段 capbar 还压着文字行，先把让位留住，
+   粘贴的长链接不会在过渡中途从按钮底下穿过去；capbar 基本落定了才把位置收回来。 */
+.smartbox:not(.open) textarea { padding-left: var(--cap-left); padding-right: var(--cap-right); }
 /* 下排：提取到的链接胶囊在左，文件钮与发送钮钉在右端 */
 .capbar { display: flex; align-items: center; gap: 6px; height: var(--cap-bar); padding: 0 2px;
           transition: margin-top var(--t-morph) var(--ease); }

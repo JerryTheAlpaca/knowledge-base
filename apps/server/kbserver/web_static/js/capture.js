@@ -66,14 +66,16 @@ export function restoreDraft() {
 }
 
 // ---------- 渲染 ----------
-// 形态只看有没有内容，不做高度测量：有内容 = 圆角矩形（文字在上排，链接胶囊和
-// 文件钮、发送钮在同一下排），空框 = 单行胶囊。旧的 scrollHeight 判定在真机上会把
-// 空态误判成多行，表现为提交后卡在圆角矩形回不去（2026-09-17），改成纯内容判定后
-// 这条路径不存在了。只选文件不打字也算「有内容」，所以 renderCapChips 末尾要同步一次。
+// 形态只看「有没有在输入」，不做高度测量：点进来了、或者框里已经有东西（文字、链接
+// 胶囊、文件、录音任一），就是圆角矩形（文字在上排，文件钮、链接胶囊、发送钮同在下排）；
+// 空框且没焦点就是单行胶囊。旧的 scrollHeight 判定在真机上会把空态误判成多行，表现为
+// 提交后卡在圆角矩形回不去（2026-09-17），改成纯状态判定后这条路径不存在了。
 function syncCapShape() {
+  const box = $("smartBox");
   const hasText = $("capText").value.trim() !== "";
-  $("smartBox").classList.toggle("open",
-    hasText || capFilesState.length > 0 || capAudiosState.length > 0);
+  const focused = box.contains(document.activeElement);
+  box.classList.toggle("open",
+    focused || hasText || capFilesState.length > 0 || capAudiosState.length > 0);
 }
 
 function autosizeCap() {
@@ -385,7 +387,11 @@ export function initCapture({ onSubmit }) {
   setSubmittedHandler(onSubmit);
   $("capSubmit").addEventListener("click", submitCapture);
   $("capText").addEventListener("input", () => { autosizeCap(); renderCapChips(); });
-  // 展开动画走完再量一次高度：胶囊态文字行右端让给按钮（padding-right 104→12 是渐变的），
+  // focusin/focusout 会冒泡，挂在采集框上就同时接得住输入框和两个按钮的进出
+  const box = $("smartBox");
+  box.addEventListener("focusin", syncCapShape);
+  box.addEventListener("focusout", syncCapShape);
+  // 展开动画走完再量一次高度：胶囊态文字行两端要给按钮让位（padding 52/60→12 是渐变的），
   // 中途量到的 scrollHeight 会偏大，长链接粘进空框时底下会多留一行空白
   $("capText").addEventListener("transitionend", (e) => {
     if (e.propertyName === "padding-right") autosizeCap();
