@@ -292,8 +292,8 @@ systemd 会在下载中途杀掉构建，下一轮定时器又从头再拉，表
 **已部署（2026-09-21 23:55，`DEPLOY OK: 6b249ee`，health=200）之后在正式容器里复验**：
 
 - `docker exec deploy-share_runner-1 node src/cli.mjs doctor` → `browser: ok`、**`sandbox_enabled: true`**、退出码 0；`docker inspect` 确认 `capadd=[CAP_SYS_ADMIN]`、`groupadd=[950]`、seccomp 用的是那份收紧表。`/inbox` 200、未登录 `/v1/auth/me` 401（不是 500）。分享站点域名仍未配，所以 C-11 的公网那条只能靠单测覆盖。
-- 沙箱下的真实开销（跑 `check --task samples/rich`，只写容器自己的 `/tmp`，不进交接卷、不调模型）：结论 `ok: true`、诊断 0 条、四张截图；**cgroup `memory.peak` 正好顶到当时 512m 的上限**，最狠的一秒是 `anon 192MiB ＋ file 299MiB`——大头是可回收的文件缓存所以没被 OOM，但最小样本就用满了，真实大页面（接近 10MiB 单文件、长页面）会把浏览器打爆。据此把 `share_runner` 抬到 **768m**；`pids_limit: 128` 不用动，沙箱下一次检查的进程数峰值只有 18。
-- 仍未测：真实大页面的内存与耗时、以及**与 ASR 同时跑**时的表现（docs/20 §14.2 要的共享重型准入目前只做了 ASR 单方面让路，分享侧不查资源就起浏览器）。
+- 沙箱下的真实开销（跑 `check --task samples/rich`，只写容器自己的 `/tmp`，不进交接卷、不调模型）：结论 `ok: true`、诊断 0 条、四张截图；**cgroup `memory.peak` 正好顶到当时 512m 的上限**，最狠的一秒是 `anon 192MiB ＋ file 299MiB`——大头是可回收的文件缓存所以没被 OOM，但最小样本就用满意味着接近 10MiB 的真实长页面会把浏览器打爆。抬到 768m 后重跑同一样本：**峰值 609MiB、空转回到 316MiB**，也就是留了约 150MiB 余量（`pids_limit: 128` 不用动，沙箱下一次检查进程数峰值只有 18）。
+- 仍未测：真实大页面（多材料、长页面、接近上限的单文件）的内存与耗时，以及**与 ASR 同时跑**时的表现——分享侧起浏览器前不查主机资源，docs/20 §14.2 要的共享重型准入目前只做了 ASR 单方面让路。
 
 剩下只能真机走查的：U-01／U-02／U-04／U-05 与 U-06 的清单（口径见 §2 那两行）。
 
