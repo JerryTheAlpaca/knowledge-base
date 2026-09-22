@@ -33,6 +33,16 @@ let qAns = new Map();      // question_id -> { opt, other }：切题/重画都�
 let qRoundId = null;       // qStep/qAns 属于哪一轮，换轮就清空
 let draftKey = null;       // 这一件新作品的幂等键：进草稿生成一次，超时重试复用同一把
 let draftKeySig = "";      // 键对应的请求内容；换了材料或改了说法才算另一件事，才换新键
+let planOpen = false;      // 顶部「这一版的方向」折叠态
+let planAuto = "";         // 为哪一版需求自动展开过，避免每次轮询都抢回展开
+let openRounds = new Set();// 已答问题轮次里被手动摊开的 round_id
+let procKey = "";          // 过程块的折叠态属于哪一次运行
+let procOpen = null;       // null = 还没手动碰过，跟着「是不是在跑」自动收放
+let procLive = null;       // 上一次画出来时是不是在跑，用来在翻转的那一刻把开合交还给自动
+let procTimer = 0;         // 过程块自己的一秒计时，不牵动整条对话流重画
+let procRun = "";          // 下面三个量在给哪一次运行计时
+let procFrom = 0;          // 这一段「真在跑」从什么时候开始看到
+let procMs = 0;            // 已经累计到的处理时长
 let go = (url, state) => {
   // state 里带 view：退出时靠它判断这条历史是我们压进去的，可以直接 back 回去
   try { history.pushState(state || {}, "", url); } catch (e) { /* 忽略 */ }
@@ -314,6 +324,7 @@ function startDraft(ids) {
   // （键在第一次真的发出去时现造，见 startCreation）
   draftKey = null; draftKeySig = "";
   pvOpen = false; pvDoc = null; pvDocKey = "";
+  resetRoundViews();
   lastRevisionCount = 0;
   stopPolling();
   resetStageInput();
@@ -336,8 +347,7 @@ function threadSig() {
     mode, mode === "draft" ? [draftIds, matsVersion] : null,
     run ? [run.state, run.stage, run.reason_code, run.brief_version] : null,
     convCache ? convCache.messages.map((m) => m.seq) : null,
-    revisions().length, workCache && workCache.round
-      ? [workCache.round.round_id, qStep] : null,
+    revisions().length, workCache && workCache.round ? workCache.round.round_id : null,
     workCache ? [workCache.share.status, shareLink] : null, pvOpen,
   ]);
 }
@@ -354,6 +364,7 @@ function renderThread() {
   if (wasNearBottom || count > lastMsgCount) host.scrollTop = host.scrollHeight;
   lastMsgCount = count;
   wireThread();
+  syncProcClock();
   if (pvOpen) applyPreview();
 }
 
@@ -382,19 +393,58 @@ function draftHTML() {
 function workHTML() {
   const messages = (convCache && convCache.messages) || [];
   const pendingRound = workCache && workCache.round ? workCache.round.round_id : null;
+  const answered = answersByRound();
   const bubbles = messages.map((m) => {
     if (m.role === "user") {
-      return '<div class="t-msg me">' + esc(m.text || "").replace(/\n/g, "<br>") + "</div>";
+      // 勾了哪些选项已经折在上面那组问题里，你这一侧只留自己打的那句话
+      const t = (m.answers || []).length ? (m.free_text || "") : (m.text || "");
+      if (!t.trim()) return "";
+      return '<div class="t-msg me">' + esc(t).replace(/\n/g, "<br>") + "</div>";
     }
     const understanding = m.understanding
       ? '<p class="munder">' + esc(m.understanding) + "</p>" : "";
-    // 当前待答的这一组不在气泡里整排铺开，改由下面的问答卡一题一题来
-    const qs = answering() && m.round_id === pendingRound
-      ? "" : (m.questions || []).map((q) => questionHTML(q, m.round_id, false)).join("");
-    if (!understanding && !qs) return "";
-    return '<div class="t-msg ai">' + understanding + qs + "</div>";
+    // 待答的这一组挪到输入框上方一题一题答，这里只把答完的折起来留档
+    const qs = m.questions || [];
+    const round = (!qs.length || (answering() && m.round_id === pendingRound))
+      ? "" : roundHTML(qs, m.round_id, answered.get(m.round_id));
+    if (!understanding && !round) return "";
+    return '<div class="t-msg ai">' + understanding + round + "</div>";
   }).join("");
-  return bubbles + stepperHTML() + briefHTML() + previewHTML();
+  return bubbles + procHTML() + previewHTML();
+}
+
+// 按 round_id 把结构化的回答配回提问那一组，用来折叠和标出当时选了哪个
+function answersByRound() {
+  const out = new Map();
+  for (const m of ((convCache && convCache.messages) || [])) {
+    if (m.role !== "user" || !m.round_id) continue;
+    const cur = out.get(m.round_id) || new Map();
+    for (const a of m.answers || []) if (a && a.question_id) cur.set(a.question_id, a);
+    out.set(m.round_id, cur);
+  }
+  return out;
+}
+
+function chosenText(q, a) {
+  if (!a) return "";
+  const labels = {};
+  for (const o of q.options || []) labels[o.id] = o.label;
+  const parts = (a.option_ids || []).map((id) => labels[id] || id);
+  const free = (a.text || "").trim();
+  if (free) parts.push(free);
+  return parts.join("、");
+}
+
+function roundHTML(qs, roundId, ans) {
+  const chips = qs.map((q) => chosenText(q, ans && ans.get(q.id)) || "未回答")
+    .map((t) => '<span class="t-chip">' + esc(t) + "</span>").join("");
+  return '<details class="t-round"' + (openRounds.has(roundId) ? " open" : "") +
+    ' data-round="' + esc(roundId) + '">' +
+    '<summary><span class="t-round-q">问了 ' + qs.length + " 个问题</span>" +
+    '<span class="t-round-a">' + chips + '</span>' +
+    '<span class="proc-chev" aria-hidden="true"></span></summary>' +
+    qs.map((q) => questionHTML(q, roundId, false, ans && ans.get(q.id))).join("") +
+    "</details>";
 }
 
 // 待答轮：一次只显示一个问题，右上角「往左／往右」切上一题、下一题
@@ -404,27 +454,63 @@ function stepperHTML() {
   if (!qs.length) return "";
   if (qRoundId !== round.round_id) { qRoundId = round.round_id; qStep = 0; qAns = new Map(); }
   const i = Math.max(0, Math.min(qStep, qs.length - 1));
+  const done = qs.filter(isAnswered).length;
+  const all = done === qs.length;
   const chev = (back) => '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
     'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
     (back ? '<polyline points="15 18 9 12 15 6"/>' : '<polyline points="9 18 15 12 9 6"/>') + "</svg>";
   const head = '<div class="q-step-head"><span class="q-step-pos">第 ' + (i + 1) + " / " + qs.length +
-    " 个</span><span class=\"spacer\"></span>" +
+    " 个</span>" + dotsHTML(qs, i) + '<span class="spacer"></span>' +
     '<button class="icon ghost q-nav q-prev"' + (i === 0 ? " disabled" : "") +
       ' aria-label="上一个问题" title="上一个问题">' + chev(true) + "</button>" +
     '<button class="icon ghost q-nav q-next"' + (i === qs.length - 1 ? " disabled" : "") +
       ' aria-label="下一个问题" title="下一个问题">' + chev(false) + "</button></div>";
-  return '<div class="t-card q-step">' + head + questionHTML(qs[i], round.round_id, true) + "</div>";
+  // 答完最后一题不用再找发送键：主按钮就地给出，没答完也留着当「先提交这些」
+  const foot = '<div class="q-foot"><span class="q-done' + (all ? " all" : "") + '">' +
+    (all ? "都答完了" : "已答 " + done + " / " + qs.length) + "</span>" +
+    '<button class="btn ' + (all ? "primary " : "ghost ") + 'small" id="askSubmit">' +
+    (all ? "提交这 " + qs.length + " 个回答" : "提交回答") + "</button></div>";
+  return '<div class="t-card q-step">' + head + questionHTML(qs[i], round.round_id, true) + foot + "</div>";
 }
 
-function questionHTML(q, roundId, live) {
+// 一排小点当进度：答过的填色，当前这题描边，比「2/3」更一眼看出还剩几题
+function dotsHTML(qs, cur) {
+  if (qs.length < 2) return "";
+  return '<span class="q-dots" aria-hidden="true">' + qs.map((q, k) =>
+    '<span class="q-dot' + (isAnswered(q) ? " done" : "") + (k === cur ? " now" : "") + '"></span>').join("") +
+    "</span>";
+}
+
+function isAnswered(q) {
+  const a = qAns.get(q.id);
+  if (!a) return false;
+  if (a.opt === "__other__") return !!(a.other || "").trim();
+  return !!a.opt;
+}
+
+// 选了预设选项就算答完这一题，自动往后找第一道还没答的；改已答过的不抢焦点
+function advanceFrom(qs, i) {
+  for (let k = i + 1; k < qs.length; k++) {
+    if (isAnswered(qs[k])) continue;
+    qStep = k;
+    renderAsk();
+    focusOption();
+    return;
+  }
+  renderAsk();   // 后面都答完了：留在本题，把「都答完了」画出来
+}
+
+function questionHTML(q, roundId, live, ans) {
   const a = live ? (qAns.get(q.id) || {}) : {};
   const name = esc(roundId + ":" + q.id);
   // 没有任何预设选项的开放题：直接把「其他」摊开让人写
   const chosen = live ? (a.opt || ((q.options || []).length ? null : "__other__")) : null;
+  const picked = ans ? (ans.option_ids || []) : [];
   const opts = (q.options || []).map((o) => live
     ? '<label class="t-opt"><input type="radio" name="' + name + '" value="' + esc(o.id) + '"' +
       (chosen === o.id ? " checked" : "") + '><span>' + esc(o.label) + "</span></label>"
-    : '<span class="t-opt">' + esc(o.label) + "</span>");
+    : '<span class="t-opt' + (picked.includes(o.id) ? " t-opt--chosen" : "") + '">' +
+      '<span class="t-dot" aria-hidden="true"></span><span>' + esc(o.label) + "</span></span>");
   if (live) {
     opts.push('<label class="t-opt t-opt--other"><input type="radio" name="' + name +
       '" value="__other__"' + (chosen === "__other__" ? " checked" : "") +
@@ -434,21 +520,112 @@ function questionHTML(q, roundId, live) {
     '<textarea class="q-other-input" rows="2" data-q="' + esc(q.id) +
     '" placeholder="写下你自己的想法……" aria-label="其他：写下你的需求">' + esc(a.other || "") +
     "</textarea></div>" : "";
+  // 答完的轮次里，「其他」这一项和当时写的话一起补在选项后面
+  const free = ans ? (ans.text || "").trim() : "";
+  if (free) {
+    opts.push('<span class="t-opt t-opt--other t-opt--chosen">' +
+      '<span class="t-dot" aria-hidden="true"></span><span>其他</span></span>');
+  }
+  const freeBlock = live || !free ? "" : '<div class="t-free">' + esc(free) + "</div>";
   const required = q.required_for_generation ? '<span class="tag-block">需要先确认</span>' : "";
   return '<div class="t-q"' + (live ? ' data-q="' + esc(q.id) + '"' : "") + ">" +
     "<p>" + esc(q.text) + required + "</p>" +
     (q.reason ? '<p class="qreason">' + esc(q.reason) + "</p>" : "") +
-    (opts.length ? '<div class="t-opts">' + opts.join("") + "</div>" : "") + other + "</div>";
+    (opts.length ? '<div class="t-opts">' + opts.join("") + "</div>" : "") + other + freeBlock + "</div>";
 }
 
-function briefHTML() {
-  const brief = workCache && workCache.brief;
-  if (!brief || !brief.fields.length) return "";
-  const rows = brief.fields.map((f) =>
-    "<div><dt>" + esc(f.label) + "</dt><dd>" + f.value.map(esc).join("；") +
-    (f.by === "ai" ? ' <span class="tag-ai">AI 暂定</span>' : "") + "</dd></div>").join("");
-  return '<div class="t-card"><h4>目前的需求 <span class="small num">版本 ' + esc(brief.version) +
-    "</span></h4><dl class=\"brief-dl\">" + rows + "</dl></div>";
+// ---------- 过程信息：把服务端真实在跑的那一步摊开，跑完自己折回一行 ----------
+
+const PROC_STEPS = [
+  { label: "读取材料", at: ["preparing"] },
+  { label: "理解需求", at: ["clarifying"] },
+  { label: "整合内容", at: ["synthesizing"] },
+  { label: "制作页面", at: ["generating"] },
+  { label: "检查页面", at: ["packaging", "awaiting_runner", "checking", "repairing", "waiting_resources"] },
+];
+
+function procIdx() {
+  const run = workCache && workCache.run;
+  if (!run) return -1;
+  if (["succeeded", "ready"].includes(run.state)) return PROC_STEPS.length;
+  const i = PROC_STEPS.findIndex((s) => s.at.includes(run.stage));
+  return i < 0 ? 0 : i;
+}
+
+function procElapsed() {
+  return procMs + (procFrom ? Date.now() - procFrom : 0);
+}
+
+function fmtMs(ms) {
+  const s = Math.round(ms / 1000);
+  return s < 60 ? s + " 秒" : Math.floor(s / 60) + " 分 " + (s % 60) + " 秒";
+}
+
+// 只累计这一轮真在服务器跑的时间：从本页第一次看到它在动算起，停下来就收表。
+// run.created_at 里含着用户思考的几分钟，拿它当「处理了多久」会把等待算成干活。
+function tickProc() {
+  const run = workCache && workCache.run;
+  if (!run) return;
+  if (procRun !== run.run_id) { procRun = run.run_id; procFrom = 0; procMs = 0; }
+  if (running()) { if (!procFrom) procFrom = Date.now(); }
+  else if (procFrom) { procMs += Date.now() - procFrom; procFrom = 0; }
+}
+
+function procLabel() {
+  const ms = procElapsed();
+  if (!ms) return "";
+  return (procFrom ? "已用 " : "用时 ") + fmtMs(ms);
+}
+
+function procHTML() {
+  const run = mode === "work" && workCache ? workCache.run : null;
+  if (!run) return "";
+  if (procKey !== run.run_id) { procKey = run.run_id; procOpen = null; }
+  const idx = procIdx();
+  const live = running();
+  // 开跑自己摊开、停下自己收起；用户在这中间的手动开合只保留到下一次状态翻转
+  if (procLive !== live) { procLive = live; procOpen = null; }
+  const open = procOpen === null ? live : procOpen;
+  const rounds = ((convCache && convCache.messages) || []).filter((m) => m.role === "user"
+    && (m.answers || []).length).length;
+  const note = (k) => k === 1 && rounds ? rounds + " 轮问答"
+    : (k === 4 && run.repair_count ? "调整 " + run.repair_count + " 次" : "");
+  const steps = PROC_STEPS.map((s, k) => {
+    const state = idx > k ? "ok" : (idx === k ? (halted() ? "bad" : "now") : "");
+    const txt = s.label + (note(k) ? ' <span class="small num">' + note(k) + "</span>" : "");
+    return '<li class="' + state + '"><span class="proc-mark" aria-hidden="true"></span>' +
+      "<span>" + txt + "</span></li>";
+  }).join("");
+  const stepName = idx >= 0 && idx < PROC_STEPS.length ? PROC_STEPS[idx].label : "";
+  const head = ["succeeded", "ready"].includes(run.state) ? "已完成"
+    : (run.state === "queued" && stepName ? "排队中 · " + stepName : run.status_text);
+  return '<details class="t-card t-proc"' + (open ? " open" : "") + " data-proc>" +
+    '<summary><span class="proc-sum"' + (live ? ' data-live="1"' : "") + ">" + esc(head) + "</span>" +
+    '<span class="proc-cost" id="procElapsed">' + esc(procLabel()) + "</span>" +
+    (run.attempt > 1 ? '<span class="tag-ai">第 ' + esc(run.attempt) + " 次尝试</span>" : "") +
+    '<span class="spacer"></span><span class="proc-chev" aria-hidden="true"></span></summary>' +
+    '<ul class="proc-steps"' + (live ? ' data-live="1"' : "") + ">" + steps + "</ul>" +
+    "</details>";
+}
+
+// 秒数自己走，不为它重画整条对话流
+function syncProcClock() {
+  tickProc();
+  const el = $("procElapsed");
+  if (el) el.textContent = procLabel();   // 刚停下的这一次重画，文案要从「已用」换成「用时」
+  if (!running()) { stopProcClock(); return; }
+  if (procTimer) return;
+  procTimer = window.setInterval(() => {
+    tickProc();
+    const el = $("procElapsed");
+    if (!el) { stopProcClock(); return; }
+    el.textContent = procLabel();
+    if (!running()) stopProcClock();
+  }, 1000);
+}
+
+function stopProcClock() {
+  if (procTimer) { clearInterval(procTimer); procTimer = 0; }
 }
 
 function previewHTML() {
@@ -499,45 +676,144 @@ function wireThread() {
     hideSharesView();
     openDetail(b.dataset.fix);
   }));
-  wireStepper();
+  // 折叠态记在变量里：轮询重画对话流时才不会把用户刚摊开的那组问题折回去
+  const proc = document.querySelector("[data-proc]");
+  if (proc) proc.addEventListener("toggle", () => { procOpen = proc.open; });
+  document.querySelectorAll(".t-round").forEach((d) => {
+    d.addEventListener("toggle", () => {
+      if (d.open) openRounds.add(d.dataset.round); else openRounds.delete(d.dataset.round);
+    });
+  });
 }
 
-function wireStepper() {
-  const step = document.querySelector(".q-step");
-  if (!step) return;
+// ---------- 顶部：这一版的方向，折成一行也能随时点开对照 ----------
+
+function renderPlan() {
+  const host = $("stagePlan");
+  if (!host) return;
+  const brief = mode === "work" && workCache ? workCache.brief : null;
+  if (!brief || !brief.fields.length) { host.hidden = true; host.innerHTML = ""; return; }
+  // 走到「请确认方向」这一步，方案就是被确认的东西：自动摊开一次，之后收放归用户
+  const key = activeRunId + ":" + brief.version;
+  if (confirming() && planAuto !== key) { planAuto = key; planOpen = true; }
+  const shown = brief.fields.filter((f) => f.value && f.value.length);
+  const digest = shown.slice(0, 2).map((f) => f.label + "：" + f.value.join("；")).join("　·　");
+  host.hidden = false;
+  host.innerHTML = '<details class="plan"' + (planOpen ? " open" : "") + ">" +
+    "<summary><span class=\"plan-title\">这一版的方向" +
+      '<span class="num"> v' + esc(brief.version) + "</span></span>" +
+    '<span class="plan-digest">' + esc(digest) + "</span>" +
+    '<span class="proc-chev" aria-hidden="true"></span></summary>' +
+    '<dl class="brief-dl">' + brief.fields.map((f) =>
+      "<div><dt>" + esc(f.label) + "</dt><dd>" + f.value.map(esc).join("；") +
+      (f.by === "ai" ? ' <span class="tag-ai">AI 暂定</span>' : "") + "</dd></div>").join("") +
+    "</dl></details>";
+  const d = host.querySelector("details");
+  d.addEventListener("toggle", () => { planOpen = d.open; });
+}
+
+// ---------- 贴着输入框的问答卡 ----------
+
+function renderAsk() {
+  const host = $("stageAsk");
+  if (!host) return;
+  const html = stepperHTML();
+  host.innerHTML = html;
+  host.hidden = !html;
+  wireAsk();
+}
+
+function wireAsk() {
+  const step = $("stageAsk");
+  if (step && !step.hidden) wireStepper(step);
+}
+
+function wireStepper(step) {
+  const qs = (workCache && workCache.round && workCache.round.questions) || [];
   const qEl = step.querySelector(".t-q");
   const qid = qEl && qEl.dataset ? qEl.dataset.q : null;
-  const other = step.querySelector(".q-other");
   step.querySelectorAll(".t-q input[type=radio]").forEach((r) => r.addEventListener("change", () => {
     if (!qid) return;
     const prev = qAns.get(qid) || {};
+    const firstTime = !isAnswered(qs.find((q) => q.id === qid));
     qAns.set(qid, { opt: r.value, other: prev.other || "" });
-    if (other) other.hidden = r.value !== "__other__";
-    if (r.value === "__other__") { const ta = step.querySelector(".q-other-input"); if (ta) ta.focus(); }
+    if (r.value === "__other__") {
+      // 选「其他」是要写字，别急着跳走；先重画再找输入框，不然焦点跟着旧 DOM 一起没了
+      renderAsk();
+      const box = step.querySelector(".q-other:not([hidden]) .q-other-input");
+      if (box) box.focus({ preventScroll: true });
+      return;
+    }
+    if (!firstTime) { renderAsk(); return; }
+    advanceFrom(qs, qs.findIndex((q) => q.id === qid));
   }));
   const ta = step.querySelector(".q-other-input");
-  if (ta) ta.addEventListener("input", () => {
-    if (!qid) return;
-    const prev = qAns.get(qid) || { opt: "__other__" };
-    qAns.set(qid, { opt: prev.opt, other: ta.value });
-  });
-  const total = ((workCache && workCache.round && workCache.round.questions) || []).length;
+  if (ta) {
+    ta.addEventListener("input", () => {
+      if (!qid) return;
+      const prev = qAns.get(qid) || { opt: "__other__" };
+      qAns.set(qid, { opt: prev.opt, other: ta.value });
+      // 字数一变就重画进度点；焦点在输入区里，重画会打断打字，所以只补底部那一行
+      syncQFoot(qs);
+    });
+    // 写完回车就往后走，和点选项同一套节奏
+    ta.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" || e.shiftKey || e.isComposing) return;
+      e.preventDefault();
+      if (!qid) return;
+      const prev = qAns.get(qid) || { opt: "__other__" };
+      qAns.set(qid, { opt: prev.opt, other: ta.value });
+      advanceFrom(qs, qs.findIndex((q) => q.id === qid));
+    });
+  }
   const prevBtn = step.querySelector(".q-prev");
-  if (prevBtn) prevBtn.onclick = () => { if (qStep > 0) { qStep -= 1; renderThread(); focusStep("prev"); } };
+  if (prevBtn) prevBtn.onclick = () => { if (qStep > 0) { qStep -= 1; renderAsk(); focusStep("prev"); } };
   const nextBtn = step.querySelector(".q-next");
-  if (nextBtn) nextBtn.onclick = () => { if (qStep < total - 1) { qStep += 1; renderThread(); focusStep("next"); } };
+  if (nextBtn) nextBtn.onclick = () => {
+    if (qStep < qs.length - 1) { qStep += 1; renderAsk(); focusStep("next"); }
+  };
+  const submit = $("askSubmit");
+  if (submit) submit.onclick = () => onSend();
+}
+
+// 打字过程中只更新底部「已答 N / M」和进度点，整张卡重画会打断输入
+function syncQFoot(qs) {
+  const foot = document.querySelector("#stageAsk .q-foot");
+  if (!foot || !qs.length) return;
+  const done = qs.filter(isAnswered).length;
+  const all = done === qs.length;
+  const label = foot.querySelector(".q-done");
+  if (label) { label.textContent = all ? "都答完了" : "已答 " + done + " / " + qs.length;
+    label.classList.toggle("all", all); }
+  const btn = $("askSubmit");
+  if (btn) {
+    btn.textContent = all ? "提交这 " + qs.length + " 个回答" : "提交回答";
+    btn.className = "btn " + (all ? "primary " : "ghost ") + "small";
+  }
+  foot.parentElement.querySelectorAll(".q-dot").forEach((d, k) => {
+    d.classList.toggle("done", isAnswered(qs[k]));
+  });
 }
 
 // 切一题就是把整块 innerHTML 重写一遍，焦点掉回 body，键盘用户每切一题要从头 Tab。
 // 重画完把焦点放回这一题：刚才那个切换钮还在就用它，否则落到当前题的第一个可选项上。
 // preventScroll：这一层自己可滚，让浏览器顺手滚动会把画面顶一下（审查 U-05）
 function focusStep(which) {
-  const step = document.querySelector(".q-step");
+  const step = $("stageAsk");
   if (!step) return;
   const btn = step.querySelector(".q-" + which);
   if (btn && !btn.disabled) { btn.focus({ preventScroll: true }); return; }
   const openOther = step.querySelector(".q-other:not([hidden]) .q-other-input");
   const target = openOther || step.querySelector(".t-q input");
+  if (target) target.focus({ preventScroll: true });
+}
+
+// 自动跳到下一题时落在题面本身，而不是刚被按下去的那个箭头
+function focusOption() {
+  const step = $("stageAsk");
+  if (!step) return;
+  const target = step.querySelector(".q-other:not([hidden]) .q-other-input") ||
+    step.querySelector(".t-q input");
   if (target) target.focus({ preventScroll: true });
 }
 
@@ -549,13 +825,15 @@ function running() { return ["queued", "running", "retry_wait", "awaiting_runner
 function halted() { return ["failed", "unknown_outcome", "cancelled"].includes(runState()); }
 
 function renderDock() {
+  renderPlan();
+  renderAsk();
   const status = $("stageStatus");
   const run = workCache && workCache.run;
-  if (run) {
+  // 阶段本身由对话流末尾那块「过程」在说，这里不再重复一遍；钉住的这一条只报需要看一眼的原因
+  const why = run ? [run.reason_text, run.error_detail].filter(Boolean).join("：") : "";
+  if (why) {
     status.hidden = false;
-    const why = [run.reason_text, run.error_detail].filter(Boolean).join("：");
-    status.innerHTML = '<span class="pill">' + esc(run.status_text) + "</span>" +
-      (why ? '<span class="reason">' + esc(why) + "</span>" : "");
+    status.innerHTML = '<span class="reason">' + esc(why) + "</span>";
   } else {
     status.hidden = true;
     status.innerHTML = "";
@@ -719,6 +997,7 @@ async function openWork(shareId, runId, replaceUrl) {
     else if (location.pathname + location.search !== url) history.pushState({ view: "shares" }, "", url);
   } catch (e) { /* 忽略 */ }
   pvOpen = false; pvDoc = null; pvDocKey = "";
+  resetRoundViews();
   shareLink = null;
   lastRevisionCount = 0;
   resetStageInput();
@@ -867,6 +1146,14 @@ function resetStageInput() {
   autosize();
 }
 
+// 换一件作品就是另一套折叠态：上一件的展开记录不带过来
+function resetRoundViews() {
+  planOpen = false; planAuto = "";
+  openRounds = new Set();
+  procKey = ""; procOpen = null; procLive = null;
+  procRun = ""; procFrom = 0; procMs = 0;
+}
+
 async function onSend() {
   if (sending) return;
   const el = $("stageInput");
@@ -994,6 +1281,7 @@ function startPolling() {
 
 function stopPolling() {
   if (pollTimer) { clearTimeout(pollTimer); pollTimer = 0; }
+  stopProcClock();
 }
 
 // ---------- 入口 ----------

@@ -419,8 +419,11 @@ def get_conversation(work_id: str, run_id: str, limit: int = 50, before_seq: int
                              "questions": content.get("questions") or [],
                              "next_action": content.get("next_action")})
         else:
+            # text 是选项与补充拼出来的稳定回放文本；界面只要用户自己打的那句，
+            # 选项已经折在对应问题组里，两处一起画就把同一句话摆了两遍
             messages.append({"seq": msg.seq, "role": "user", "text": content.get("text"),
                              "answers": content.get("answers") or [],
+                             "free_text": content.get("free_text"),
                              "round_id": msg.reply_to_round_id})
     return {
         "messages": messages,

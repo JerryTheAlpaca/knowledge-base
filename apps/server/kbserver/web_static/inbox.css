@@ -711,6 +711,8 @@ body.share-open .dock, body.share-open .drawer { display: none; }
                min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .stage-scroll { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
                 display: flex; flex-direction: column; gap: 12px; padding: 2px 6px 2px 0; }
+/* 话还少的时候贴着输入框那头摆，别在中间留一大片空；内容一溢出 auto 自己归零，不挡滚动 */
+.stage-scroll > :first-child { margin-top: auto; }
 .stage-dock { flex: none; display: flex; flex-direction: column; gap: 8px; }
 
 /* —— 对话流：AI 在左、你在右，材料/需求/成品作为卡片夹在中间 —— */
@@ -763,11 +765,9 @@ body.share-open .dock, body.share-open .drawer { display: none; }
                border-radius: var(--radius-ctl); background: var(--surface); }
 .share-link { font-size: var(--fs-small); margin: 10px 0 0; word-break: break-all; }
 
-/* —— 状态与随状态出现的按钮：钉在输入框上方，轮询重画对话流也不动它 —— */
+/* —— 需要看一眼的原因与随状态出现的按钮：钉在输入框上方，轮询重画对话流也不动它 —— */
 .stage-status { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .stage-status[hidden] { display: none; }
-.stage-status .pill { display: inline-flex; align-items: center; padding: 5px 12px; font-size: var(--fs-small);
-                      border-radius: 999px; background: var(--surface-2); border: 1px solid var(--border); }
 .stage-status .reason { font-size: var(--fs-small); color: var(--warn); }
 .stage-actions { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .stage-actions[hidden] { display: none; }
@@ -775,6 +775,89 @@ body.share-open .dock, body.share-open .drawer { display: none; }
 #stageBox { --cap-left: 14px; }
 #stageHint { margin: 0; padding: 0 4px; }
 #stageHint:empty { display: none; }
+
+/* —— 折叠件共用的三角：右+下两条边转 45° 朝下，摊开转成朝上 —— */
+summary { list-style: none; cursor: pointer; }
+summary::-webkit-details-marker { display: none; }
+.proc-chev { flex: none; width: 7px; height: 7px; margin: 0 2px 2px 0;
+             border-right: 1.6px solid var(--text-2); border-bottom: 1.6px solid var(--text-2);
+             transform: rotate(45deg); transition: transform .16s var(--ease); }
+details[open] > summary .proc-chev { transform: rotate(-135deg); margin: 2px 2px 0 0; }
+
+/* —— 顶部：这一版的方向，折起来也留一行能对照 —— */
+.stage-plan { flex: none; }
+.stage-plan[hidden] { display: none; }
+.plan { border: 1px solid var(--border); border-radius: var(--radius-ctl); background: var(--surface-2);
+        padding: 0 12px; }
+.plan > summary { display: flex; align-items: center; gap: 10px; min-height: 42px; }
+.plan-title { flex: none; font-size: var(--fs-small); font-weight: 600; letter-spacing: .4px;
+              color: var(--text-2); }
+.plan-title .num { font-weight: 400; color: var(--text-2); margin-left: 3px; }
+.plan-digest { flex: 1; min-width: 0; font-size: var(--fs-small); color: var(--text);
+               overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.plan[open] .plan-digest { display: none; }
+.plan .brief-dl { padding: 2px 0 13px; }
+/* 摊开时两栏摆，别让它把上半屏占满：这一栏是拿来对照的，不是主角 */
+@media (min-width: 721px) {
+  .plan .brief-dl { grid-template-columns: 1fr 1fr; gap: 10px 22px; align-items: start; }
+}
+
+/* —— 贴着输入框的问答卡：回答就是紧接着的动作，不用回对话流里翻 —— */
+.stage-ask { flex: none; max-height: 46vh; overflow-y: auto; overscroll-behavior: contain;
+             padding-right: 6px; }
+.stage-ask[hidden] { display: none; }
+.stage-ask .t-card { border-color: var(--border-strong); }
+.q-dots { display: inline-flex; align-items: center; gap: 5px; margin-left: 9px; }
+.q-dot { width: 6px; height: 6px; border-radius: 999px; background: var(--border-strong);
+         transition: background .16s var(--ease), box-shadow .16s var(--ease); }
+.q-dot.done { background: var(--accent); }
+.q-dot.now { box-shadow: 0 0 0 3px var(--accent-soft); }
+.q-foot { display: flex; align-items: center; gap: 10px; margin-top: 13px; }
+.q-done { font-size: var(--fs-small); color: var(--text-2); }
+.q-done.all { color: var(--ok); }
+.q-foot #askSubmit { margin-left: auto; }
+
+/* —— 过程信息：服务端真实在跑的那一步，跑完自己折回一行 —— */
+.t-proc { padding: 0 14px; }
+.t-proc > summary { display: flex; align-items: center; gap: 9px; min-height: 44px; }
+.proc-sum { font-size: var(--fs-body); }
+.proc-sum[data-live] { color: var(--accent); }
+.proc-cost { font-size: var(--fs-caption); color: var(--text-2); font-variant-numeric: tabular-nums; }
+.proc-steps { list-style: none; margin: 0; padding: 0 0 13px; display: grid; gap: 8px;
+              font-size: var(--fs-small); color: var(--text-2); }
+.proc-steps li { display: flex; align-items: center; gap: 9px; }
+.proc-steps li.ok, .proc-steps li.now, .proc-steps li.bad { color: var(--text); }
+.proc-steps .num { color: var(--text-2); }
+.proc-mark { flex: none; width: 13px; height: 13px; border-radius: 999px;
+             border: 1.5px solid var(--border-strong);
+             transition: background .18s var(--ease), border-color .18s var(--ease), box-shadow .18s var(--ease); }
+.proc-steps li.ok .proc-mark { background: var(--ok); border-color: var(--ok); }
+.proc-steps li.bad .proc-mark { background: var(--bad); border-color: var(--bad); }
+.proc-steps li.now .proc-mark { border-color: var(--accent); background: var(--accent); }
+.proc-steps[data-live] li.now .proc-mark { animation: proc-breathe 1.7s var(--ease) infinite; }
+@keyframes proc-breathe {
+  0%, 100% { box-shadow: 0 0 0 0 var(--accent-soft); }
+  55% { box-shadow: 0 0 0 5px var(--accent-soft); }
+}
+
+/* —— 答完的问题轮次：折成一行，摊开时当初选的那项亮着 —— */
+.t-round { margin-top: 12px; border: 1px solid var(--border); border-radius: var(--radius-ctl);
+           background: var(--surface); padding: 0 12px; }
+.t-round > summary { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; min-height: 38px; }
+.t-round-q { flex: none; font-size: var(--fs-small); color: var(--text-2); }
+.t-round-a { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.t-chip { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+          font-size: var(--fs-caption); padding: 2px 9px; border-radius: 999px;
+          background: var(--accent-soft); border: 1px solid var(--border); }
+.t-round .t-q:first-of-type { margin-top: 2px; }
+.t-round .t-q { margin-top: 14px; padding-bottom: 2px; }
+.t-round .t-opt { cursor: default; opacity: .58; }
+.t-round .t-opt--chosen { opacity: 1; border-color: var(--accent); background: var(--accent-soft); }
+.t-dot { flex: none; width: 15px; height: 15px; border-radius: 999px;
+         border: 1.5px solid var(--border-strong); }
+.t-opt--chosen .t-dot { border-color: var(--accent);
+                        background: radial-gradient(circle at 50% 50%, var(--accent) 0 3.5px, transparent 4px); }
+.t-free { margin-top: 7px; padding-left: 24px; font-size: 14px; overflow-wrap: anywhere; }
 
 /* —— 以前和 AI 的对话 —— */
 .conv-note { flex: none; margin: 0; font-size: var(--fs-small); color: var(--text-2); }
@@ -791,7 +874,11 @@ body.share-open .dock, body.share-open .drawer { display: none; }
   #shareStage, #sharesView { padding-left: 16px; padding-right: 16px; }
   .share-frame { height: 48vh; }
   .t-msg { max-width: none; }
+  .stage-ask { max-height: 42vh; }
+  .t-chip { max-width: 160px; }
 }
 @media (prefers-reduced-motion: reduce) {
   #shareStage, #sharesView { animation: none; }
+  .proc-steps li.now .proc-mark { animation: none; }
+  .proc-chev, .q-dot, .proc-mark { transition: none; }
 }

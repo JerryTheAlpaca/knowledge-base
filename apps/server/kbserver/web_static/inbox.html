@@ -965,8 +965,12 @@
           </svg>
         </button>
       </div>
+      <!-- 这一版的方向：钉在顶上，折成一行也能随时点开对照（内容由 shares.js 画） -->
+      <div class="stage-plan" id="stagePlan" hidden></div>
       <div class="stage-scroll" id="stageThread"></div>
       <div class="stage-dock">
+        <!-- 待答的问题贴着输入框：回答就是紧接着的动作，不用回对话流里翻 -->
+        <div class="stage-ask" id="stageAsk" hidden></div>
         <div class="stage-status" id="stageStatus" hidden></div>
         <div class="stage-actions" id="stageActions" hidden></div>
         <p class="small" id="stageHint"></p>
