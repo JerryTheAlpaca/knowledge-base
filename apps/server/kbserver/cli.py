@@ -23,7 +23,18 @@ from .db import make_engine, make_session_factory
 from .models import Base, Item, ProviderOperation, SourceRevision, User, utcnow
 
 # 契约文件随仓库走：apps/server/kbserver/cli.py → 仓库根
-CONTRACTS_OPENAPI = Path(__file__).resolve().parents[3] / "contracts" / "openapi.json"
+def _default_contracts_openapi() -> Path:
+    """契约文件默认落在仓库的 contracts/。
+
+    镜像里 kbserver 直接挂在 /app 下（比仓库少两级），照仓库深度写死 parents[3] 会在
+    import 阶段就 IndexError，连带容器里所有 CLI 子命令都跑不起来。
+    """
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        candidate = parent / "contracts" / "openapi.json"
+        if candidate.parent.is_dir():
+            return candidate
+    return here.parents[1] / "contracts" / "openapi.json"
 
 
 def _prepare():
@@ -547,7 +558,7 @@ def main() -> None:
     p.set_defaults(func=cmd_migrate_content)
 
     p = sub.add_parser("openapi", help="由当前应用重新生成 contracts/openapi.json（保留 servers）")
-    p.add_argument("--output", default=str(CONTRACTS_OPENAPI),
+    p.add_argument("--output", default=str(_default_contracts_openapi()),
                    help="输出路径（默认仓库内 contracts/openapi.json）")
     p.add_argument("--servers-url", default=None,
                    help="现有文件缺 servers 时显式指定部署地址，例如 https://kb.example.com")
