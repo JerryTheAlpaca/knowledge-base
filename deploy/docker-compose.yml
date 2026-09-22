@@ -196,9 +196,15 @@ services:
       # setns、bpf、perf_event_open、open_by_handle_at 这些仍然一律不放。
       # 换机器时把 KB_REPO_DIR 指到新的仓库目录（默认值见 :deploy/.env）
       - seccomp=${KB_REPO_DIR:-/home/ubuntu/kb-inbox}/deploy/seccomp-share-runner.json
-    pids_limit: 128
-    mem_limit: 512m               # 试运行上限；实测峰值后再定部署值（docs/20 §14.2）
-    memswap_limit: 512m
+    pids_limit: 128            # 沙箱开启后实测一次检查的进程数峰值 18，这一项余量很大
+    # 试运行上限。开沙箱后在部署机实测：跑最小样本 rich（chart.js＋KaTeX＋四张截图、
+    # 检查 ok、0 诊断）时 cgroup memory.peak 正好顶到 512m——最狠的一秒是
+    # anon 192MiB ＋ file 299MiB，大头是可回收的文件缓存所以没被 OOM，但小样本就用满
+    # 说明真实大页面（上限 10MiB 单文件、长页面）会把浏览器打爆。抬到 768m；
+    # 兜住整机的仍然是 ASR 那道空闲准入（低于 384MiB 不开新段、低于 256MiB 让路），
+    # 不是这几个上限相加（docs/20 §14.2）。
+    mem_limit: 768m
+    memswap_limit: 768m
     cpus: "1.0"
 
   # HTTPS 反代：宿主机 systemd Caddy（/etc/caddy/Caddyfile，多站点共享），

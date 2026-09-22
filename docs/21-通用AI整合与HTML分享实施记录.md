@@ -142,9 +142,10 @@ runner 进程 `umask` 置 0——机器上任何本地进程都能读写别人�
 - 生产分享域名尚未确定：`SHARE_PUBLIC_BASE_URL` 为空时「生成分享链接」返回
   明确的配置未完成原因，私有预览与下载可用。Caddy 片段里的域名是示例，
   必须换成与账号站不同可注册域名后才可用。
-- 2 核 2GB 上的 runner 峰值已实测（上表 226MiB），但**与 ASR 等重型任务同时运行**
-  时的表现、以及 §14.2 的跨任务重型槽位互斥**未实测**：当前只做了
-  `SHARE_RENDER_CONCURRENCY` 与串行 runner，512MiB/单并发是试运行初值。
+- 2 核 2GB 上的 runner 峰值：上表 226MiB 是**沙箱关着**时测的；开沙箱后最小样本就把
+  512MiB 上限顶满（详见 §5），已抬到 768MiB。**与 ASR 等重型任务同时运行**时的表现、
+  以及 §14.2 的跨任务重型槽位互斥仍未实测：当前只做了 `SHARE_RENDER_CONCURRENCY`
+  与串行 runner，分享侧起浏览器前不查主机资源。
 - 真实 Safari/iPhone 检查、代表样本（专业概念／中医／数学／跨领域）的
   人工内容复核未做（M5）；Chromium 移动视口不等于 iOS 实机。
 - 首版限制：Web 只能用服务器已有且属于本人的材料；修改接口不增减材料；
@@ -200,9 +201,11 @@ systemd 会在下载中途杀掉构建，下一轮定时器又从头再拉，表
    `docker volume rm deploy_share_spool`，最后 `docker compose up -d` 让 Docker 按镜像里
    `pwuser:kbshare 2770` 重新初始化。**别用 `docker compose down --volumes`**，那会连
    `data` 卷（数据库与对象）一起删。
+   （2026-09-21 部署当晚已按第一条执行，收口后是 `2770 1001:950`。）
 2. 部署后复验沙箱：`sudo docker compose -f ~/kb-inbox/deploy/docker-compose.yml exec
    share_runner node src/cli.mjs doctor` 要报 `"sandbox_enabled": true` 且退出码 0；
-   顺手 `docker stats --no-stream` 看一眼开沙箱后的内存峰值离 512m 还有多少余量。
+   顺手 `docker stats --no-stream` 看一眼开沙箱后的内存峰值离限额还有多少余量。
+   （2026-09-21 已验：doctor 通过，峰值顶满过 512m，已据此抬到 768m，见 §5。）
 3. 换到别的云/目录时，`deploy/docker-compose.yml` 里 seccomp 那条走的是
    `${KB_REPO_DIR:-/home/ubuntu/kb-inbox}`，在新机器 `deploy/.env` 里设 `KB_REPO_DIR`
    指到仓库根即可，其余不用动。
@@ -284,11 +287,15 @@ systemd 会在下载中途杀掉构建，下一轮定时器又从头再拉，表
 - 挡住的是三道，逐条测出来的：① Playwright 官方镜像里**根本没有 `chrome-sandbox` 这个 setuid helper**（`/ms-playwright` 下只有 `chrome` 与 `chrome-headless-shell`），SUID 那条路直接不存在；② 非特权 user namespace 被**宿主**挡住——Ubuntu 24.04 的 `kernel.apparmor_restrict_unprivileged_userns=1`，在宿主机上以普通用户 `unshare -Urm` 同样失败（root 可以），所以不是 Docker 或 seccomp 的问题；③ 只加 `CAP_SYS_ADMIN` 而沿用 Docker 默认 seccomp 表也不行（默认表把 `chroot`/`mount` 按 capability 挡在外面）。
 - 目前**唯一实测通过**的组合：`cap_add: SYS_ADMIN` ＋ 收紧版 seccomp profile（`deploy/seccomp-share-runner.json`：逐条照抄 Docker 29 默认表，只在最前面加三条——`clone`／`unshare` 带 CLONE_NEWUSER 才放行、`chroot/mount/umount2/pivot_root` 放行；不是 `seccomp=unconfined`），沙箱下真实渲染与干净收尾都验过。
 - 不给 SYS_ADMIN 的两条替代路（都还没验）：改宿主 sysctl 关掉那道缓解（全机生效，这台还跑着另两个站点），或只给这一个容器写一份带 `userns,` 的 AppArmor profile（宿主上没有现成的 docker profile 源可照抄，得手写）。
-- `share_spool` 卷在宿主上确认就是 `drwxrwxrwx`（属主宿主 uid 1001=容器 pwuser，组 gid 1000=容器 appuser），C-02 的收口是必需而不是洁癖；两个容器实际 uid 是 pwuser=1001 / appuser=1000，选用的 gid 950 不与现有组冲突。
+- `share_spool` 卷在宿主上确认是 `0777`、五个状态目录属主 `1001:1001`（pwuser 私有）——**这条不是洁癖而是必修**：新的 2770 模型下 `ready/` 若是 pwuser 私有，share_worker 根本写不进任务，而它自己的 `_spool_dir()` 又改不动别人建的目录（chmod 抛 PermissionError 被吞掉）。所以那份一次性 `chgrp -R 950` ＋ `chmod -R 2770` 已在部署机上执行，收口后是 `2770 1001:950`，两端各自建/删都验过。
 
-**推这份代码之前要先定沙箱怎么落**：这份实现的取舍是「沙箱起不来就明确失败，绝不静默降权」，而线上现在正是起不来的状态——直接推会让每次分享生成卡在浏览器检查那一步。
+**已部署（2026-09-21 23:55，`DEPLOY OK: 6b249ee`，health=200）之后在正式容器里复验**：
 
-剩下只能真机确认的还有：U-01／U-02／U-04／U-05 与 U-06 的走查清单（口径见 §2 那两行）。
+- `docker exec deploy-share_runner-1 node src/cli.mjs doctor` → `browser: ok`、**`sandbox_enabled: true`**、退出码 0；`docker inspect` 确认 `capadd=[CAP_SYS_ADMIN]`、`groupadd=[950]`、seccomp 用的是那份收紧表。`/inbox` 200、未登录 `/v1/auth/me` 401（不是 500）。分享站点域名仍未配，所以 C-11 的公网那条只能靠单测覆盖。
+- 沙箱下的真实开销（跑 `check --task samples/rich`，只写容器自己的 `/tmp`，不进交接卷、不调模型）：结论 `ok: true`、诊断 0 条、四张截图；**cgroup `memory.peak` 正好顶到当时 512m 的上限**，最狠的一秒是 `anon 192MiB ＋ file 299MiB`——大头是可回收的文件缓存所以没被 OOM，但最小样本就用满了，真实大页面（接近 10MiB 单文件、长页面）会把浏览器打爆。据此把 `share_runner` 抬到 **768m**；`pids_limit: 128` 不用动，沙箱下一次检查的进程数峰值只有 18。
+- 仍未测：真实大页面的内存与耗时、以及**与 ASR 同时跑**时的表现（docs/20 §14.2 要的共享重型准入目前只做了 ASR 单方面让路，分享侧不查资源就起浏览器）。
+
+剩下只能真机走查的：U-01／U-02／U-04／U-05 与 U-06 的清单（口径见 §2 那两行）。
 
 按报告口径本轮未动：C-13（部署失败分支不清理、`used_image_ids` 的空格匹配永不命中、
 `share_runner` 不按提交号打标签）、C-15（模型档位选择不看用途）、U-06（窄屏长标题下
