@@ -14,8 +14,11 @@ import { SyncEngine, type SyncState } from "./sync/engine";
 import { VaultFs } from "./vault/vaultfs";
 import { CommitStore, Suppression } from "./vault/records";
 import type { EngineStatus, KbSettings } from "./types";
-import { OrganizeService } from "./knowledge/organize";
+import { itemIdOfDigestNote, OrganizeService } from "./knowledge/organize";
 import { KnowledgeIndexStore } from "./knowledge/index";
+import { runLegacyKnowledgeMigration, runRenameMigration } from "./knowledge/migrate";
+import { DocumentIndex } from "./vault/documents";
+import { documentsIndexPath } from "./vault/paths";
 import { ObsidianLocalTransport } from "./providers/transport";
 import {
   bindingSecretRef,
@@ -78,6 +81,10 @@ class StatusView extends ItemView {
     }
     if ((st?.suppressedCount ?? 0) > 0) {
       lines.push(["已放弃条目", `${st?.suppressedCount} 条（本地删除停复建或服务器已删除）`]);
+    }
+    if ((st?.pausedForUpgrade ?? 0) > 0) {
+      lines.push(["暂停导入",
+        `${st?.pausedForUpgrade} 条内容格式不受支持：请升级插件后同步（未落盘空白笔记、未发成功回执）`]);
     }
     for (const [k, v] of lines) {
       const row = c.createEl("div");
@@ -213,6 +220,22 @@ export class KbPlugin extends Plugin {
       name: "查看知识更新候选",
       callback: () => void this.openProposalIndex(),
     });
+    // 本地迁移：内容协议与文件改名分别执行、分别验收（docs/23 §8.2、§8.3）
+    this.addCommand({
+      id: "migrate-legacy-knowledge",
+      name: "迁移旧版知识引用（直连原文）",
+      callback: () => void this.migrateLegacyKnowledge(),
+    });
+    this.addCommand({
+      id: "migrate-note-names",
+      name: "迁移笔记文件名为可读名称",
+      callback: () => void this.migrateNoteNames(),
+    });
+    this.addCommand({
+      id: "rebuild-document-index",
+      name: "重建文档索引（ID→路径）",
+      callback: () => void this.rebuildDocumentIndex(),
+    });
 
     this.registerView(VIEW_TYPE_STATUS, (leaf) => new StatusView(leaf, this));
     this.registerView(VIEW_TYPE_ORGANIZE, (leaf) => new OrganizePanelView(leaf, {
@@ -222,6 +245,7 @@ export class KbPlugin extends Plugin {
       refreshProposalIndex: () => this.refreshProposalIndex(),
       activeDigestPath: () => this.activeDigestPath(),
       pickDigests: async () => [],
+      readNote: async (path) => new VaultFs(this.app).read(path),
     }));
 
     // onLayoutReady 后再开始恢复与拉取，不阻塞编辑器启动（docs/02 §13.3）
@@ -408,13 +432,15 @@ export class KbPlugin extends Plugin {
       new Notice("尚未启用本地整理；请在设置中打开「启用本地整理」。");
       return;
     }
-    const itemId = /--([A-Za-z0-9_-]+)\.md$/.exec(path)?.[1];
+    // 身份在 frontmatter：文件名已是可读标题，不从名字里解析 item_id
+    const itemId = itemIdOfDigestNote(await new VaultFs(this.app).read(path));
     if (!itemId) {
-      new Notice("无法从文件名解析 item_id。");
+      new Notice("当前笔记缺少 kb_item_id，无法加入整理队列。");
       return;
     }
-    await this.organize.enqueue(itemId, path);
-    new Notice("已加入整理队列；打开「整理知识库」面板开始处理。");
+    const task = await this.organize.enqueue(itemId, path);
+    new Notice(task ? "已加入整理队列；打开「整理知识库」面板开始处理。"
+      : "该 Digest 没有可整理的 v3 内容文档。");
     await this.openOrganizePanel();
   }
 
@@ -463,6 +489,66 @@ export class KbPlugin extends Plugin {
       setting.open();
       setting.openTabById(this.manifest.id);
     }
+  }
+
+  // ---- 本地迁移（docs/23 §8.2、§8.3） ----
+
+  /** 经 Obsidian 的重命名能力改名；不可用时退回 adapter.rename 并保证目录存在。 */
+  private async renameNote(from: string, to: string): Promise<void> {
+    const fs = new VaultFs(this.app);
+    const abstract = this.app.vault.getAbstractFileByPath(from);
+    const fileManager = this.app.fileManager as unknown as {
+      renameFile?: (f: unknown, path: string) => Promise<void>;
+    };
+    if (abstract && typeof fileManager?.renameFile === "function") {
+      await fileManager.renameFile(abstract, to);
+      return;
+    }
+    await fs.rename(from, to);
+  }
+
+  private async migrateLegacyKnowledge(): Promise<void> {
+    const fs = new VaultFs(this.app);
+    const result = await runLegacyKnowledgeMigration(fs, this.settings);
+    new Notice(
+      `旧知识引用迁移：已转换 ${result.migrated.length} 个主题，待处理 ${result.pending.length} 个。`
+      + `详见 ${this.settings.systemFolder}/KnowledgeInbox/migrations/迁移待处理.md`,
+      10000,
+    );
+  }
+
+  private async migrateNoteNames(): Promise<void> {
+    const fs = new VaultFs(this.app);
+    const result = await runRenameMigration(fs, this.settings, {
+      rename: (from, to) => this.renameNote(from, to),
+    });
+    if (result.completed && result.renamed.length) {
+      this.settings.layoutVersion = 3;
+      await this.saveSettings();
+    }
+    new Notice(
+      result.failed.length
+        ? `文件名迁移未完成：成功 ${result.renamed.length}，失败 ${result.failed.length}，`
+          + `保持原样 ${result.blocked.length}；恢复记录 ${result.record_path}`
+        : `文件名迁移完成：改名 ${result.renamed.length} 篇，保持原样 ${result.blocked.length} 篇；`
+          + `恢复记录 ${result.record_path}`,
+      10000,
+    );
+    await this.engine.rebuildIndex();
+  }
+
+  private async rebuildDocumentIndex(): Promise<void> {
+    const fs = new VaultFs(this.app);
+    const docs = new DocumentIndex(fs, documentsIndexPath(this.settings.systemFolder));
+    const doc = await docs.rebuild([
+      { folder: this.settings.sourcesFolder, kind: "source" as const, skipDirs: ["_assets"] },
+      { folder: this.settings.digestsFolder, kind: "digest" as const },
+      { folder: this.settings.knowledgeFolder, kind: "knowledge" as const },
+    ]);
+    const conflicts = doc.conflicts.length
+      ? `；身份冲突 ${doc.conflicts.length} 个（两份都保留，请人工确认）`
+      : "";
+    new Notice(`文档索引已重建：${Object.keys(doc.docs).length} 篇${conflicts}`);
   }
 
   // ---- 账号与同步 ----

@@ -162,7 +162,12 @@ def derive_item_workflow(
         or (bundle is not None and bundle.processing_state == "failed")
     )
     if bundle_ready and not bundle_stale:
-        organize = _step("organize", "completed", "ORGANIZE_DONE", "已生成整理结果", label="整理")
+        # partial 不新增 pipeline_state：加工确实完成了，但结果不完整（docs/24 §4）
+        if item.state_reason == "partial_result":
+            organize = _step("organize", "completed", "ORGANIZE_PARTIAL",
+                             "已生成部分整理结果，缺口见整理结果", label="整理")
+        else:
+            organize = _step("organize", "completed", "ORGANIZE_DONE", "已生成整理结果", label="整理")
     elif ps == "enriching" and not auto_enrich:
         # 自动整理关着但文字优化在跑：这一步不是「整理中」，照实说在做什么
         organize = _step("organize", "running", "OPTIMIZING_TEXT", "正在优化文字",
@@ -457,6 +462,8 @@ def build_diagnostics(db: Session, user_id: str, item: Item,
         "digest_version": bundle.revision if bundle else 0,
         "digest_version_label": (f"整理结果版本 {bundle.revision}" if bundle else "尚无整理结果"),
         "pipeline_state": item.pipeline_state,
+        # 机器码进诊断，不进正常阅读：partial_result 等结果完整性原因在这里可查
+        "state_reason": item.state_reason or None,
         "state_detail": _redact(item.state_detail or ""),
         "delivery": {
             "bundle_revision": wf["delivery"]["bundle_revision"],

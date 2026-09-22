@@ -4,7 +4,8 @@
 - GET /v1/items/{id}：来源、状态、缺失材料、阅读所需的元数据与到期时间；
   已删除返回 410。
 - GET /v1/items/{id}/reading：原始资料与云端提炼的结构化阅读视图；
-  复用 Bundle 内的 normalized.md / analysis.json，不新生成 AI 结果。
+  复用 Bundle 内已登记的 normalized.md / readable.md / content.json，不新生成 AI 结果。
+  只有旧产物的条目在读取时按 content_migration 当场转成 ContentDocument v3（不回写）。
 - POST /v1/items/{id}/supplements：补充文字/截图/字幕，expected_source_revision 冲突 409，新增不可变来源版本。
 - POST /v1/items/{id}/source-text：编辑原文，一行一块；编辑后文本成为新不可变来源版本，
   旧版本保留，按用户「AI 自动加工」开关决定是否重新提炼。
@@ -24,14 +25,14 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from ..db import get_db
-from ..domain import pipeline
+from ..domain import content_migration, content_v3, pipeline
 from ..domain.errors import ApiError
 from ..api.deps import require_scope
 from ..api.rate_limit import SlidingWindowLimiter
 from ..domain import workflow_view
 from ..extractors import paragraphs as parafmt
 from ..extractors import subtitles as subfmt
-from ..models import AsrRun, AudioAsset, BundleRevision, Capture, Item, SourceRevision, Job, StoredFile, new_id, utcnow
+from ..models import AsrRun, AudioAsset, BundleRevision, Capture, Item, SourceRevision, Job, StoredFile, utcnow
 from ..repositories import core as repo
 from ..storage.objects import ObjectStore
 from ..workers import asr as asr_stage
@@ -340,24 +341,28 @@ class SourceMaterialOut(BaseModel):
 
 
 class CloudDigestOut(BaseModel):
+    """云端提炼阅读视图（docs/24 §6）：只承载 ContentDocument v3。
+
+    旧数组字段（key_points/excerpts/methods/insights/limitations/workflow/
+    evidence_map）已随内容协议 v3 一次性移除，不留双写。
+    """
     model_config = ConfigDict(extra="forbid")
-    state: str  # ready|pending|failed|expired|missing
+    state: str  # ready|pending|failed|expired|unknown_format
     state_detail: str
     source_revision: int | None
     bundle_revision: int | None
     created_at: str | None
-    schema_version: str | None
-    summary: str | None
-    key_points: list[dict]
-    excerpts: list[dict]
-    methods: list[dict]
-    insights: list[dict]
-    limitations: list[str]
-    workflow: dict | None
-    evidence_map: dict
+    format_version: str | None
+    # 已按 docs/24 §1 校验的文档；无可读文档时为 null（配合如实的 state）
+    content_document: dict | None
+    completeness: dict  # docs/24 §4；无文档时 {}
     # 结构化结果对应的原文片段（用于定位）；键为 segment_id
     segments: dict[str, str]
     stale_note: str | None
+    # 该文档由旧产物（analysis.json / preview.md）即时转换而来，未回写任何产物
+    legacy_converted: bool
+    # 旧证据未能定位到原文的片段数（completeness.gaps 的 legacy_evidence_unresolved）
+    unresolved_count: int
 
 
 class ReadingOut(BaseModel):
@@ -472,60 +477,138 @@ def _source_material(db: Session, item: Item) -> SourceMaterialOut | None:
     )
 
 
+_EXPIRED_DETAIL = "云端材料已过期，本地已下载材料仍可查看。"
+
+
+def _unresolved_count(completeness: dict) -> int:
+    """旧证据未定位的片段数：只从 completeness.gaps 推导，读取路径不再各算一套。"""
+    ids = {
+        sid
+        for gap in (completeness.get("gaps") or [])
+        if isinstance(gap, dict) and gap.get("code") == "legacy_evidence_unresolved"
+        for sid in (gap.get("segment_ids") or []) if isinstance(sid, str)
+    }
+    return len(ids)
+
+
+def _document_from_content_json(db: Session, item: Item,
+                                bundle: BundleRevision) -> tuple[dict | None, str, str]:
+    """v3 Bundle：读清单登记的 content.json 并按契约校验。
+
+    返回 `(文档, 状态, 用户可读说明)`，状态 `ok|missing|unreadable|failed|unknown_format`。
+    认不出的 `format_version` 必须如实成为状态（docs/24 §1「消费者必须停止并提示升级」），
+    绝不返回空文档让界面显示「没有整理结果」。
+    """
+    manifest = _bundle_manifest(db, item, bundle.revision)
+    if manifest is None:
+        return None, "unreadable", "整理结果的清单读取不到（可能已超出保留期）；原始内容仍可阅读。"
+    if "content.json" not in pipeline.manifest_files_by_path(manifest):
+        return None, "missing", ""
+    raw = _read_bundle_text(db, item, bundle.revision, "content.json")
+    if raw is None:
+        return None, "unreadable", "整理结果文件读取不到或超过内联阅读上限；可在「更多操作」下载文件。"
+    try:
+        doc = json.loads(raw)
+    except ValueError:
+        return None, "failed", "整理结果文件不是合法 JSON，无法阅读；详细原因见「处理记录」。"
+    version = doc.get("format_version") if isinstance(doc, dict) else None
+    if version != content_v3.CONTENT_FORMAT_VERSION:
+        return None, "unknown_format", (
+            f"整理结果使用内容格式 {version or '（未标注版本）'}，当前只能阅读 "
+            f"{content_v3.CONTENT_FORMAT_VERSION}；请升级后再看，这里不猜测其内容。"
+        )
+    errors = content_v3.validate_content_document(doc)
+    if errors:
+        return None, "failed", "整理结果未通过内容协议校验：" + "；".join(errors[:3])
+    return doc, "ok", ""
+
+
+def _document_from_legacy(db: Session, item: Item,
+                          bundle: BundleRevision) -> tuple[dict | None, str, str]:
+    """旧 Bundle（只有 analysis.json / preview.md）：当场转成 v3 视图供阅读。
+
+    只做内存转换，不写文件、不发布新版本（docs/24 §6）；写回历史条目由
+    `cli migrate-content --apply` 负责。
+    """
+    art = content_migration.load_legacy_artifact(db, ObjectStore(), item=item, bundle=bundle)
+    if art is None:
+        return None, "missing", ""
+    plan = content_migration.plan_conversion(art)
+    ref_table = content_v3.build_ref_table(
+        [content_v3.Material(**m) for m in plan.materials])
+    doc, report = content_v3.assemble_content_document(
+        content_migration.model_output_for(plan, ref_table),
+        ref_table=ref_table,
+        document_id=content_migration.digest_document_id(item.id),
+        kind="digest",
+        revision=bundle.revision,
+        item_id=item.id,
+        source_revision=art.source_revision,
+        task="digest",
+        recipe_version=content_v3.CONTENT_RECIPE_VERSION,
+        missing_stages=list(plan.missing_stages),
+        extra_gaps=list(plan.gaps),
+        source_title=art.source_title,
+        created_at=art.product_created_at or None,
+    )
+    if doc is None:
+        detail = ("该版本只有旧格式预览文本，没有结构化提炼产物；原始内容仍可阅读。"
+                  if art.kind == "preview_only"
+                  else "旧整理结果没有转换出可阅读的内容；原始内容仍可阅读。")
+        return None, "failed", detail
+    return doc, "ok", ""
+
+
+def _digest_document(db: Session, item: Item, bundle: BundleRevision) -> tuple[dict | None, bool, str, str]:
+    """读取路径唯一的格式入口：Bundle 里的任何产物 → v3 文档。
+
+    返回 `(文档, 是否旧产物即时转换, 状态, 说明)`；路由与响应模型不认识 1.0/2.0。
+    """
+    doc, state, detail = _document_from_content_json(db, item, bundle)
+    if state == "missing":
+        doc, state, detail = _document_from_legacy(db, item, bundle)
+        return doc, True, state, detail
+    return doc, False, state, detail
+
+
+def _empty_digest(state: str, detail: str, **overrides) -> CloudDigestOut:
+    return CloudDigestOut(
+        state=state, state_detail=detail, source_revision=None, bundle_revision=None,
+        created_at=None, format_version=None, content_document=None, completeness={},
+        segments={}, stale_note=None, legacy_converted=False, unresolved_count=0,
+        **overrides,
+    )
+
+
 def _cloud_digest(db: Session, item: Item) -> CloudDigestOut:
-    """云端提炼阅读：优先从结构化 analysis.json 渲染；旧 preview.md 仅作兼容输入。"""
+    """云端提炼阅读视图：Bundle 内容统一转成 ContentDocument v3 后原样给出。"""
     bundle = _analysis_bundle(db, item)
     if bundle is None:
         if item.pipeline_state == "extracted":
-            state, detail = "pending", "AI 自动整理已关闭；可在设置中开启，或手动重新加工。"
-        elif item.pipeline_state in {"waiting_key", "needs_input"}:
-            state, detail = "pending", "尚无云端提炼；原始资料仍可阅读。"
-        elif item.pipeline_state == "failed":
-            state, detail = "failed", item.state_detail or "云端提炼失败；可重新加工。"
+            return _empty_digest("pending", "AI 自动整理已关闭；可在设置中开启，或手动重新加工。")
+        if item.pipeline_state in {"waiting_key", "needs_input"}:
+            return _empty_digest("pending", "尚无云端提炼；原始资料仍可阅读。")
+        if item.pipeline_state == "failed":
+            return _empty_digest("failed", item.state_detail or "云端提炼失败；可重新加工。")
+        return _empty_digest("pending", "云端提炼尚未生成；原始资料仍可阅读。")
+
+    doc, legacy, status, detail = _digest_document(db, item, bundle)
+    completeness = (doc or {}).get("completeness") or {}
+    expired = bool(bundle.expires_at and bundle.expires_at <= utcnow())
+    if status == "ok":
+        # partial 仍是 ready：缺口由 completeness 表达，不借用「完成」掩盖（docs/24 §4）
+        if bundle.processing_state == "failed" or completeness.get("state") == "failed":
+            state, detail = "failed", "该版本提炼未通过校验；可重新加工。"
+        elif expired:
+            state, detail = "expired", _EXPIRED_DETAIL
         else:
-            state, detail = "pending", "云端提炼尚未生成；原始资料仍可阅读。"
-        return CloudDigestOut(
-            state=state, state_detail=detail, source_revision=None, bundle_revision=None,
-            created_at=None, schema_version=None, summary=None, key_points=[], excerpts=[],
-            methods=[], insights=[], limitations=[], workflow=None, evidence_map={},
-            segments={}, stale_note=None,
-        )
-
-    now = utcnow()
-    expired = bool(bundle.expires_at and bundle.expires_at <= now)
-    doc = None
-    raw = _read_bundle_text(db, item, bundle.revision, "analysis.json")
-    if raw:
-        try:
-            doc = json.loads(raw)
-        except ValueError:
-            doc = None
-    if doc is None:
-        # 旧版产物只有 preview.md：作为历史兼容输入
-        legacy_md = _read_bundle_text(db, item, bundle.revision, "preview.md")
-        return CloudDigestOut(
-            state="expired" if expired else ("failed" if bundle.processing_state == "failed" else "pending"),
-            state_detail=("云端材料已过期，本地已下载材料仍可查看。" if expired
-                          else "该版本只有旧格式预览，无法结构化定位。"),
-            source_revision=bundle.source_revision, bundle_revision=bundle.revision,
-            created_at=bundle.created_at.isoformat(), schema_version="1.0",
-            summary=(legacy_md or "")[:500] or None, key_points=[], excerpts=[],
-            methods=[], insights=[], limitations=[], workflow=None, evidence_map={},
-            segments={}, stale_note=None,
-        )
-
-    # 证据定位必须与提炼所用来源版本一致：不同版本不混用片段（docs/08 §8.4）
-    segments = _segments_texts(db, item, bundle.revision)
-    stale_note = None
-    if bundle.source_revision != item.source_revision:
-        # 用户语言契约（docs/17 §2.4）：不出现 r2/r3 一类修订号
-        stale_note = "原始内容已经更新，这份整理基于更新前的内容；点击证据打开对应版本的原文。"
-    state = "ready"
-    detail = ""
-    if expired:
-        state, detail = "expired", "云端材料已过期，本地已下载材料仍可查看。"
-    elif bundle.processing_state == "failed":
-        state, detail = "failed", "该版本提炼未通过校验；可重新加工。"
+            state = "ready"
+    else:
+        state = status if status in ("failed", "unknown_format") else (
+            "failed" if bundle.processing_state == "failed" else "pending")
+        if expired:
+            state, detail = "expired", _EXPIRED_DETAIL
+        detail = detail or "该版本没有可阅读的整理结果；原始内容仍可阅读。"
 
     return CloudDigestOut(
         state=state,
@@ -533,17 +616,16 @@ def _cloud_digest(db: Session, item: Item) -> CloudDigestOut:
         source_revision=bundle.source_revision,
         bundle_revision=bundle.revision,
         created_at=bundle.created_at.isoformat(),
-        schema_version=doc.get("schema_version"),
-        summary=doc.get("summary"),
-        key_points=doc.get("key_points") or [],
-        excerpts=doc.get("excerpts") or [],
-        methods=doc.get("methods") or [],
-        insights=doc.get("insights") or [],
-        limitations=doc.get("limitations") or [],
-        workflow=doc.get("workflow"),
-        evidence_map=doc.get("evidence_map") or {},
-        segments=segments,
-        stale_note=stale_note,
+        format_version=(doc or {}).get("format_version"),
+        content_document=doc,
+        completeness=completeness,
+        # 证据定位必须与提炼所用来源版本一致：不同版本不混用片段（docs/08 §8.4）
+        segments=_segments_texts(db, item, bundle.revision),
+        # 用户语言契约（docs/17 §2.4）：不出现 r2/r3 一类修订号
+        stale_note=(None if bundle.source_revision == item.source_revision else
+                    "原始内容已经更新，这份整理基于更新前的内容；点击证据打开对应版本的原文。"),
+        legacy_converted=legacy,
+        unresolved_count=_unresolved_count(completeness),
     )
 
 

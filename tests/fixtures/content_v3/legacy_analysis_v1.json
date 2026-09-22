@@ -1,0 +1,43 @@
+{
+  "schema_version": "1.0",
+  "source_revision": 1,
+  "summary": "旧版单篇提炼：只有观点、方法与启发，没有摘录与观点编号。",
+  "key_points": [
+    {
+      "text": "内容接收和总结应分别记录处理结果。",
+      "evidence_ids": [
+        "s0001"
+      ]
+    },
+    {
+      "text": "晋升为长期知识由本地整理决定。",
+      "evidence_ids": [
+        "s0003"
+      ]
+    }
+  ],
+  "methods": [
+    {
+      "text": "先落盘再提炼。",
+      "steps": [],
+      "conditions": null,
+      "evidence_ids": [
+        "s0002"
+      ]
+    }
+  ],
+  "insights": [
+    {
+      "text": "可以分阶段统计失败原因。",
+      "kind": "ai_suggestion",
+      "basis_ids": []
+    }
+  ],
+  "topics": [
+    "知识管理",
+    "内容加工"
+  ],
+  "limitations": [
+    "旧版没有逐字摘录。"
+  ]
+}

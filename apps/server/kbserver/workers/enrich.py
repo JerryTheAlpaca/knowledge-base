@@ -9,7 +9,10 @@
 - 无凭据 -> waiting_key；401/403/解密失败 -> waiting_key；
   429/5xx/连接失败 -> retry_wait 有限退避；请求已发出但超时/租约丢失 ->
   unknown_outcome（不盲目重发，用户可显式重新加工）；
-  JSON/证据校验失败 -> 最多 1 次修复调用，仍失败保留诊断文件、不覆盖成品。
+  内容主体或引用校验失败 -> 每次逻辑操作最多 1 次修复调用，仍失败保留诊断文件、
+  不覆盖成品（docs/23 §5.2 第 7 条：JSON 错误与引用错误共用这一份额度）。
+- 单个内容块校验不过不再作废整篇：有效内容发布为「部分结果」（docs/24 §4）。
+- AI 听错词修正产出**新的不可变来源修订**，旧版原文继续保留（docs/24 §7）。
 - 旧 enrich 结果发布前复查 source_revision，来源已更新则取消任务（A13）。
 - Key 只从当前用户配置解密；解密失败按凭据失效处理，不回退他人 Key。
 - 不统计模型用量与费用（docs/05 §5）：响应 usage 不影响成功与否。
@@ -24,8 +27,9 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
-from ..domain import analysis, pipeline, provider_ops, templates
+from ..domain import content_v3, pipeline, provider_ops, templates
 from ..extractors import paragraphs as parafmt
+from ..extractors import subtitles as subfmt
 from .publish import ai_paragraphing_enabled, auto_enrich_enabled
 from ..models import (
     Capture,
@@ -43,7 +47,6 @@ from ..providers.llm import (
     GenerateRequest,
     OpenAICompatibleProvider,
     ProviderAuthFailed,
-    ProviderError,
     ProviderInvalidRequest,
     ProviderOutcomeUnknown,
     ProviderRetryable,
@@ -53,14 +56,19 @@ from ..security import credentials as cred_crypto
 from ..storage.objects import ObjectStore
 
 
-class AnalysisInvalid(Exception):
-    """模型输出未通过 Schema/证据校验（含修复调用后仍失败）。"""
+class ContentInvalid(Exception):
+    """模型输出组装不成可用的 v3 文档（含修复调用后仍失败）。"""
 
-    def __init__(self, errors: list[str], raw: str, doc: dict | None):
-        super().__init__("；".join(errors[:5]))
+    def __init__(self, errors: list[dict], raw: str, doc: dict | None):
+        super().__init__("；".join(
+            e.get("message", "") if isinstance(e, dict) else str(e) for e in errors[:5]))
         self.errors = errors
         self.raw = raw
         self.doc = doc
+
+
+# 修正规则版本：派生来源修订按（父修订、本版本、结果文本摘要）去重（docs/24 §7）
+CORRECTION_RULE_VERSION = "asr-correction-v1"
 
 
 @dataclass
@@ -93,6 +101,8 @@ class EnrichPlan:
     paragraphing_enabled: bool = True
     # 「AI 自动整理」：关掉时本任务只做文字优化，不生成知识笔记
     digest_enabled: bool = True
+    # 本次调用的 R 引用表与块边界：写入 jobs.input_json，重启后仍可按同一绑定恢复
+    ref_table: content_v3.RefTable = field(default_factory=content_v3.RefTable)
 
 
 def _caps_with_thinking(caps: dict | None, level: str) -> dict:
@@ -175,6 +185,83 @@ def _load_segments(db: Session, item: Item) -> tuple[list[dict], list[dict]]:
                 paragraphs = parafmt.group_paragraphs(segments)
             return segments, [p for p in paragraphs if isinstance(p, dict) and p.get("paragraph_id")]
     return [], []
+
+
+# ---- 引用表与阅读单元 ----
+
+def _indexed_segments(segments: list[dict], paragraphs: list[dict]) -> list[dict]:
+    """给片段补段落归属：`build_ref_table` 以自然段为阅读单元分组（docs/24 §2）。"""
+    mapping = parafmt.segment_paragraph_map(paragraphs) if paragraphs else {}
+    return [dict(s, paragraph_id=mapping.get(s.get("segment_id"))) for s in segments]
+
+
+def build_plan_ref_table(item_id: str, source_revision: int,
+                         segments: list[dict], paragraphs: list[dict]) -> content_v3.RefTable:
+    return content_v3.build_ref_table([content_v3.Material(
+        item_id=item_id, source_revision=source_revision,
+        segments=_indexed_segments(segments, paragraphs),
+    )])
+
+
+def _material_view(ref_table: content_v3.RefTable,
+                   segments: list[dict] | None = None) -> list[dict]:
+    """模型看到的 material：整表，或只给覆盖这批片段的阅读单元。
+
+    跨块的阅读单元在其覆盖到的每个块里都完整出现——摘录按整单元原文比对，
+    半截原文会让逐字校验产生假失败（docs/24 §2）。
+    """
+    if segments is None:
+        return [{"ref": key, "text": entry.text} for key, entry in ref_table.entries()]
+    wanted = {s.get("segment_id") for s in segments}
+    return [
+        {"ref": key, "text": entry.text}
+        for key, entry in ref_table.entries()
+        if wanted.intersection(entry.segment_ids)
+    ]
+
+
+def _ref_table_payload(source_revision: int, ref_table: content_v3.RefTable) -> dict:
+    """固定本次操作的输入与引用表，租约丢失后接管者按同一绑定继续（docs/23 §4.1 第 4 条）。
+
+    写在自己那一行 jobs.input_json 上，不碰 Item.source_revision：那是用户编辑的乐观并发基线。
+    """
+    return {
+        "format_version": content_v3.CONTENT_FORMAT_VERSION,
+        "recipe_version": content_v3.CONTENT_RECIPE_VERSION,
+        "source_revision": source_revision,
+        "ref_table": ref_table.to_json(),
+    }
+
+
+def _candidate_sections(document: dict | None,
+                        ref_table: content_v3.RefTable) -> list[dict]:
+    """把本块组装通过的内容块换回 `R` 编号，交给汇总阶段（docs/23 §5.2 第 3、4 条）。
+
+    组装器已把 `R` 换成本文档内的 `e` 键，并且只留下通过校验的块；汇总输出仍要按
+    同一张任务引用表校验，所以按（条目、来源版本、片段范围）原样映射回去，不靠顺序猜。
+    """
+    if not document:
+        return []
+    by_identity = {
+        (entry.item_id, entry.source_revision, tuple(entry.segment_ids)): key
+        for key, entry in ref_table.entries()
+    }
+    doc_refs = document.get("references") or {}
+    sections: list[dict] = []
+    for section in document.get("sections") or []:
+        blocks = []
+        for block in section.get("blocks") or []:
+            refs = []
+            for key in block.get("refs") or []:
+                entry = doc_refs.get(key) or {}
+                token = by_identity.get((entry.get("item_id"), entry.get("source_revision"),
+                                         tuple(entry.get("segment_ids") or ())))
+                if token:
+                    refs.append(token)
+            blocks.append({"kind": block.get("kind"), "text": block.get("text"), "refs": refs})
+        if blocks:
+            sections.append({"heading": section.get("heading") or "", "blocks": blocks})
+    return sections
 
 
 # ---- Phase A：校验与操作登记 ----
@@ -311,9 +398,11 @@ def prepare(session_factory, job_id: str, lease_token: str) -> EnrichPlan | None
             chunked = True
             chunks = templates.plan_chunks(segments, int(context_tokens * 0.6), paragraphs)
 
+        ref_table = build_plan_ref_table(item.id, source.revision, segments, paragraphs)
+
         fingerprint_src = json.dumps(
             [
-                pipeline.RECIPE_VERSION, profile.id, profile.model,
+                content_v3.CONTENT_RECIPE_VERSION, profile.id, profile.model,
                 opt_profile.id if opt_profile else "", opt_profile.model if opt_profile else "",
                 source.content_hash, chunked, len(chunks),
             ],
@@ -326,6 +415,7 @@ def prepare(session_factory, job_id: str, lease_token: str) -> EnrichPlan | None
             profile_id=profile.id,
             request_fingerprint=pipeline.sha256_hex(fingerprint_src.encode())[:32],
         )
+        job.input_json = _ref_table_payload(source.revision, ref_table)
         db.commit()
 
         return EnrichPlan(
@@ -334,6 +424,7 @@ def prepare(session_factory, job_id: str, lease_token: str) -> EnrichPlan | None
             item_id=item.id,
             user_id=item.user_id,
             source_revision=source.revision,
+            ref_table=ref_table,
             profile_id=profile.id,
             endpoint=profile.endpoint,
             model=profile.model,
@@ -421,10 +512,95 @@ def _mark_unknown_outcome(db: Session, job: Job, item: Item, op: ProviderOperati
 
 # ---- Phase B：调用模型 ----
 
-def call_provider(session_factory, plan: EnrichPlan) -> dict:
-    """调用模型（可分块+合并+修复），返回 {"doc", "raw"}。
+def _apply_corrections_as_revision(session_factory, plan: EnrichPlan,
+                                   ai_starts: list[str] | None,
+                                   corrections: list[dict]) -> None:
+    """AI 听错词修正 → 新的不可变来源修订（docs/24 §7）。
 
-    抛出 ProviderError 子类或 AnalysisInvalid。
+    旧版原文一个字都不动：被引用过的文本永远还能读出来。同一父修订、同一规则版本、
+    同一结果文本不重复建版本；引用表按新修订重建并固定回本任务行。
+    """
+    with session_factory() as db:
+        item = db.get(Item, plan.item_id)
+        parent = db.query(SourceRevision).filter(
+            SourceRevision.item_id == plan.item_id,
+            SourceRevision.revision == plan.source_revision,
+        ).one_or_none()
+        if item is None or parent is None:
+            return
+        segments = [dict(s) for s in plan.segments]
+        corrected = {c["segment_id"]: c["corrected"] for c in corrections}
+        for s in segments:
+            if s["segment_id"] in corrected:
+                s["text"] = corrected[s["segment_id"]]
+        paragraphs = (
+            parafmt.group_paragraphs_from_starts(segments, ai_starts)
+            if ai_starts else parafmt.group_paragraphs(segments)
+        )
+        meta_updates = {
+            "origin": "ai_correction",
+            "parent_revision": plan.source_revision,
+            "correction_rule_version": CORRECTION_RULE_VERSION,
+            "ai_corrections": corrections,
+        }
+        content_hash = pipeline.sha256_hex(
+            pipeline.canonical_json({"segments": segments, "meta_updates": meta_updates})
+        )
+        target = next(
+            (r for r in db.query(SourceRevision).filter(
+                SourceRevision.item_id == plan.item_id,
+                SourceRevision.content_hash == content_hash,
+            ).all()
+             if (r.metadata_json or {}).get("correction_rule_version") == CORRECTION_RULE_VERSION
+             and (r.metadata_json or {}).get("parent_revision") == plan.source_revision),
+            None,
+        )
+        if target is None:
+            target = SourceRevision(
+                item_id=item.id, user_id=item.user_id, revision=parent.revision + 1,
+                content_hash=content_hash, metadata_json=dict(parent.metadata_json, **meta_updates),
+                artifacts_json={},
+            )
+            db.add(target)
+            db.flush()
+        indexed = _indexed_segments(segments, paragraphs)
+        store = ObjectStore()
+        merged = {f.relative_path: f for f in _base_bundle_files(db, item)}
+        file_ids: list[str] = []
+        for path, data, mime in (
+            ("normalized.md", subfmt.segments_to_normalized_md(segments).encode("utf-8"),
+             "text/markdown"),
+            ("readable.md", parafmt.paragraphs_to_readable_md(paragraphs).encode("utf-8"),
+             "text/markdown"),
+            ("segments.json", pipeline.canonical_json({
+                "source_revision": target.revision,
+                "segments": indexed,
+                "paragraphs": paragraphs,
+                "paragraph_source": "ai",
+                "ai_corrections": corrections,
+            }), "application/json"),
+        ):
+            f = pipeline.register_file(
+                db, store, user_id=item.user_id, item_id=item.id,
+                data=data, relative_path=path, role="source_material", mime=mime,
+            )
+            merged[path] = f
+            file_ids.append(f.file_id)
+        item.source_revision = target.revision
+        job = db.get(Job, plan.job_id)
+        plan.source_revision = target.revision
+        plan.segments = segments
+        plan.paragraphs = paragraphs
+        plan.ref_table = build_plan_ref_table(item.id, target.revision, segments, paragraphs)
+        if job is not None:
+            job.input_json = _ref_table_payload(target.revision, plan.ref_table)
+        db.commit()
+
+
+def call_provider(session_factory, plan: EnrichPlan) -> dict:
+    """调用模型（可分块+合并+修复），返回 v3 文档、完整性报告与文字优化计划。
+
+    抛出 ProviderError 子类或 ContentInvalid。
     """
     settings = get_settings()
 
@@ -477,6 +653,7 @@ def call_provider(session_factory, plan: EnrichPlan) -> dict:
         db.commit()
 
     raws: list[dict] = []
+    outputs: list[dict] = []  # 解析后的模型输出：诊断文件要留下最后一次候选
 
     def _call(prompt: str, *, max_output_tokens: int | None = None,
               via: OpenAICompatibleProvider | None = None) -> dict:
@@ -490,12 +667,14 @@ def call_provider(session_factory, plan: EnrichPlan) -> dict:
         ))
         raws.append(result.raw)
         try:
-            return parse_model_json(result.output_text)
+            parsed = parse_model_json(result.output_text)
         except ValueError:
             # 主输出不是 JSON：走一次修复调用
-            return _repair(prompt, result.output_text, ["输出不是合法 JSON 对象"])
+            return _repair(prompt, result.output_text, [{"message": "输出不是合法 JSON 对象"}])
+        outputs.append(parsed)
+        return parsed
 
-    def _repair(original_prompt: str, raw_output: str, errors: list[str]) -> dict:
+    def _repair(original_prompt: str, raw_output: str, errors: list[dict]) -> dict:
         _lease_refresh(session_factory, plan.job_id, plan.lease_token)
         prompt = templates.build_repair_user_prompt(original_prompt, raw_output, errors)
         result = digest_provider.generate(GenerateRequest(
@@ -506,7 +685,9 @@ def call_provider(session_factory, plan: EnrichPlan) -> dict:
             json_mode=True,
         ))
         raws.append(result.raw)
-        return parse_model_json(result.output_text)
+        parsed = parse_model_json(result.output_text)
+        outputs.append(parsed)
+        return parsed
 
     # 纠错与分段先于提炼：修正后的文本让提炼摘录与正文一致
     # （用户关闭「AI 自动纠错与分段」时跳过，阅读层保持本地规则分段）。
@@ -523,70 +704,101 @@ def call_provider(session_factory, plan: EnrichPlan) -> dict:
             if s["segment_id"] in corrected:
                 s["text"] = corrected[s["segment_id"]]
 
+    # AI 听错词修正改的是被引用的原文：先落成新的不可变来源修订再提炼，旧版原文保留。
+    if text_plan and text_plan["corrections"]:
+        _apply_corrections_as_revision(
+            session_factory, plan, text_plan.get("starts"), text_plan["corrections"])
+    elif text_plan and text_plan.get("starts"):
+        # 只重新分段、没改字：引用仍然有效，阅读层产物由 finish 按原版本登记
+        reparsed = parafmt.group_paragraphs_from_starts(
+            plan.segments, text_plan["starts"])
+        plan.paragraphs = reparsed or plan.paragraphs
+
     if not plan.digest_enabled:
         # 「AI 自动整理」关着：文字优化本身就是这次加工的全部内容，
         # 不发起提炼调用，也不生成知识笔记（doc=None 由 finish 分支处理）
         return {"doc": None, "raw": raws[-1] if raws else {}, "ai_text_plan": text_plan}
 
-    segment_ids = {s["segment_id"] for s in plan.segments}
-    segment_texts = {s["segment_id"]: s.get("text") or "" for s in plan.segments}
-    segment_order = [s["segment_id"] for s in plan.segments]
+    ref_table = plan.ref_table
 
-    def _validate(doc: dict, base_prompt: str, raw_text: str) -> dict:
-        errors = analysis.validate_analysis(
-            doc, source_revision=plan.source_revision, segment_ids=segment_ids,
-            segment_texts=segment_texts, segment_order=segment_order,
-        ) if isinstance(doc, dict) else ["输出不是 JSON 对象"]
-        if errors:
-            try:
-                doc2 = _repair(base_prompt, raw_text, errors)
-            except (ValueError, ProviderError):
-                raise AnalysisInvalid(errors, raw_text, doc if isinstance(doc, dict) else None) from None
-            errors2 = analysis.validate_analysis(
-                doc2, source_revision=plan.source_revision, segment_ids=segment_ids,
-                segment_texts=segment_texts, segment_order=segment_order,
-            )
-            if errors2:
-                raise AnalysisInvalid(errors2, raw_text, doc2)
-            return doc2
-        return doc
+    def _assemble(output, *, missing_stages: list[str], repair_calls: int):
+        # revision 由 finish 在知道 Bundle 版本号时盖章：程序字段不经模型（docs/24 §1）
+        return content_v3.assemble_content_document(
+            output, ref_table=ref_table, document_id=f"dig-{plan.item_id}", kind="digest",
+            revision=0, item_id=plan.item_id, source_revision=plan.source_revision,
+            task="digest", recipe_version=content_v3.CONTENT_RECIPE_VERSION,
+            repair_calls=repair_calls, missing_stages=missing_stages,
+            source_title=plan.source_meta.get("title"),
+        )
 
+    def _generate(prompt: str, *, missing_stages: list[str] | None = None):
+        """一次调用 + 一份额度修复：JSON 错误与引用错误共用（docs/23 §5.2 第 7 条）。
+
+        引用表本身坏了不请求模型修复——那是程序缺陷，不该让模型修内部身份。
+        """
+        try:
+            output = _call(prompt)
+        except ValueError as exc:  # 连修复输出也不是 JSON：落失败，不重投任务
+            raise ContentInvalid(
+                [{"code": "json_unparsable", "message": f"修复后仍无法解析：{exc}"}], "", None
+            ) from exc
+        document, report = _assemble(output, missing_stages=missing_stages or [], repair_calls=0)
+        if not any(e.get("code") != "ref_table_mismatch" for e in report.errors):
+            return document, report
+        try:
+            repaired = _repair(prompt, json.dumps(output, ensure_ascii=False), report.errors)
+        except ValueError as exc:
+            raise ContentInvalid(
+                [{"code": "json_unparsable", "message": f"修复调用没有返回合法 JSON：{exc}"}],
+                "", output,
+            ) from exc
+        return _assemble(repaired, missing_stages=missing_stages or [], repair_calls=1)
+
+    missing: list[str] = []
     if plan.chunked:
-        candidates: dict[str, list] = {"key_points": [], "excerpts": [], "methods": [], "insights": []}
-        chunk_errors: list[str] = []
+        # 分块提取只产候选内容块：坏块剔除并记为未覆盖，不作废整篇（docs/23 §5.2 第 3、8 条）
+        candidates: list[dict] = []
         for i, chunk in enumerate(plan.chunks, start=1):
             prompt = templates.build_chunk_user_prompt(
-                source_meta=plan.source_meta, segments=chunk,
+                source_meta=plan.source_meta, material=_material_view(ref_table, chunk),
                 chunk_index=i, chunk_total=len(plan.chunks),
-                paragraphs=plan.paragraphs,
             )
-            doc = _call(prompt)
-            for key in candidates:
-                value = doc.get(key)
-                if isinstance(value, list):
-                    candidates[key].extend(v for v in value if isinstance(v, dict))
-                else:
-                    chunk_errors.append(f"第 {i} 段输出缺少 {key}")
-        chunk_errors = list(dict.fromkeys(chunk_errors))
+            try:
+                output = _call(prompt)
+            except ValueError:  # 本块输出坏了：其余块继续，最后发布部分结果
+                missing.append(f"chunk:{i}")
+                continue
+            document, report = _assemble(output, missing_stages=[], repair_calls=0)
+            sections = _candidate_sections(document, ref_table)
+            if not sections:
+                missing.append(f"chunk:{i}")
+                continue
+            candidates.append({"chunk": i, "sections": sections})
+        if not candidates:
+            raise ContentInvalid(
+                [{"code": "missing_subject", "message": "各分段都没有产出可用的内容块"}],
+                "", outputs[-1] if outputs else None)
         merge_prompt = templates.build_merge_user_prompt(
             source_meta=plan.source_meta, user_note=plan.user_note,
             candidates=candidates, conversation_mode=plan.conversation_mode,
-            source_revision=plan.source_revision,
         )
-        merge_doc = _call(merge_prompt)
-        if chunk_errors:
-            merge_doc.setdefault("limitations", []).append("部分分段输出不完整，对应内容可能缺失。")
-        doc = _validate(merge_doc, merge_prompt, json.dumps(merge_doc, ensure_ascii=False))
+        document, report = _generate(merge_prompt, missing_stages=missing)
     else:
-        prompt = templates.build_user_prompt(
+        prompt = templates.build_digest_user_prompt(
             source_meta=plan.source_meta, user_note=plan.user_note,
-            segments=plan.segments, conversation_mode=plan.conversation_mode,
-            source_revision=plan.source_revision, paragraphs=plan.paragraphs,
+            material=_material_view(ref_table), conversation_mode=plan.conversation_mode,
         )
-        doc = _call(prompt)
-        doc = _validate(doc, prompt, json.dumps(doc, ensure_ascii=False))
+        document, report = _generate(prompt)
 
-    return {"doc": doc, "raw": raws[-1] if raws else {}, "ai_text_plan": text_plan}
+    if document is None:
+        raise ContentInvalid(report.errors, "", outputs[-1] if outputs else None)
+    return {
+        "doc": document,
+        "completeness": report.completeness,
+        "repair_calls": report.repair_calls,
+        "raw": raws[-1] if raws else {},
+        "ai_text_plan": text_plan,
+    }
 
 
 # 纠错与分段调用的输出预算：推理模型会把大量输出花在思维链上，常规
@@ -697,48 +909,35 @@ def finish(session_factory, plan: EnrichPlan, result: dict) -> None:
 
         store = ObjectStore()
         doc = result["doc"]
+        completeness = result.get("completeness") or {}
+        content_state = completeness.get("state") or ""
         # 「AI 自动整理」关着时 doc 为 None：本次只改写阅读层文字，不产出笔记
         generated_files: list[StoredFile] = []
+        content_file: StoredFile | None = None
         if doc is not None:
-            doc.setdefault("schema_version", templates.SCHEMA_VERSION)
-            doc["source_revision"] = plan.source_revision
-            doc["recipe_version"] = pipeline.RECIPE_VERSION
-            # 结构化证据映射（docs/08 §6.1）：claim_id -> 原文片段 ID；云端不生成双链
-            doc["evidence_map"] = analysis.evidence_map(doc)
-            generated_files = [
-                pipeline.register_file(
-                    db, store, user_id=item.user_id, item_id=item.id,
-                    data=pipeline.canonical_json(doc), relative_path="analysis.json",
-                    role="generated", mime="application/json",
-                ),
-                pipeline.register_file(
-                    db, store, user_id=item.user_id, item_id=item.id,
-                    data=analysis.render_preview_md(doc, user_note=plan.user_note).encode("utf-8"),
-                    relative_path="preview.md", role="preview", mime="text/markdown",
-                ),
-            ]
+            # 文档身份在程序知道 Bundle 版本号的那一刻盖章，不经模型（docs/24 §1）
+            doc["revision"] = (item.bundle_revision or 0) + 1
+            content_file = pipeline.register_file(
+                db, store, user_id=item.user_id, item_id=item.id,
+                data=pipeline.canonical_json(doc), relative_path="content.json",
+                role="generated", mime="application/json",
+            )
+            preview = pipeline.register_file(
+                db, store, user_id=item.user_id, item_id=item.id,
+                data=content_v3.render_content_markdown(doc).encode("utf-8"),
+                relative_path="preview.md", role="preview", mime="text/markdown",
+            )
+            generated_files = [content_file, preview]
             db.flush()
 
-        # AI 纠错与分段 + 听错词修正：按模型给出的段首句重算阅读层段落、
-        # 应用修正文本，覆盖 Bundle 内 readable.md / segments.json
-        #（失败或缺失时保持原分段，不回退）
+        # 只重新分段、没有改字：按当前来源版本重排阅读层段落。改过字的走派生修订
+        #（_apply_corrections_as_revision），那里的文件已经登记，这里按路径自然取最新
         extra_files: list[StoredFile] = []
         text_plan = result.get("ai_text_plan") or {}
         ai_starts = text_plan.get("starts")
-        ai_corrections = text_plan.get("corrections") or []
-        corrected_by_id = {c["segment_id"]: c["corrected"] for c in ai_corrections}
-        if ai_starts:
-            publish_segments = [dict(s) for s in plan.segments]
-            for s in publish_segments:
-                if s["segment_id"] in corrected_by_id:
-                    s["text"] = corrected_by_id[s["segment_id"]]
-            ai_paragraphs = parafmt.group_paragraphs_from_starts(publish_segments, ai_starts)
+        if ai_starts and not text_plan.get("corrections"):
+            ai_paragraphs = plan.paragraphs
             if ai_paragraphs:
-                mapping = parafmt.segment_paragraph_map(ai_paragraphs)
-                indexed = [
-                    dict(s, paragraph_id=mapping.get(s.get("segment_id")))
-                    for s in publish_segments
-                ]
                 extra_files.append(pipeline.register_file(
                     db, store, user_id=item.user_id, item_id=item.id,
                     data=parafmt.paragraphs_to_readable_md(ai_paragraphs).encode("utf-8"),
@@ -748,10 +947,9 @@ def finish(session_factory, plan: EnrichPlan, result: dict) -> None:
                     db, store, user_id=item.user_id, item_id=item.id,
                     data=pipeline.canonical_json({
                         "source_revision": plan.source_revision,
-                        "segments": indexed,
+                        "segments": _indexed_segments(plan.segments, ai_paragraphs),
                         "paragraphs": ai_paragraphs,
                         "paragraph_source": "ai",
-                        "ai_corrections": ai_corrections,
                     }),
                     relative_path="segments.json", role="source_material",
                     mime="application/json",
@@ -772,12 +970,29 @@ def finish(session_factory, plan: EnrichPlan, result: dict) -> None:
             files=list(base.values()) + generated_files,
             processing_state="ready" if organized else "original_only",
             pipeline_state="ready" if organized else "extracted",
-            result_file_id=generated_files[0].file_id if organized else None,
+            result_file_id=content_file.file_id if organized else None,
+            processing_extra=({
+                "format_version": content_v3.CONTENT_FORMAT_VERSION,
+                "completeness": content_state,
+                "content_file_id": content_file.file_id,
+            } if organized else None),
+            recipe_version=content_v3.CONTENT_RECIPE_VERSION if organized else None,
         )
-        item.state_detail = "" if organized else (
-            "已完成文字优化；AI 自动整理已关闭。" if ai_starts
-            else "文字优化这次没有产出结果，阅读层保持本地分段；AI 自动整理已关闭。"
-        )
+        item.state_reason = ""
+        if organized:
+            if content_state == "partial":
+                # 部分可用不冒充完成：状态原因给机器码，文案给人看（docs/24 §4）
+                gaps = completeness.get("gaps") or []
+                first = gaps[0].get("message") if gaps and isinstance(gaps[0], dict) else ""
+                item.state_reason = "partial_result"
+                item.state_detail = f"已整理出部分内容；{first or '部分内容未通过校验'}"
+            else:
+                item.state_detail = ""
+        else:
+            item.state_detail = (
+                "已完成文字优化；AI 自动整理已关闭。" if ai_starts
+                else "文字优化这次没有产出结果，阅读层保持本地分段；AI 自动整理已关闭。"
+            )
         job.state = "succeeded"
         if organized:
             pipeline.emit_event(
@@ -788,8 +1003,8 @@ def finish(session_factory, plan: EnrichPlan, result: dict) -> None:
         db.commit()
 
 
-def _diagnostic_bundle(session_factory, plan: EnrichPlan, exc: AnalysisInvalid) -> None:
-    """校验最终失败：保留诊断文件、任务与条目落 failed；不覆盖成品。"""
+def _diagnostic_bundle(session_factory, plan: EnrichPlan, exc: ContentInvalid) -> None:
+    """组装最终失败：保留诊断文件、任务与条目落 failed；不覆盖成品。"""
     with session_factory() as db:
         job = _owned_job(db, plan)
         item = db.get(Item, plan.item_id)
@@ -797,10 +1012,11 @@ def _diagnostic_bundle(session_factory, plan: EnrichPlan, exc: AnalysisInvalid) 
         if job is None or item is None or op is None:
             return
         provider_ops.finish_operation(op, "failed", "输出未通过校验")
+        messages = [e.get("message", "") if isinstance(e, dict) else str(e) for e in exc.errors]
 
         diagnostic = {
-            "schema_version": "1.0",
-            "kind": "analysis_validation_error",
+            "format_version": content_v3.CONTENT_FORMAT_VERSION,
+            "kind": "content_validation_error",
             "source_revision": plan.source_revision,
             "errors": exc.errors,
             "candidate_output": exc.doc,
@@ -808,12 +1024,12 @@ def _diagnostic_bundle(session_factory, plan: EnrichPlan, exc: AnalysisInvalid) 
         store = ObjectStore()
         diag_file = pipeline.register_file(
             db, store, user_id=item.user_id, item_id=item.id,
-            data=pipeline.canonical_json(diagnostic), relative_path="analysis.error.json",
+            data=pipeline.canonical_json(diagnostic), relative_path="content.error.json",
             role="generated", mime="application/json",
         )
         db.flush()
         job.state = "failed"
-        job.last_error = f"AnalysisInvalid: {'；'.join(exc.errors[:3])}"
+        job.last_error = f"ContentInvalid: {'；'.join(messages[:3])}"
         if item.deleted_at is None and item.source_revision == plan.source_revision:
             source = (
                 db.query(SourceRevision)
@@ -825,8 +1041,10 @@ def _diagnostic_bundle(session_factory, plan: EnrichPlan, exc: AnalysisInvalid) 
                     db, store, item=item, source=source,
                     files=_base_bundle_files(db, item) + [diag_file],
                     processing_state="failed", pipeline_state="failed",
-                    warnings=["AI 输出未通过校验，已保留诊断文件；原始材料不受影响。"],
+                    warnings=["AI 输出未能组装成可用内容，已保留诊断文件；原始材料不受影响。"],
+                    recipe_version=content_v3.CONTENT_RECIPE_VERSION,
                 )
+                item.state_reason = "model_output_invalid"
                 item.state_detail = "AI 输出未通过校验；可重新加工。"
         db.commit()
 
@@ -889,7 +1107,7 @@ def execute(session_factory, job_id: str, lease_token: str) -> None:
                 item.state_detail = f"模型请求被拒绝：{str(exc)[:150]}"
                 db.commit()
         return
-    except AnalysisInvalid as exc:
+    except ContentInvalid as exc:
         _diagnostic_bundle(session_factory, plan, exc)
         return
 

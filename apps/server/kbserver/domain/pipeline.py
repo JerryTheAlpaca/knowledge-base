@@ -71,6 +71,7 @@ def build_manifest(
     processing_state: str,
     warnings: list[str] | None = None,
     result_file_id: str | None = None,
+    processing_extra: dict | None = None,
 ) -> dict:
     meta = source.metadata_json
     return {
@@ -101,6 +102,9 @@ def build_manifest(
             "recipe_version": RECIPE_VERSION,
             "result_file_id": result_file_id if result_file_id is not None else meta.get("result_file_id"),
             "source_revision": source.revision,
+            # v3 附加字段（format_version/completeness/content_file_id）：由发布方给出，
+            # 旧写入路径不传就保持原样（docs/24 §5）
+            **(processing_extra or {}),
         },
         "files": [
             {
@@ -214,6 +218,8 @@ def publish_bundle(
     warnings: list[str] | None = None,
     pipeline_state: str | None = None,
     result_file_id: str | None = None,
+    processing_extra: dict | None = None,
+    recipe_version: str | None = None,
 ) -> BundleRevision:
     """发布一个不可变 Bundle：manifest 先写对象存储，再在库中登记引用并推进 Item 当前版本。"""
     item.bundle_revision = getattr(item, "bundle_revision", 0) or 0
@@ -221,8 +227,11 @@ def publish_bundle(
     manifest = build_manifest(
         item=item, source=source, bundle_revision=revision, files=files,
         processing_state=processing_state, warnings=warnings,
-        result_file_id=result_file_id,
+        result_file_id=result_file_id, processing_extra=processing_extra,
     )
+    if recipe_version:
+        # 历史迁移等新链路产物按自己的规则版本登记，不借用提取阶段的常量
+        manifest["processing"]["recipe_version"] = recipe_version
     manifest_bytes = canonical_json(manifest)
     sha, key, _ = store.put_bytes(manifest_bytes)
 

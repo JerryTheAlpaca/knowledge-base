@@ -215,7 +215,9 @@ function renderPane(d) {
   return renderSourcePane(d);
 }
 
-// ---- 整理结果（§7.3）：默认只展示有内容的区块，不显示占位段落 ----
+// ---- 整理结果（docs/23 §7.1、docs/24 §6）：通用渲染 ContentDocument v3 ----
+// 只有 sections/blocks 一种结构：不再按 key_points/excerpts/... 固定数组分支，
+// 也不从固定中文标题反解字段。界面不渲染枚举与内部编号（R1/e1/s0001 不出现）。
 function renderDigestPane(d) {
   const g = d.cloud_digest;
   const rows = [];
@@ -227,47 +229,92 @@ function renderDigestPane(d) {
     rows.push('<div class="muted">这份整理已过保留期；本地已下载的材料仍可查看。</div>');
   }
   if (g.stale_note) rows.push('<div class="muted">' + esc(g.stale_note) + "</div>");
-  if (g.state !== "ready" && g.state !== "expired") {
+  const doc = g.content_document;
+  if (!doc || (g.state !== "ready" && g.state !== "expired")) {
+    // 失败与「格式不认识」都照实说明，绝不显示成「这份整理没有内容」
     rows.push('<div class="muted">' + esc(g.state_detail || "整理还没有完成。") + "</div>");
     return rows.join("");
   }
-  if (g.summary) rows.push('<h4>一句话总结</h4><div class="readbody">' + esc(g.summary) + "</div>");
-  if (g.key_points.length) {
-    rows.push('<h4>核心观点</h4><div class="readbody"><ul>' + g.key_points.map((kp, i) =>
-      "<li>" + esc(kp.text) + (kp.conditions ? "（适用条件：" + esc(kp.conditions) + "）" : "") +
-      evidenceButtons("kp:" + i, kp.evidence_ids, g) + "</li>").join("") + "</ul></div>");
+  const refs = doc.references || {};
+  const comp = g.completeness || {};
+  if (comp.state === "partial") {
+    const gaps = (comp.gaps || []).map((x) => (x && x.message) || "").filter(Boolean);
+    rows.push('<div class="muted">这次整理只覆盖了部分内容' +
+      (gaps.length ? "：" + esc(gaps.join("；")) : "，未覆盖的范围见下方说明。") + "</div>");
   }
-  if (g.excerpts.length) {
-    rows.push('<h4>值得保留的原文</h4><div class="readbody">' + g.excerpts.map((ex, i) =>
-      "<blockquote>" + esc(ex.text) + evidenceButtons("ex:" + i, ex.evidence_ids, g) + "</blockquote>").join("") + "</div>");
+  const inner = [];
+  if (doc.summary) inner.push('<p class="para">' + esc(doc.summary) + "</p>");
+  (doc.sections || []).forEach((sec, si) => {
+    if (sec && sec.heading) inner.push("<h4>" + esc(sec.heading) + "</h4>");
+    const blocks = (sec && sec.blocks) || [];
+    blocks.forEach((b, bi) => inner.push(renderContentBlock(b, refs, g, d, (si + 1) + ":" + (bi + 1))));
+  });
+  const limits = (doc.limitations || []).filter(Boolean);
+  if (limits.length) {
+    inner.push("<h4>局限</h4><ul>" + limits.map((l) => "<li>" + esc(l) + "</li>").join("") + "</ul>");
   }
-  if (g.methods.length || g.limitations.length) {
-    rows.push('<h4>方法与局限</h4><div class="readbody">');
-    if (g.methods.length) {
-      rows.push("<ul>" + g.methods.map((m, i) => "<li>" + esc(m.text) + evidenceButtons("m:" + i, m.evidence_ids, g) +
-        (m.steps && m.steps.length ? "<ul>" + m.steps.map((s) => "<li>" + esc(s) + "</li>").join("") + "</ul>" : "") +
-        (m.conditions ? '<div class="muted">适用条件：' + esc(m.conditions) + "</div>" : "") + "</li>").join("") + "</ul>");
-    }
-    if (g.limitations.length) {
-      rows.push("<ul>" + g.limitations.map((l) => "<li>局限：" + esc(l) + "</li>").join("") + "</ul>");
-    }
-    rows.push("</div>");
-  }
-  if (g.insights.length) {
-    rows.push('<h4>AI 候选启发</h4><div class="readbody"><ul>' + g.insights.map((i) =>
-      "<li>" + esc(i.text) + "（AI 推测，未经原文证明）</li>").join("") + "</ul></div>");
-  }
-  if (!rows.length) rows.push('<div class="muted">这份整理没有可显示的内容。</div>');
+  rows.push('<div class="readbody">' + inner.join("") + "</div>");
+  if (!inner.length) rows.push('<div class="muted">这份整理没有可显示的内容。</div>');
   return rows.join("");
 }
 
-const evidenceCursor = {};
-function evidenceButtons(key, ids, g) {
-  if (!ids || !ids.length) return "";
-  const known = ids.filter((sid) => g.segments && Object.prototype.hasOwnProperty.call(g.segments, sid));
-  if (!known.length) return "";
-  return ' <button class="loclink" data-key="' + esc(key) + '" data-ids="' + esc(known.join(",")) +
-    '" title="定位到原文出处">原文</button>';
+// 四种块角色：claim 是自然正文 + 查看原文，quote 用引用样式，
+// suggestion 明确标注候选身份，text 作领句（docs/23 §3.3）。
+function renderContentBlock(block, refs, g, d, key) {
+  if (!block || typeof block.text !== "string") return "";
+  const text = esc(block.text);
+  const links = sourceButtons(block, refs, g, d, key);
+  if (block.kind === "quote") return "<blockquote>" + text + links + "</blockquote>";
+  if (block.kind === "suggestion") {
+    return '<p class="para">' + text + ' <span class="small">（AI 建议/待验证）</span>' + links + "</p>";
+  }
+  return '<p class="para">' + text + links + "</p>";
+}
+
+// 「查看原文」：按钮文字是来源的自然位置（时间区间或段落），依据取自 references。
+function sourceButtons(block, refs, g, d, key) {
+  const out = [];
+  const keys = block.refs || [];
+  for (let i = 0; i < keys.length; i++) {
+    const ref = refs[keys[i]];
+    if (!ref) continue;  // 文档内的 e 键只是这一版文档的临时定位值，缺失时不猜
+    const known = (ref.segment_ids || []).filter(
+      (sid) => g.segments && Object.prototype.hasOwnProperty.call(g.segments, sid));
+    if (!known.length) continue;  // 依据不在当前可读片段里：不造跳不过去的按钮
+    const pos = refPosition(ref.locator);
+    const tip = "定位到原文出处：" + sourceTitle(ref, d) + (pos ? "（" + pos + "）" : "");
+    out.push('<button class="loclink" data-key="' + esc(key + ":" + i) +
+      '" data-ids="' + esc(known.join(",")) + '" title="' + esc(tip) + '">' +
+      esc("查看原文" + (pos ? " · " + pos : "")) + "</button>");
+  }
+  return out.length ? " " + out.join(" ") : "";
+}
+
+function sourceTitle(ref, d) {
+  const it = (d && d.item) || {};
+  if (!ref.item_id || ref.item_id === it.item_id) return it.title || it.original_url || "原始内容";
+  return "另一份来源的内容";
+}
+
+// 自然位置：时间 mm:ss–mm:ss、段落说「第 N 段」；不显示 s0001/p0001 这类内部号。
+function refPosition(loc) {
+  if (!loc || typeof loc !== "object") return "";
+  if (loc.kind === "time" && typeof loc.start_ms === "number") {
+    const end = typeof loc.end_ms === "number" && loc.end_ms !== loc.start_ms
+      ? "–" + clockText(loc.end_ms) : "";
+    return clockText(loc.start_ms) + end;
+  }
+  if (loc.kind === "paragraph") {
+    const m = /^p0*(\d{1,5})$/.exec(String(loc.paragraph_id || ""));
+    return m ? "第 " + m[1] + " 段" : "";
+  }
+  if (loc.kind === "line" && typeof loc.line_no === "number") return "第 " + loc.line_no + " 行";
+  return "";
+}
+
+function clockText(ms) {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  return String(Math.floor(total / 60)).padStart(2, "0") + ":" + String(total % 60).padStart(2, "0");
 }
 
 // ---- 原始内容（§7.4）：只显示首屏必需项；空值元数据行不显示 ----
@@ -393,6 +440,7 @@ async function openRecords() {
   line("内容版本", t.content_version_label);
   line("整理结果", t.digest_version_label);
   line("处理状态", t.pipeline_state);
+  if (t.state_reason) line("状态原因", t.state_reason);
   if (t.state_detail) line("说明", t.state_detail);
   if (t.latest_job) {
     line("最近任务", (STAGE_LABELS[t.latest_job.stage] || t.latest_job.stage) + " · " + t.latest_job.state);
@@ -616,7 +664,9 @@ async function saveSourceEdit() {
   }
 }
 
-// ---------- 证据定位 ----------
+// ---------- 原文定位（v3：一条依据 = 一段连续片段）----------
+const evidenceCursor = {};
+
 function jumpEvidence(btn) {
   const ids = (btn.getAttribute("data-ids") || "").split(",").filter(Boolean);
   const key = btn.getAttribute("data-key") || "";
@@ -627,9 +677,8 @@ function jumpEvidence(btn) {
   if (ids.length > 1) btn.title = "定位到原文出处（第 " + (step + 1) + "/" + ids.length + " 处，再点看下一处）";
 }
 function jumpToSegment(sid) {
-  const g = detailData && detailData.cloud_digest;
   const sm = detailData && detailData.source_material;
-  if (!g || !sm) return;
+  if (!sm) return;
   const pid = sm.readable_md && sm.segment_paragraph ? sm.segment_paragraph[sid] : null;
   const body = pid ? sm.readable_md : sm.normalized_md;
   const target = pid || sid;

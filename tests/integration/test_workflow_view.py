@@ -230,27 +230,30 @@ def test_source_download_does_not_cover_newer_bundle(wc, user_a, db):
     assert wf["delivery"]["status"] == "waiting_obsidian"
 
 
+class _StubItem:  # 只暴露推导用到的字段
+    id = "i"
+    user_id = "u"
+    source_revision = 1
+    bundle_revision = 1
+    pipeline_state = "ready"
+    original_download_bundle = 0
+    state_reason = ""
+
+
+class _StubBundle:
+    revision = 1
+    source_revision = 1
+    processing_state = "ready"
+    manifest_sha256 = "a" * 64
+
+
 def test_no_device_asks_to_connect_obsidian(db):
     """没有桌面设备且无回执：发布步骤提示连接 Obsidian（推导单测；设备令牌随撤销失效，
     故直接验证推导函数，与线上 Web 通道读取同一视图）。"""
     from kbserver.domain.workflow_view import derive_item_workflow
 
-    class _Item:  # 只暴露推导用到的字段
-        id = "i"
-        user_id = "u"
-        source_revision = 1
-        bundle_revision = 1
-        pipeline_state = "ready"
-        original_download_bundle = 0
-
-    class _Bundle:
-        revision = 1
-        source_revision = 1
-        processing_state = "ready"
-        manifest_sha256 = "a" * 64
-
     wf = derive_item_workflow(
-        item=_Item(), meta={}, run=None, bundle=_Bundle(), receipt=None,
+        item=_StubItem(), meta={}, run=None, bundle=_StubBundle(), receipt=None,
         has_device=False, active_job=None, auto_enrich=True, ai_paragraphing=True,
     )
     pub = wf["steps"][2]
@@ -258,6 +261,24 @@ def test_no_device_asks_to_connect_obsidian(db):
     assert pub["message"] == "连接 Obsidian 后自动发布"
     assert wf["primary_action"] == "connect_obsidian"
     assert wf["delivery"]["status"] == "connect_obsidian"
+    assert wf["steps"][1]["reason_code"] == "ORGANIZE_DONE"
+
+
+def test_partial_result_is_visible_without_new_state():
+    """部分结果不新增 pipeline_state：整理仍算完成，文案与 reason_code 说明不完整。"""
+    from kbserver.domain.workflow_view import derive_item_workflow
+
+    class _PartialItem(_StubItem):
+        state_reason = "partial_result"
+
+    wf = derive_item_workflow(
+        item=_PartialItem(), meta={}, run=None, bundle=_StubBundle(), receipt=None,
+        has_device=True, active_job=None, auto_enrich=True, ai_paragraphing=True,
+    )
+    organize = wf["steps"][1]
+    assert organize["status"] == "completed"  # 不借用 failed/attention 掩盖，也不假装完整
+    assert organize["reason_code"] == "ORGANIZE_PARTIAL"
+    assert "部分" in organize["message"]
 
 
 # ---- 缺模型 / 缺正文（docs/17 §14.1）----

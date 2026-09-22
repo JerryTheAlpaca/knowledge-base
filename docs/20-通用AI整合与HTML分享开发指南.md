@@ -61,7 +61,7 @@ AI 多轮提问、需求确认、继续修改作品均发生在本系统的创�
 | 位置 | 已有能力 | 本功能接入方式 |
 | --- | --- | --- |
 | `apps/server/kbserver/models.py` | Item、SourceRevision、BundleRevision、Job、StoredFile、ProviderOperation | 新增独立分享对象，保留原条目链路 |
-| `domain/analysis.py` | 单篇观点、claim_id、evidence_ids、条件、摘录校验 | 复用证据结构与校验思路，不改变单篇 Schema |
+| `domain/content_v3.py` | 统一内容文档、`R`→原文→`e` 引用表、逐字摘录校验、完整性状态 | 分享整合稿复用同一内容结构，不再维护第二套编号 |
 | `providers/llm.py` | 同用户 OpenAI-compatible 模型调用及能力配置；GenerateRequest 目前只有 system/user | 扩展真实 messages 多轮请求、缓存能力与 usage 归一化，保留旧单轮调用 |
 | `domain/provider_ops.py`、`reconcile.py` | 模型调用生命周期、结果未知恢复 | 增加分享任务关联及恢复分支 |
 | `workers/worker.py` | SQLite 领取、租约、短事务、清理 | 复用机制；不把多篇作品伪装成某一篇 Item |

@@ -7,17 +7,23 @@
     python -m kbserver.cli reconcile [--resolve unknown_outcome|failed] [--min-age-hours 1]
     python -m kbserver.cli reparagraph [--user <kb_user_id>] [--dry-run]
     python -m kbserver.cli remerge [--user <kb_user_id>] [--item <item_id>] [--dry-run]
+    python -m kbserver.cli migrate-content --preview | --item-id <ID> | --all [--apply]
+    python -m kbserver.cli openapi [--servers-url https://kb.example.com]
 
 统一登录上线后不再签发配对码；设备授权走浏览器流程（docs/05 §4.5）。
 """
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 
 from . import reconcile
 from .config import get_settings
 from .db import make_engine, make_session_factory
 from .models import Base, Item, ProviderOperation, SourceRevision, User, utcnow
+
+# 契约文件随仓库走：apps/server/kbserver/cli.py → 仓库根
+CONTRACTS_OPENAPI = Path(__file__).resolve().parents[3] / "contracts" / "openapi.json"
 
 
 def _prepare():
@@ -363,6 +369,102 @@ def cmd_remerge(args) -> None:
         print(f"完成：重算 {redone} 条，无变化 {unchanged} 条，跳过 {skipped} 条。")
 
 
+def cmd_migrate_content(args) -> None:
+    """旧提炼产物 → ContentDocument v3（docs/23 §8.1、docs/24 §7）。
+
+    不调用模型：只读旧 Bundle 里登记的 analysis.json 与它当时依据的原文，按固定规则
+    转换后写一个**新** Bundle 版本加一行迁移台账；旧 Bundle、manifest 与历史回执不改。
+    同一旧输入 + 同一转换器版本重复执行是空操作，所以 `--all --apply` 可放心重跑。
+    """
+    sf = _prepare()
+    from .domain import content_migration as migrate
+    from .storage.objects import ObjectStore
+
+    if not (args.preview or args.item_id or args.all_items):
+        raise SystemExit("指明 --preview、--item-id <ID> 或 --all 之一。")
+    store = ObjectStore()
+    with sf() as db:
+        if args.preview:
+            print(migrate.format_inventory(
+                migrate.inventory(db, store, user_id=args.user, item_id=args.item_id)))
+            return
+
+        pairs = migrate.legacy_candidate_bundles(db, user_id=args.user, item_id=args.item_id)
+        if not pairs:
+            print("没有待迁移的旧产物（条目无提炼结果，或已是 v3）。")
+            return
+
+        converted = skipped = failed = 0
+        for item, bundle in pairs:
+            art = migrate.load_legacy_artifact(db, store, item=item, bundle=bundle)
+            if art is None:
+                skipped += 1
+                print(f"  {item.id[:8]}  bundle={bundle.revision}  旧产物不可读，跳过")
+                continue
+            plan = migrate.plan_conversion(art)
+            if not args.apply:
+                print(f"  {item.id[:8]}  bundle={bundle.revision}  schema={art.schema_version or art.kind}"
+                      f"  原文={art.source_note or 'none'}  未定位证据={len(plan.unresolved_ids)}"
+                      f"  预计结果={plan.status}")
+                continue
+            try:
+                result = migrate.apply_migration(db, store, item=item, artifact=art, plan=plan)
+            except ImportError:
+                db.rollback()
+                print("缺少 domain/content_v3.py（W1 组装器尚未落地），--apply 现在无法执行；"
+                      "--preview 与统计不受影响。")
+                return
+            except Exception as exc:  # noqa: BLE001 —— 单条失败不阻断整批迁移
+                db.rollback()
+                failed += 1
+                print(f"  {item.id[:8]}  迁移异常，已回滚：{type(exc).__name__}: {exc}")
+                continue
+            if result["status"] == "skipped":
+                skipped += 1
+            elif result["status"] == "failed":
+                failed += 1
+            else:
+                converted += 1
+            print(f"  {item.id[:8]}  → {result['status']}"
+                  f"{'  新版本=' + str(result.get('bundle_revision')) if result.get('bundle_revision') else ''}"
+                  f"  {result.get('reason') or ''}")
+        db.commit()
+        print(f"完成：转换 {converted} 条，跳过 {skipped} 条，失败 {failed} 条。")
+
+
+def cmd_openapi(args) -> None:
+    """由当前应用真实生成 contracts/openapi.json（docs/24 §6、§7）。
+
+    顶层 `servers` 是部署地址，不在应用代码里，只能从上一版契约文件继承：历史上有一次
+    重新生成把它丢了（docs/17 §12 记录过 servers 保留），按契约文件调接口的客户端会全部
+    指向错误主机。因此这里要么继承，要么用 --servers-url 显式给出，两者都没有就拒绝写入。
+    """
+    import json
+
+    from .app import create_app
+
+    target = Path(args.output)
+    spec = create_app().openapi()
+    old: dict = {}
+    if target.exists():
+        try:
+            old = json.loads(target.read_text(encoding="utf-8"))
+        except ValueError:
+            raise SystemExit(f"现有契约文件不是合法 JSON，先确认路径：{target}")
+    servers = old.get("servers") or []
+    if args.servers_url:
+        servers = [{"url": args.servers_url}]
+    if not servers:
+        raise SystemExit(
+            f"{target} 里没有可用的 servers 条目：用 --servers-url https://... 指定部署地址后重试。"
+            "契约文件不带 servers 时不做任何修改。"
+        )
+    spec["servers"] = servers
+    target.write_text(json.dumps(spec, ensure_ascii=False, indent=2) + "\n",
+                      encoding="utf-8", newline="\n")
+    print(f"已生成 {target}：路径 {len(spec.get('paths') or {})} 个，servers={servers[0]['url']}")
+
+
 def cmd_reconcile(args) -> None:
     """处置滞留的供应商操作（不含金额语义）。"""
     sf = _prepare()
@@ -434,6 +536,22 @@ def main() -> None:
     p.add_argument("--force", action="store_true", help="覆盖人工编辑过的版本（默认跳过）")
     p.add_argument("--dry-run", action="store_true", help="只列出将要重算的条目")
     p.set_defaults(func=cmd_remerge)
+
+    p = sub.add_parser("migrate-content",
+                       help="旧提炼产物转 ContentDocument v3（不调用模型）")
+    p.add_argument("--preview", action="store_true", help="只打印待迁移产物统计（M0 口径）")
+    p.add_argument("--item-id", default=None, help="只处理该条目")
+    p.add_argument("--all", dest="all_items", action="store_true", help="处理全部待迁移条目")
+    p.add_argument("--user", default=None, help="只统计/处理该 KB user_id")
+    p.add_argument("--apply", action="store_true", help="写入新 Bundle 版本与迁移台账")
+    p.set_defaults(func=cmd_migrate_content)
+
+    p = sub.add_parser("openapi", help="由当前应用重新生成 contracts/openapi.json（保留 servers）")
+    p.add_argument("--output", default=str(CONTRACTS_OPENAPI),
+                   help="输出路径（默认仓库内 contracts/openapi.json）")
+    p.add_argument("--servers-url", default=None,
+                   help="现有文件缺 servers 时显式指定部署地址，例如 https://kb.example.com")
+    p.set_defaults(func=cmd_openapi)
 
     p = sub.add_parser("reconcile", help="处置滞留的供应商操作（sent/prepared）")
     p.add_argument("--resolve", default="report", choices=["report", "unknown_outcome", "failed"],

@@ -1,8 +1,13 @@
 /**
- * 同步引擎（docs/02 §13；docs/08 §2、§3、§7.2、§9）：事件 → 本地待办 → 游标推进 →
- * 下载校验 → 原子落盘 → Source + Digest 两篇笔记 → commit 标记 → 回执 → 清理。
+ * 同步引擎（docs/02 §13；docs/24 §5、§8；docs/08 §2、§3、§7.2、§9）：
+ * 事件 → 本地待办 → 游标推进 → 下载校验 → **内容格式闸门** → 原子落盘 →
+ * Source + Digest 两篇笔记 → 文档索引登记 → commit 标记 → 回执 → 清理。
  *
  * 本地状态：发现（pending）→ downloading → verified → committed → ack_pending → synced。
+ *
+ * 格式闸门（docs/24 §8）：清单主版本不识别、Bundle 缺 `content.json`，或内容文件的
+ * `format_version` 不是 `3.0` → 该项暂停导入并提示升级；**不落盘空白笔记、不发成功回执**。
+ * 这是与 manifest `VERSION_UNSUPPORTED` 分开的独立结果，两者都不静默当成成功。
  *
  * 多笔记提交（docs/08 §9）：一个 Bundle 默认产出 Source 与 Digest 两篇，
  * 每篇独立哈希与冲突检测；任一失败不标记已全部完成，下次同步续做。
@@ -10,10 +15,14 @@
 
 import {
   assertSafeRelativePath,
-  bundleDirName,
+  digestKbId,
   digestNotePath,
+  documentsIndexPath,
   joinUnder,
+  noteTitleFromPath,
+  resolveAvailableNotePath,
   sourceAssetsDir,
+  sourceKbId,
   sourceNotePath,
 } from "../vault/paths";
 import {
@@ -26,28 +35,35 @@ import {
   mergeManagedTags,
   managedTags,
   readFrontmatterValue,
+  renderCloudPending,
   renderDigestNote,
   renderInboxIndex,
   renderSourceNote,
   replacePartition,
-  rewriteCloudDigestLinks,
   sha256Hex,
   SOURCE_BODY_END,
   SOURCE_BODY_START,
   stripSegmentIds,
 } from "../vault/template";
-import { CommitStore, Suppression } from "../vault/records";
+import { renderContentMarkdown } from "../vault/content";
+import { DocumentIndex, type DocumentKind } from "../vault/documents";
+import { CommitStore, FormatGate, Suppression } from "../vault/records";
 import type { VaultFs } from "../vault/vaultfs";
 import type { KbClient } from "../api";
 import { ApiError } from "../api";
 import type {
   CommitNoteRecord,
   CommitRecord,
+  ContentDocumentV3,
+  ContentRefV3,
   EngineStatus,
+  KbFileEntry,
   KbManifest,
   KbSettings,
   PendingEntry,
 } from "../types";
+import { CONTENT_FORMAT_VERSION, LAYOUT_VERSION } from "../types";
+import { parseContentDocument } from "../vault/content";
 
 export interface SyncState {
   cursor: number;
@@ -71,11 +87,27 @@ export interface EngineDeps {
 
 const SUPPORTED_SCHEMA = "1.0";
 const MAX_EVENT_PAGES = 50;
+/** 格式暂停条目的重查间隔：升级插件后最迟一轮即可续做，不每轮重复下载。 */
+const PAUSED_RETRY_MS = 6 * 60 * 60_000;
+/** Bundle 里的机器内容文件（docs/24 §5）。 */
+export const CONTENT_FILE_NAME = "content.json";
 
 export class EpochConflictError extends Error {
   constructor() {
     super("本设备已不是主要写入设备（consumer_epoch 过期）");
     this.name = "EpochConflictError";
+  }
+}
+
+/** 内容格式不受支持：暂停该项导入，等待插件升级（docs/24 §8）。 */
+export class ContentFormatError extends Error {
+  constructor(
+    readonly code: "content_format_unsupported" | "content_file_missing" | "content_file_unparsable",
+    message: string,
+    readonly formatVersion: string | null,
+  ) {
+    super(message);
+    this.name = "ContentFormatError";
   }
 }
 
@@ -102,6 +134,7 @@ export class SyncEngine {
   private epochConflict = false;
   private lastError: string | null = null;
   private suppressedCount = 0;
+  private pausedForUpgradeCount = 0;
   /** 最近一次 loadState 的真实状态缓存：公开 status 不再返回占位值（审查 C-02）。 */
   private lastState: SyncState | null = null;
 
@@ -119,6 +152,7 @@ export class SyncEngine {
       lastError: this.lastError,
       epochConflict: this.epochConflict,
       suppressedCount: this.suppressedCount,
+      pausedForUpgrade: this.pausedForUpgradeCount,
     };
   }
 
@@ -126,10 +160,24 @@ export class SyncEngine {
     this.epochConflict = false;
   }
 
+  private formatGate(): FormatGate {
+    const s = this.deps.settings();
+    return new FormatGate(this.deps.fs, `${s.systemFolder}/KnowledgeInbox/format_gate.json`);
+  }
+
+  private documentIndex(): DocumentIndex {
+    const s = this.deps.settings();
+    return new DocumentIndex(this.deps.fs, documentsIndexPath(s.systemFolder));
+  }
+
   private async refreshSuppressedCount(): Promise<void> {
     const s = this.deps.settings();
     const suppression = new Suppression(this.deps.fs, `${s.systemFolder}/KnowledgeInbox/suppression.json`);
     this.suppressedCount = (await suppression.list()).length;
+  }
+
+  private async refreshPausedCount(): Promise<void> {
+    this.pausedForUpgradeCount = (await this.formatGate().list()).length;
   }
 
   /** 单实例任务锁；重复触发直接跳过（docs/02 §13.3）。 */
@@ -155,10 +203,11 @@ export class SyncEngine {
       await this.deps.saveState(state);
       this.lastError = processError;
       await this.refreshSuppressedCount();
+      await this.refreshPausedCount();
       this.deps.onStatus({
         running: false, cursor: state.cursor, pendingCount,
         lastRunAt: state.lastRunAt, lastError: processError, epochConflict: this.epochConflict,
-        suppressedCount: this.suppressedCount, moreEvents,
+        suppressedCount: this.suppressedCount, pausedForUpgrade: this.pausedForUpgradeCount, moreEvents,
       });
     } catch (err) {
       this.lastError = err instanceof Error ? err.message : String(err);
@@ -245,6 +294,26 @@ export class SyncEngine {
           await this.deps.saveState(state);
           continue;
         }
+        if (err instanceof ContentFormatError) {
+          // 不认识的内容格式：只暂停这一项并提示升级，不发成功回执、不落空白笔记；
+          // 保留待办（长间隔重查），插件升级后无需人工清理即可继续。
+          await this.formatGate().hold({
+            item_id: entry.item_id,
+            bundle_revision: entry.revision,
+            code: err.code,
+            format_version: err.formatVersion,
+            reason: err.message,
+            detected_at: new Date().toISOString(),
+          });
+          entry.attempts += 1;
+          entry.next_try_at = Date.now() + PAUSED_RETRY_MS;
+          entry.last_error = err.message;
+          lastError = `${entry.item_id}: ${err.message}`;
+          changed = true;
+          this.deps.log(`条目 ${entry.item_id} 已暂停导入：${err.message}`);
+          await this.deps.saveState(state);
+          continue;
+        }
         entry.attempts += 1;
         entry.next_try_at = Date.now() + backoffMs(entry.attempts);
         entry.last_error = err instanceof Error ? err.message : String(err);
@@ -273,6 +342,12 @@ export class SyncEngine {
     const fs = this.deps.fs;
     const commits = new CommitStore(fs, `${s.systemFolder}/KnowledgeInbox/commits`);
     const suppression = new Suppression(fs, `${s.systemFolder}/KnowledgeInbox/suppression.json`);
+    const docs = this.documentIndex();
+    await docs.ensure([
+      { folder: s.sourcesFolder, kind: "source", skipDirs: ["_assets"] },
+      { folder: s.digestsFolder, kind: "digest" },
+      { folder: s.knowledgeFolder, kind: "knowledge" },
+    ]);
 
     // 已被用户删除的条目：记录 suppression，停止复建（docs/02 §8.2）
     if (await suppression.isSuppressed(entry.item_id)) return;
@@ -296,6 +371,8 @@ export class SyncEngine {
     if (manifest.schema_version !== SUPPORTED_SCHEMA) {
       throw new ApiError("VERSION_UNSUPPORTED", `清单 schema_version ${manifest.schema_version} 不受支持，请升级插件`, 400);
     }
+    // 内容格式闸门（先于下载与落盘）：未知版本或缺 content.json 一律暂停
+    const contentEntry = assertContentFormat(manifest);
     const relPaths = manifest.files.map((f) => assertSafeRelativePath(f.relative_path));
 
     // 1-2. 下载全部文件到同卷暂存目录并逐个校验大小与 SHA-256
@@ -320,6 +397,24 @@ export class SyncEngine {
       }
     }
 
+    // 闸门第二段：机器可读内容必须真能按 v3 解析（校验放在真实边界，不静默降级）
+    let contentDoc: ContentDocumentV3 | null = null;
+    if (contentEntry) {
+      const stagedContent = joinUnder(stagingBase, CONTENT_FILE_NAME);
+      if (!(await fs.exists(stagedContent))) {
+        throw new ContentFormatError("content_file_missing",
+          `Bundle 清单声明了 ${CONTENT_FILE_NAME}，但下载后未找到该文件；请升级插件或联系服务端检查发布。`,
+          manifest.processing.format_version ?? null);
+      }
+      const parsed = parseContentDocument(JSON.parse(await fs.read(stagedContent)));
+      if (!parsed.document) {
+        throw new ContentFormatError("content_file_unparsable",
+          `内容文件无法按 v3 读取：${parsed.errors.join("；")}`,
+          manifest.processing.format_version ?? null);
+      }
+      contentDoc = parsed.document;
+    }
+
     // 3. 移入最终不可变目录：01 Sources/_assets/<item_id>/source-000001/（docs/08 §2）
     const assetsBase = sourceAssetsDir(s.sourcesFolder, entry.item_id, manifest.source_revision);
     for (let i = 0; i < manifest.files.length; i++) {
@@ -341,24 +436,37 @@ export class SyncEngine {
     if (await fs.exists(readablePath)) normalizedText = await fs.read(readablePath);
     else if (await fs.exists(normalizedPath)) normalizedText = await fs.read(normalizedPath);
 
-    let cloudMd: string | null = null;
-    if (manifest.processing.result_file_id) {
-      const previewPath = joinUnder(assetsBase, "preview.md");
-      if (await fs.exists(previewPath)) {
-        cloudMd = rewriteCloudDigestLinks(await fs.read(previewPath), assetsBase);
+    // 云端区与 preview.md 由同一份 v3 文档渲染；本插件不再回读 preview 文本
+    const snapshots = new Set<string>();
+    if (contentDoc) {
+      for (const ref of Object.values(contentDoc.references)) {
+        const key = `${ref.item_id}@${ref.source_revision}`;
+        if (snapshots.has(key)) continue;
+        if (await fs.exists(`${sourceAssetsDir(s.sourcesFolder, ref.item_id, ref.source_revision)}/normalized.md`)) {
+          snapshots.add(key);
+        }
       }
     }
+    const cloudMd = contentDoc
+      ? renderContentMarkdown(contentDoc, { sourceLinkOf: (ref) => sourceAnchor(s.sourcesFolder, ref, snapshots) })
+      : null;
 
     const status = manifest.processing.state;
-    const sourcePath = (sourceNote?.note_path)
-      ?? sourceNotePath(s.sourcesFolder, manifest.source.captured_at, manifest.source.title, entry.item_id);
-    const digestPath = digestNotePath(s.digestsFolder, manifest.source.captured_at, manifest.source.title, entry.item_id);
+    const sourcePath = await this.resolveNotePath(docs, sourceNote?.note_path ?? null,
+      sourceKbId(entry.item_id), "source",
+      sourceNotePath(s.sourcesFolder, manifest.source.captured_at, manifest.source.title),
+      manifest.source.title, entry.item_id);
+    const digestPath = await this.resolveNotePath(docs,
+      latest ? CommitStore.noteState(latest, "digest")?.note_path ?? null : null,
+      digestKbId(entry.item_id), "digest",
+      digestNotePath(s.digestsFolder, manifest.source.captured_at, manifest.source.title),
+      manifest.source.title, entry.item_id);
     const sourceLink = `[[${sourcePath}|原始资料]]`;
     const digestLink = `[[${digestPath}|查看提炼]]`;
 
     // 5. 写 Source 与 Digest：每篇独立冲突检测（docs/08 §3、§7.2）
     const sourceResult = await this.writeSourceNote(manifest, sourcePath, assetsBase, normalizedText, digestLink, status, latest);
-    const digestResult = await this.writeDigestNote(manifest, digestPath, sourceLink, cloudMd, status, latest);
+    const digestResult = await this.writeDigestNote(manifest, digestPath, sourceLink, cloudMd, status, latest, contentDoc);
 
     // 6. 写入本地 commit 标记（可恢复完成点）：失败不标记已全部完成
     const notes: CommitNoteRecord[] = [sourceResult, digestResult];
@@ -367,7 +475,7 @@ export class SyncEngine {
       item_id: entry.item_id,
       bundle_revision: entry.revision,
       manifest_sha256: manifestSha,
-      layout_version: 2,
+      layout_version: LAYOUT_VERSION,
       note_path: sourceResult.note_path,
       generated_digest: sourceResult.managed_digest,
       notes,
@@ -381,6 +489,7 @@ export class SyncEngine {
     // 7. 回执；成功后才算 synced。未全部写入时不发回执，下次续做。
     if (allWritten) {
       await this.ackRecord(client, commits, record);
+      await this.formatGate().release(entry.item_id);
     } else {
       this.deps.log(`条目 ${entry.item_id} 部分笔记未写入，保留待办下次重试`);
     }
@@ -392,6 +501,34 @@ export class SyncEngine {
         this.deps.log(`准备整理候选失败：${err instanceof Error ? err.message : String(err)}`);
       });
     }
+  }
+
+  /**
+   * 解析一篇笔记应写入的路径：已有 commit 路径 → 文档索引 → 新的可读文件名。
+   *
+   * 老库沿用旧路径（既有链接仍可打开），新条目用 `YYYY-MM-DD 标题.md`；
+   * 同名冲突按 `（2）` 规则让路，且绝不把同一 `kb_id` 写成第二份可写副本。
+   */
+  private async resolveNotePath(
+    docs: DocumentIndex,
+    recordedPath: string | null,
+    kbId: string,
+    kind: DocumentKind,
+    desiredPath: string,
+    title: string | null,
+    itemId: string,
+  ): Promise<string> {
+    const fs = this.deps.fs;
+    if (recordedPath && (await fs.exists(recordedPath))) {
+      await docs.register({ kb_id: kbId, path: recordedPath, kind, item_id: itemId, title: title ?? "", updated_at: "" });
+      return recordedPath;
+    }
+    const indexed = await docs.pathOf(kbId);
+    if (indexed && (await fs.exists(indexed))) return indexed;
+    const path = await resolveAvailableNotePath(desiredPath, async (candidate) =>
+      (await fs.exists(candidate)) || (await docs.isTakenByOther(candidate, kbId)));
+    await docs.register({ kb_id: kbId, path, kind, item_id: itemId, title: title ?? "", updated_at: "" });
+    return path;
   }
 
   /** Source 笔记：正文只放原始证据；机器可写部分只有 frontmatter 与固定链接。 */
@@ -468,13 +605,20 @@ export class SyncEngine {
     cloudMd: string | null,
     status: string,
     latest: CommitRecord | null,
+    contentDoc: ContentDocumentV3 | null,
   ): Promise<NoteWriteResult> {
     const fs = this.deps.fs;
     const s = this.deps.settings();
     const previous = latest ? CommitStore.noteState(latest, "digest") : null;
+    // 内容身份写进 frontmatter：机器回读以 content.json 为准，不靠文件名或正文猜
+    const contentLines = contentDoc ? [
+      `kb_format_version: "${CONTENT_FORMAT_VERSION}"`,
+      `kb_content_revision: ${contentDoc.revision}`,
+      `kb_completeness: "${contentDoc.completeness.state}"`,
+    ] : [];
 
     if (!(await fs.exists(notePath))) {
-      const body = renderDigestNote(manifest, { sourceLink, cloudMd, status });
+      const body = renderDigestNote(manifest, { sourceLink, cloudMd, status, contentLines });
       await fs.write(notePath, body);
       const cloudInner = extractPartition(body, CLOUD_DIGEST_START, CLOUD_DIGEST_END) ?? "";
       return {
@@ -528,6 +672,8 @@ export class SyncEngine {
 
     // 更新 frontmatter 与云端区，保留本地整理区与人工区
     const newInner = cloudMd?.trim() || currentInner;
+    // 本地整理结论是文档级字段：逐观点晋升账本已随 v3 退出（docs/23 §6.1）
+    const organize = readFrontmatterValue(current, "kb_organize") ?? "not_evaluated";
     const withFm = mergeKbFrontmatter(current, [
       `kb_id: "dig-${manifest.item_id}"`,
       `kb_item_id: "${manifest.item_id}"`,
@@ -536,12 +682,13 @@ export class SyncEngine {
       `kb_source_revision: ${manifest.source_revision}`,
       `kb_digest_revision: ${manifest.bundle_revision}`,
       `kb_status: "${status}"`,
+      `kb_organize: ${organize}`,
       `kb_source_url: ${manifest.source.original_url ? `"${manifest.source.original_url}"` : ""}`.trimEnd(),
+      ...contentLines,
     ].filter((l) => !l.endsWith(":")));
     const rebuilt = replacePartition(withFm, CLOUD_DIGEST_START, CLOUD_DIGEST_END, newInner);
-    // `status/*` 由 kb_promotion 派生（云端更新不改本地整理结论，docs/08 §5）
-    const promotion = readFrontmatterValue(current, "kb_promotion") ?? "not_evaluated";
-    const tagged = mergeManagedTags(rebuilt, managedTags("digest", promotion));
+    // `status/*` 由 `kb_organize` 派生（云端更新不改本地整理结论，docs/08 §5）
+    const tagged = mergeManagedTags(rebuilt, managedTags("digest", organize));
     await fs.write(notePath, tagged);
     return {
       role: "digest", note_path: notePath,
@@ -576,12 +723,12 @@ export class SyncEngine {
     for (const r of records) {
       for (const note of r.notes) {
         if (note.role !== "source") continue;
-        const base = note.note_path.split("/").pop() ?? note.note_path;
-        const title = base.replace(/\.md$/, "").split("--")[0];
+        // 文件名不再带 item_id；标题从可读文件名还原，日期用提交时间
         entries.push({
-          notePath: note.note_path, title,
+          notePath: note.note_path,
+          title: noteTitleFromPath(note.note_path),
           status: note.state === "merge_needed" ? "merge_needed" : "synced",
-          capturedAt: null,
+          capturedAt: r.committed_at,
         });
       }
     }
@@ -613,4 +760,49 @@ export class SyncEngine {
     }
     return n;
   }
+}
+
+/**
+ * 内容格式闸门·第一段：看清单声明（docs/24 §5、§8）。
+ *
+ * 返回需要读取的 `content.json` 条目；`null` 表示本轮 Bundle 没有生成内容
+ * （原始资料照旧入库）。未知版本、缺内容文件一律抛错暂停，不当成空内容导入。
+ */
+export function assertContentFormat(manifest: KbManifest): KbFileEntry | null {
+  const state = manifest.processing.state;
+  const declared = manifest.processing.format_version ?? null;
+  const contentFile = manifest.files.find((f) => f.relative_path === CONTENT_FILE_NAME) ?? null;
+  const hasResult = Boolean(manifest.processing.result_file_id) || state === "ready";
+
+  if (!hasResult && !contentFile) return null; // 尚未提炼或仅原始资料
+  if (declared && declared !== CONTENT_FORMAT_VERSION) {
+    throw new ContentFormatError("content_format_unsupported",
+      `内容格式版本 ${declared} 不受支持，请升级插件后再同步（当前插件支持 ${CONTENT_FORMAT_VERSION}）`,
+      declared);
+  }
+  if (!contentFile) {
+    const legacy = manifest.files.some((f) => f.relative_path === "analysis.json");
+    throw new ContentFormatError("content_file_missing",
+      legacy
+        ? `该条目仍是旧版内容协议（analysis.json，无 format_version），需要服务端完成 v3 迁移或重新整理后再同步`
+        : `清单声明已生成整理结果，但缺少 ${CONTENT_FILE_NAME}；本插件不会写入空白摘要，也不会发送成功回执`,
+      declared ?? (legacy ? "2.0 或更早" : null));
+  }
+  if (manifest.processing.content_file_id && contentFile.file_id !== manifest.processing.content_file_id) {
+    throw new ContentFormatError("content_file_missing",
+      `${CONTENT_FILE_NAME} 的 file_id 与清单 processing.content_file_id 不一致`, declared);
+  }
+  return contentFile;
+}
+
+/**
+ * 一条引用 → 固定原文锚点链接（docs/24 §8）。
+ *
+ * 只指向该 item + source_revision 的不可变 `normalized.md`；本地没有该版快照时
+ * 返回 null，由渲染器如实写明「本地原文快照缺失」，不用标题或摘要补位。
+ */
+export function sourceAnchor(sourcesFolder: string, ref: ContentRefV3, available: Set<string>): string | null {
+  if (!ref.item_id || !ref.source_revision || !ref.segment_ids.length) return null;
+  if (!available.has(`${ref.item_id}@${ref.source_revision}`)) return null;
+  return `${sourceAssetsDir(sourcesFolder, ref.item_id, ref.source_revision)}/normalized#^${ref.segment_ids[0]}`;
 }

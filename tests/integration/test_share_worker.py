@@ -1,6 +1,7 @@
-"""分享编排 Worker 的端到端流程（docs/20 §3、§5、§6、§13；模拟模型响应）。
+"""分享编排 Worker 的端到端流程（docs/24 §9、docs/20 §3、§5、§13；模拟模型响应）。
 
 先用模拟模型响应验证阶段推进与失败恢复，再接本人真实模型配置试用（M2 要求）。
+内容阶段按 ContentDocument v3：模型只出主体与 R 引用，锚点与编号由程序分配。
 """
 from __future__ import annotations
 
@@ -13,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from kbserver.config import get_settings
-from kbserver.domain import provider_ops, share_prompts, share_conversations, sharing
+from kbserver.domain import content_v3, provider_ops, share_prompts, share_conversations, sharing
 from kbserver.models import (
     Capture,
     Credential,
@@ -21,6 +22,7 @@ from kbserver.models import (
     ProviderProfile,
     ShareArtifact,
     ShareConversation,
+    ShareMessage,
     ShareRevision,
     ShareRun,
     ShareWork,
@@ -30,6 +32,7 @@ from kbserver.models import (
     new_id,
     utcnow,
 )
+
 from kbserver.providers.llm import ConversationMessage, GenerateResult
 from kbserver.repositories import shares as repo
 from kbserver.security import credentials as cred_crypto
@@ -72,26 +75,33 @@ PAGE_SOURCE = {
 
 
 def synthesis_for(pack: dict) -> dict:
-    keys = sorted(sharing.pack_source_keys(pack))
-    citations = [sharing.citation_id(k, "seg0001") for k in keys]
+    """按本轮 R 表造一份 v3 内容主体：模型不出任何编号，引用只填给到的 R。"""
+    table = content_v3.build_ref_table(sharing.materials_of(pack))
+    keys = table.keys()
+    quote = table.text_of(keys[0]).splitlines()[0].strip()
     return {
-        "schema_version": "1.0",
         "title": "两篇材料的对照",
-        "reader_goal": "让没有基础的读者看清差异",
-        "sections": [{"id": "sec1", "heading": "要点对照", "body": "两篇都强调条件，粒度不同。"}],
-        "claims": [
-            {"id": "k1", "kind": "source_claim", "text": "先分型，再谈用量。",
-             "citations": [citations[0]], "conditions": None},
-            {"id": "k2", "kind": "synthesis", "text": "两篇的分歧在条件的粒度。",
-             "citations": citations, "conditions": None},
-        ],
-        "source_usage": [{"source_key": k, "use": "提供主要观点"} for k in keys],
-        "visual_intents": [],
-        "public_references": [{"ref_id": "ref1", "source_key": keys[0], "title": "材料一",
-                               "url": "https://example.org/a", "citation": citations[0],
-                               "quote": "先分型，再谈用量。"}],
+        "summary": "两篇都强调条件，粒度不同。",
+        "sections": [{"heading": "要点对照", "blocks": [
+            {"kind": "claim", "text": "两篇都把成立条件放在用量之前。", "refs": list(keys)},
+            {"kind": "quote", "text": quote, "refs": [keys[0]]},
+            {"kind": "suggestion", "text": "可以再核对一次原始数据。"},
+        ]}],
         "limitations": ["没有取得原始统计数据"],
+        "reader_goal": "让没有基础的读者看清两篇的差异",
+        "visualization_intent": "用一张对照表呈现条件的粒度差别",
+        "material_usage": [{"ref": key, "note": "提供主要观点"} for key in keys],
     }
+
+
+def broken_synthesis_for(pack: dict) -> dict:
+    """有效内容 + 一条对不上原文的摘录：组装结果是 partial，不能发布成页面。"""
+    doc = synthesis_for(pack)
+    doc["sections"][0]["blocks"].append({
+        "kind": "quote", "text": "原文里根本没有这句话。",
+        "refs": [doc["sections"][0]["blocks"][0]["refs"][0]],
+    })
+    return doc
 
 
 class FakeProvider:
@@ -108,7 +118,7 @@ class FakeProvider:
         tail = request.messages[-1].content
         if "page_source JSON" in tail or "当前源文件" in tail:
             doc = PAGE_SOURCE
-        elif "整合稿 JSON" in tail:
+        elif "内容主体 JSON" in tail or "上一轮内容没有通过组装" in tail:
             doc = FakeProvider.next_docs.pop(0)
         elif "第 2 轮" in tail:
             doc = CLARIFY_2
@@ -297,8 +307,12 @@ def test_full_flow_from_selection_to_ready_draft(env):
     assert run.state == "queued"
     task_dir = Path(get_settings().share_spool_dir) / "ready" / run.checkpoint_json["runner_task"]
     envelope = json.loads((task_dir / "task.json").read_text(encoding="utf-8"))
-    assert envelope["references"][0]["title"] == "材料一"
+    # 公开引用清单由程序分配锚点，内容只含可公开的标题、允许公开的 URL 与已确认摘录
+    assert envelope["references"] == [{
+        "ref_id": "ref1", "title": "材料一", "author": None, "source_label": "网页",
+        "url": "https://example.org/a", "quote": "先分型，再谈用量。", "revision": 1}]
     assert envelope["limitations"] == ["没有取得原始统计数据"]
+    assert not any("没有可公开的原文链接" in n for n in envelope["coverage_notes"])
     assert not (task_dir / "input" / "page_source.json").read_bytes().startswith(b"{\"sources\"")
 
     write_runner_result(run)
@@ -319,6 +333,173 @@ def test_full_flow_from_selection_to_ready_draft(env):
         refs = [a for a in db.query(ShareArtifact).filter_by(work_id=work_id,
                                                             role="public_references").all()]
         assert refs[0].visibility == "public"
+        # 登记的整合稿就是 v3 文档：引用绑到固定版本的真实片段号
+        synthesis = json.loads(ObjectStore().read_object(revision.synthesis_key).decode("utf-8"))
+    assert content_v3.validate_content_document(synthesis) == []
+    assert synthesis["format_version"] == "3.0" and synthesis["kind"] == "synthesis"
+    assert synthesis["document_id"] == f"syn-{run_id}"
+    assert synthesis["provenance"]["task"] == "share_synthesis"
+    assert synthesis["completeness"] == {"state": "complete", "missing_stages": [], "gaps": [],
+                                         "dropped_blocks": 0, "repair_calls": 0}
+    assert synthesis["references"]["e1"]["segment_ids"] == ["s0001", "s0002"]
+    assert synthesis["references"]["e1"]["item_id"] == env["item_id"]
+
+
+def test_partial_synthesis_never_becomes_a_page(env):
+    """有块没通过核实就是 partial：修一次仍不行就如实失败，不生成页面与版本。"""
+    run_id, work_id = new_run(env)
+    run = claim_and_run(env, run_id)
+    FakeProvider.next_docs = [broken_synthesis_for(pack_of(run))] * 2
+    confirm(env, run_id)
+    run = claim_and_run(env, run_id)
+    assert (run.state, run.reason_code) == ("failed", "partial_result"), run.error_detail
+    assert "未在被引原文中逐字出现" in run.error_detail
+    with env["session_factory"]() as db:
+        assert db.query(ShareRevision).filter_by(work_id=work_id).count() == 0
+        steps = {o.step_key for o in repo.operations_for_run(db, run_id)}
+        assert {"synthesis", "synthesis-fix"} <= steps, "缺口没有给一次修复机会"
+        assert (run.checkpoint_json or {}).get("synthesis_key") is None, "partial 草稿不该进入下一步"
+
+
+def test_private_source_without_public_url_shows_note_not_dead_link(env):
+    """私有来源没有公开 URL：只给允许公开的说明，不生成指向私有 API 的链接。"""
+    with env["session_factory"]() as db:
+        source = db.query(SourceRevision).filter_by(item_id=env["item_id"], revision=1).one()
+        source.metadata_json = {**(source.metadata_json or {}), "canonical_url": None}
+        db.commit()
+    run_id, work_id = new_run(env)
+    run = claim_and_run(env, run_id)
+    FakeProvider.next_docs = [synthesis_for(pack_of(run))]
+    confirm(env, run_id)
+    run = claim_and_run(env, run_id)
+    task_dir = Path(get_settings().share_spool_dir) / "ready" / run.checkpoint_json["runner_task"]
+    envelope = json.loads((task_dir / "task.json").read_text(encoding="utf-8"))
+    assert envelope["references"][0]["url"] is None
+    assert envelope["references"][0]["title"] == "材料一"
+    notes = envelope["coverage_notes"]
+    assert any("《材料一》没有可公开的原文链接" in n for n in notes)
+    assert not any("/v1/" in n or "items/" in n for n in notes), "说明里出现了私有路径"
+
+
+def test_changed_content_rules_open_a_new_context_epoch(env, monkeypatch):
+    """固定 system 前缀变了要换 epoch：不能把 v3 规则接到旧会话的缓存前缀后面。"""
+    run_id, work_id = new_run(env)
+    claim_and_run(env, run_id)
+    with env["session_factory"]() as db:
+        conv = db.query(ShareConversation).filter_by(work_id=work_id, purpose="content").one()
+        first_epoch, first_hash = conv.context_epoch, conv.prefix_hash
+    answer_round(env, run_id, work_id)
+    claim_and_run(env, run_id)
+    with env["session_factory"]() as db:
+        conv = db.query(ShareConversation).filter_by(work_id=work_id, purpose="content").one()
+        assert (conv.context_epoch, conv.prefix_hash) == (first_epoch, first_hash), "同一代规则不该换前缀"
+
+    monkeypatch.setattr(share_prompts, "CONTENT_SYSTEM", share_prompts.CONTENT_SYSTEM + "\n（v3 规则）")
+    answer_round(env, run_id, work_id)
+    claim_and_run(env, run_id)
+    with env["session_factory"]() as db:
+        conv = db.query(ShareConversation).filter_by(work_id=work_id, purpose="content").one()
+        assert conv.context_epoch == first_epoch + 1, "换了固定前缀还在续用旧会话"
+        assert conv.prefix_hash != first_hash
+        # 旧 epoch 的问答原样保留（还能回看），新 epoch 从新前缀重新开始
+        assert db.query(ShareMessage).filter_by(conversation_id=conv.id,
+                                                context_epoch=first_epoch).count() == 4
+        assert db.query(ShareMessage).filter_by(conversation_id=conv.id,
+                                                context_epoch=conv.context_epoch).count() == 1
+    newest = FakeProvider.calls[-1]
+    assert "（v3 规则）" in newest[0]["content"]
+    assert [m["role"] for m in newest] == ["system", "user", "user", "user"], "旧会话历史不该接到新前缀后"
+
+
+def _add_digest_document(env, *, source_revision: int = 1, text: str = "采集与总结分开处理。") -> None:
+    """给条目登记一份 v3 提炼产物（content.json）：内容阶段的候选启发来自它。"""
+    store = ObjectStore()
+    doc = {
+        "format_version": "3.0", "kind": "digest",
+        "provenance": {"task": "digest", "recipe_version": "content-v3-1", "input_documents": [],
+                       "source_revisions": [{"item_id": env["item_id"],
+                                             "source_revision": source_revision}]},
+        "sections": [{"heading": "要点", "blocks": [
+            {"kind": "claim", "text": text, "refs": ["e1"]}]}],
+    }
+    sha, key, size = store.put_bytes(json.dumps(doc, ensure_ascii=False).encode("utf-8"))
+    with env["session_factory"]() as db:
+        db.add(StoredFile(file_id=new_id(), user_id=env["user_id"], item_id=env["item_id"],
+                          role="generated", relative_path="content.json",
+                          mime="application/json", bytes=size, sha256=sha, storage_key=key))
+        db.commit()
+
+
+def test_digest_hints_come_from_v3_document_and_stay_unnumbered(env):
+    """候选启发只取 v3 文档的文字：没有 c0001 这类旧观点编号，也不绑定片段号。"""
+    _add_digest_document(env)
+    run_id, _ = new_run(env)
+    claim_and_run(env, run_id)
+    material = json.loads(FakeProvider.calls[0][1]["content"])
+    assert material["sources"][0]["hints"] == ["采集与总结分开处理。"]
+    assert [unit["ref"] for unit in material["material"]] == ["R1"]
+    assert material["material"][0]["text"].startswith("先分型")
+    assert not re.search(r"c\d{4}|seg\d{4}|s\d{4}", json.dumps(material["sources"],
+                                                              ensure_ascii=False))
+    # 只有别的来源版本有提炼时不串用：回落到当前版本那份
+    _add_digest_document(env, source_revision=2, text="别的版本才有的提炼。")
+    second_run, _ = new_run(env)
+    claim_and_run(env, second_run)
+    later = json.loads(FakeProvider.calls[-1][1]["content"])
+    assert later["sources"][0]["hints"] == ["采集与总结分开处理。"]
+
+
+def _add_second_item(env, *, title: str, text: str, url: str) -> str:
+    """再加一条材料：与第一条同为版本 1、同有 s0001，用来检查引用不互相覆盖。"""
+    store = ObjectStore()
+    with env["session_factory"]() as db:
+        first = db.get(Item, env["item_id"])
+        capture = Capture(user_id=env["user_id"], client_capture_id=f"c-{title}",
+                          request_hash="h2", input_json={})
+        db.add(capture)
+        db.flush()
+        item = Item(user_id=env["user_id"], capture_id=capture.id, source_revision=1,
+                    bundle_revision=1)
+        db.add(item)
+        db.flush()
+        segments = {"source_revision": 1, "segments": [{"segment_id": "s0001", "text": text}]}
+        sha, key, size = store.put_bytes(json.dumps(segments, ensure_ascii=False).encode("utf-8"))
+        db.add(StoredFile(file_id=new_id(), user_id=env["user_id"], item_id=item.id,
+                          role="source_material", relative_path="segments.json",
+                          mime="application/json", bytes=size, sha256=sha, storage_key=key))
+        db.add(SourceRevision(item_id=item.id, user_id=env["user_id"], revision=1,
+                              content_hash="y",
+                              metadata_json={"title": title, "coverage": "full_text",
+                                             "canonical_url": url, "source_label": "网页"},
+                              artifacts_json={}))
+        db.commit()
+        return item.id
+
+
+def test_two_materials_with_same_segment_ids_keep_separate_anchors(env):
+    """两份材料都有 s0001：R 表与公开锚点仍分别准确（docs/23 §11）。"""
+    second = _add_second_item(env, title="材料二", text="先分型，再谈用量。",
+                              url="https://example.org/b")
+    run_id, work_id = new_run(env, items=[
+        {"item_id": env["item_id"], "source_revision": 1},
+        {"item_id": second, "source_revision": 1}])
+    run = claim_and_run(env, run_id)
+    material = json.loads(FakeProvider.calls[0][1]["content"])
+    assert [unit["ref"] for unit in material["material"]] == ["R1", "R2"]
+    assert [s["refs"] for s in material["sources"]] == [["R1"], ["R2"]]
+    assert [s["title"] for s in material["sources"]] == ["材料一", "材料二"]
+
+    FakeProvider.next_docs = [synthesis_for(pack_of(run))]
+    confirm(env, run_id)
+    run = claim_and_run(env, run_id)
+    task_dir = Path(get_settings().share_spool_dir) / "ready" / run.checkpoint_json["runner_task"]
+    envelope = json.loads((task_dir / "task.json").read_text(encoding="utf-8"))
+    assert [(r["ref_id"], r["title"], r["url"]) for r in envelope["references"]] == [
+        ("ref1", "材料一", "https://example.org/a"), ("ref2", "材料二", "https://example.org/b")]
+    document = json.loads(ObjectStore().read_object(
+        run.checkpoint_json["synthesis_key"]).decode("utf-8"))
+    assert [(ref["item_id"], ref["segment_ids"]) for ref in document["references"].values()] == [
+        (env["item_id"], ["s0001", "s0002"]), (second, ["s0001"])]
 
 
 def test_second_round_uses_same_prefix_bytes(env):
@@ -477,12 +658,18 @@ def test_model_requests_never_carry_private_object_keys(env):
     assert "storage_key" not in sent
     assert asset_key not in sent
     assert not re.search(r"[0-9a-f]{2}/[0-9a-f]{64}", sent), "内部对象 key 的形态外发了"
+    # 来源 UUID 也不进模型：材料只以程序给的 R 编号出现（docs/23 §4.1）
+    assert env["item_id"] not in sent
+    assert '"R1"' in sent
+    # 模型侧编号体系已经退出协议：既没有旧 citation 语法，也没有 sec/k/source_key
+    for retired in ("seg0001", "source_key", "citations", "sec1", '"k1"', "public_references"):
+        assert retired not in sent, f"模型侧还看到旧编号 {retired}"
     # 只剥 key，不剥模型要用到的逻辑标识
     assert '"asset_id"' in sent and '"a1"' in sent
     # 断言本身有牙：同一份目录不剥 key 时，确实会被这段检查抓到
-    leaky = share_prompts.code_tail(synthesis={}, asset_catalog=[{"asset_id": "a1",
-                                                                  "storage_key": asset_key}],
-                                    reference_catalog=[], runbook="", instructions="")
+    leaky = share_prompts.code_tail(content={}, references=[],
+                                    asset_catalog=[{"asset_id": "a1", "storage_key": asset_key}],
+                                    runbook="", instructions="")
     assert asset_key in leaky and "storage_key" in leaky
 
     # 剥的位置不能过头：编排器自己的清单与交接仍要按 key 读对象

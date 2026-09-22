@@ -9,7 +9,7 @@
 
 import { App, Notice, PluginSettingTab, Setting } from "obsidian";
 import type { KbSettings, LocalModelConfig, LocalModelMode } from "./types";
-import { ANALYSIS_SCHEMA_VERSION, LAYOUT_VERSION } from "./types";
+import { CONTENT_FORMAT_VERSION, LAYOUT_VERSION } from "./types";
 
 /** 本地整理默认配置工厂：每次返回新对象，避免模块级常量被运行时修改污染。 */
 export function defaultLocalModel(): LocalModelConfig {
@@ -45,7 +45,7 @@ export const DEFAULT_SETTINGS: KbSettings = {
   localOrganizeEnabled: false,
   autoPrepareOnSync: false,
   organizeDeviceId: "",
-  analysisSchemaVersion: ANALYSIS_SCHEMA_VERSION,
+  contentFormatVersion: CONTENT_FORMAT_VERSION,
   layoutVersion: LAYOUT_VERSION,
 };
 

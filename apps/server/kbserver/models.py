@@ -316,6 +316,10 @@ class Job(Base, TimestampMixin):
     # 用户点名要整理（手动「开始整理」/「重新加工」）：为真时忽略「AI 自动整理」
     # 开关。自动入队的任务为假，按当时的开关决定做整理还是只做文字优化。
     digest_requested: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # 本次调用的固定输入与任务内 R 引用表（docs/24 §7）：进程重启后按同一绑定恢复，
+    # 不能在中途把 R1 换成另一段原文（docs/23 §4.1 规则 4）。只存引用表与块边界，
+    # 不存原文正文——原文在对象存储的固定版本里。
+    input_json: Mapped[dict] = mapped_column(JSON, default=dict)
     state: Mapped[str] = mapped_column(String(20), default="queued")
     attempt: Mapped[int] = mapped_column(Integer, default=0)
     last_error: Mapped[str] = mapped_column(Text, default="")
@@ -516,6 +520,36 @@ class AsrRun(Base, TimestampMixin):
     input_fingerprint: Mapped[str] = mapped_column(String(120), default="")
     last_error: Mapped[str] = mapped_column(Text, default="")
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
+
+
+# ---- 旧产物 → ContentDocument v3 迁移台账（docs/24 §7）----
+
+
+class ContentMigration(Base, TimestampMixin):
+    """一条旧提炼产物转成 v3 的记录。
+
+    唯一键 (user_id, item_id, input_sha256, converter_version)：同一份旧输入用
+    同一版转换器重复执行不再生成新 Bundle（docs/23 §8.1 第 7 步）。转换器改动
+    版本号后允许重新转换，旧记录继续保留，旧 Bundle 与历史回执不修改。
+    """
+
+    __tablename__ = "content_migrations"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "item_id", "input_sha256", "converter_version",
+            name="uq_content_migration_input",
+        ),
+        Index("ix_content_migrations_user_item", "user_id", "item_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    item_id: Mapped[str] = mapped_column(ForeignKey("items.id"), index=True)
+    input_sha256: Mapped[str] = mapped_column(String(64))
+    converter_version: Mapped[str] = mapped_column(String(40))
+    new_bundle_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="complete")  # complete|partial|unresolved|failed
+    notes: Mapped[str] = mapped_column(String(500), default="")
 
 
 # ---- 通用 AI 整合与 HTML 分享（docs/20 §11）----

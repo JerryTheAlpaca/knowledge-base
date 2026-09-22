@@ -26,14 +26,19 @@ from sqlalchemy.orm import Session
 
 from ..config import Settings, get_settings
 from ..db import make_engine, make_session_factory
-from ..domain import provider_ops, share_prompts, sharing
-from ..domain.share_conversations import merge_brief, prefix_hash, request_messages, stable_prefix
+from ..domain import content_v3, provider_ops, share_prompts, sharing
+from ..domain.share_conversations import (
+    merge_brief,
+    prefix_hash,
+    prefix_matches,
+    request_messages,
+    stable_prefix,
+)
 from ..models import (
     Credential,
     Item,
     ProviderOperation,
     ProviderProfile,
-    ShareArtifact,
     ShareConversation,
     ShareRevision,
     ShareRun,
@@ -89,6 +94,9 @@ class SharePlan:
     capabilities: dict
     settings: Settings
     pack: dict = field(default_factory=dict)
+    # 任务内 R 表与模型可见材料：都由固定快照确定性推出，分块与修复沿用同一绑定
+    ref_table: content_v3.RefTable | None = None
+    material_pack: dict = field(default_factory=dict)
     brief: dict = field(default_factory=dict)
     provenance: dict = field(default_factory=dict)
     checkpoint: dict = field(default_factory=dict)
@@ -110,6 +118,11 @@ def _read_json(store: ObjectStore, storage_key: str) -> dict:
 
 
 def _segments_of(db: Session, store: ObjectStore, item: Item) -> list[dict]:
+    """本轮固定的原文片段：沿用来源自己的 segment_id，不把编号重排成第二套标识。
+
+    引用范围要能回到 `segments.json` 里的同一片段（docs/24 §2），所以片段号与
+    时间/段落定位都原样带给引用表；重排会让 v3 引用表对不上真实原文。
+    """
     rows = list(db.query(StoredFile).filter(
         StoredFile.item_id == item.id, StoredFile.relative_path == "segments.json"
     ).order_by(StoredFile.created_at.desc(), StoredFile.id).all())
@@ -122,31 +135,49 @@ def _segments_of(db: Session, store: ObjectStore, item: Item) -> list[dict]:
             continue
         out = []
         for i, seg in enumerate(doc.get("segments") or [], start=1):
-            text = (seg or {}).get("text")
-            if isinstance(text, str) and text.strip():
-                out.append({"id": f"seg{i:04d}", "text": text.strip()})
+            if not isinstance(seg, dict):
+                continue
+            text = seg.get("text")
+            if not isinstance(text, str) or not text.strip():
+                continue
+            entry = {"segment_id": str(seg.get("segment_id") or f"s{i:04d}").strip(),
+                     "text": text.strip()}
+            for key in ("start_ms", "end_ms", "paragraph_id", "line_no"):
+                if seg.get(key) is not None:
+                    entry[key] = seg[key]
+            out.append(entry)
         return out
     return []
 
 
-def _claims_of(db: Session, store: ObjectStore, item: Item) -> list[dict]:
-    """已有单篇提炼观点：只作为候选启发，正文仍以固定片段为准。"""
+def _hints_of(db: Session, store: ObjectStore, item: Item) -> list[str]:
+    """该条目已有 v3 提炼里的观点与建议：只作组织线索，正文仍以固定片段为准。
+
+    只认 `content.json`（docs/24 §5）：旧 `analysis.json` 的逐观点编号已退出协议，
+    不再从这里把 `c0001` 之类的标识带回模型。
+    """
     rows = list(db.query(StoredFile).filter(
-        StoredFile.item_id == item.id, StoredFile.relative_path == "analysis.json"
+        StoredFile.item_id == item.id, StoredFile.relative_path == "content.json"
     ).order_by(StoredFile.created_at.desc(), StoredFile.id).all())
     for f in rows:
         try:
             doc = _read_json(store, f.storage_key)
         except Exception:
             continue
-        if doc.get("source_revision") != item.source_revision:
+        if not isinstance(doc, dict):
             continue
+        provenance = doc.get("provenance") or {}
+        revisions = {(r.get("item_id"), r.get("source_revision"))
+                     for r in provenance.get("source_revisions") or [] if isinstance(r, dict)}
+        if (item.id, item.source_revision) not in revisions:
+            continue  # 不是这一版原文的提炼：不能拿别的版本的观点冒充候选启发
         return [
-            {"id": f"c{i:04d}", "text": (p or {}).get("text", "").strip()[:2000],
-             "segment_ids": [s for s in (p or {}).get("evidence_ids") or [] if isinstance(s, str)]}
-            for i, p in enumerate(doc.get("key_points") or [], start=1)
-            if isinstance(p, dict) and (p.get("text") or "").strip()
-        ]
+            str(block.get("text")).strip()[:2000]
+            for section in doc.get("sections") or [] if isinstance(section, dict)
+            for block in section.get("blocks") or []
+            if isinstance(block, dict) and block.get("kind") in ("claim", "suggestion")
+            and isinstance(block.get("text"), str) and block.get("text").strip()
+        ][:20]
     return []
 
 
@@ -252,12 +283,12 @@ def prepare_inputs(session_factory, plan: SharePlan) -> None:
                 continue
             total_chars += sum(len(s["text"]) for s in segments)
             specs.append(sharing.SourceSpec(
-                source_key=f"s{len(specs) + 1}", item_id=item.id,
+                item_id=item.id,
                 source_revision=item.source_revision, bundle_revision=item.bundle_revision,
                 title=meta.get("title") or "未命名材料", coverage=meta.get("coverage") or "unknown",
                 author=meta.get("author"), canonical_url=meta.get("canonical_url"),
                 source_label=meta.get("source_label"), segments=segments,
-                claims=_claims_of(db, store, item), assets=_assets_of(db, item),
+                hints=_hints_of(db, store, item), assets=_assets_of(db, item),
             ))
         if missing:
             run.checkpoint_json = {**(run.checkpoint_json or {}), "missing_items": missing}
@@ -274,8 +305,17 @@ def prepare_inputs(session_factory, plan: SharePlan) -> None:
         specs = specs[: settings.share_max_source_chunks]
         pack = sharing.build_source_pack(specs)
         manifest = sharing.build_source_pack(specs, include_storage=True)
+        ref_table = content_v3.build_ref_table(sharing.materials_of(pack))
+        if not ref_table.keys():
+            # 片段号对不上来源真实 segments.json 就没法绑定引用：宁可在读材料这一步
+            # 就停下，也不让模型在没有原文的清单上写「有依据」的观点
+            repo.finish_run(db, run, "failed", reason_code="material_unreadable",
+                            detail="所选材料的正文片段无法建立引用表，请重新提取后再创建作品")
+            db.commit()
+            return
         pack_sha, pack_key, _ = store.put_bytes(canonical(pack))
         manifest_sha, manifest_key, manifest_bytes = store.put_bytes(canonical(manifest))
+        _, ref_table_key, _ = store.put_bytes(canonical(ref_table.to_json()))
         repo.register_artifact(db, store, user_id=plan.user_id, work_id=plan.work_id, run_id=run.id,
                               role="input_snapshot", data=canonical(manifest),
                               storage_key=manifest_key, sha256=manifest_sha)
@@ -285,12 +325,15 @@ def prepare_inputs(session_factory, plan: SharePlan) -> None:
         run.prompt_version = sharing.PROMPT_VERSION
         run.recipe_hash = hashlib.sha256(sharing.SHARE_RECIPE_VERSION.encode()).hexdigest()[:16]
         run.checkpoint_json = {**(run.checkpoint_json or {}), "pack_storage_key": pack_key,
-                               "manifest_key": manifest_key, "source_chars": total_chars,
+                               "manifest_key": manifest_key, "ref_table_key": ref_table_key,
+                               "source_chars": total_chars,
                                "initial_request": run.request_text}
         run.stage = "clarifying"
         run.updated_at = utcnow()
         db.commit()
     plan.pack = pack
+    plan.ref_table = ref_table
+    plan.material_pack = sharing.material_pack_for_model(pack, ref_table)
     plan.checkpoint["pack_storage_key"] = pack_key
     plan.input_manifest_key = manifest_key
 
@@ -298,9 +341,37 @@ def prepare_inputs(session_factory, plan: SharePlan) -> None:
 # ---- 会话装配与模型调用 ----
 
 
+def _write_prefix(db, store: ObjectStore, plan: SharePlan, conv: ShareConversation, *,
+                  system: str, pack_text: str, reopen: bool = False) -> list[ConversationMessage]:
+    """序列化并登记这一轮的固定前缀；`reopen` 表示换到新的 context_epoch。"""
+    prefix = stable_prefix(system_prompt=system, pack_text=pack_text,
+                           initial_request=plan.request_text)
+    artifact = repo.register_artifact(
+        db, store, user_id=plan.user_id, work_id=plan.work_id, run_id=plan.run_id,
+        role="conversation_message",
+        data=canonical([m.as_request_message() for m in prefix]))
+    if reopen:
+        conv.context_epoch += 1
+    conv.prefix_artifact_key = artifact.storage_key
+    conv.prefix_hash = prefix_hash(prefix)
+    return prefix
+
+
+def _stored_prefix(store: ObjectStore, conv: ShareConversation) -> list[ConversationMessage]:
+    return [
+        ConversationMessage(role=item["role"], content=item["content"])
+        for item in json.loads(store.read_object(conv.prefix_artifact_key).decode("utf-8"))
+    ]
+
+
 def _conversation(session_factory, plan: SharePlan, purpose: str, *, system: str,
                   pack_text_value: str) -> tuple[ShareConversation, list[ConversationMessage]]:
-    """取（或建）会话并装配请求：固定前缀 + 原顺序历史；前缀只序列化一次后持久复用。"""
+    """取（或建）会话并装配请求：固定前缀 + 原顺序历史；前缀只序列化一次后持久复用。
+
+    固定 system 前缀变了（内容协议换代、`PROMPT_VERSION` 跟着升）时不能悄悄换前缀：
+    检测到漂移就开一个新的 context_epoch，旧 epoch 的历史与供应商缓存都不再续接
+    （docs/24 §9、docs/23 §7.3 末条）。
+    """
     with session_factory() as db:
         conv = db.query(ShareConversation).filter(
             ShareConversation.work_id == plan.work_id,
@@ -314,15 +385,14 @@ def _conversation(session_factory, plan: SharePlan, purpose: str, *, system: str
                 api_protocol=(profile.capabilities_json or {}).get("api_protocol", "openai-chat")
                 if profile else "openai-chat",
             )
-            prefix = stable_prefix(system_prompt=system, pack_text=pack_text_value,
-                                   initial_request=plan.request_text)
-            artifact = repo.register_artifact(
-                db, store, user_id=plan.user_id, work_id=plan.work_id, run_id=plan.run_id,
-                role="conversation_message",
-                data=canonical([m.as_request_message() for m in prefix]))
-            conv.prefix_artifact_key = artifact.storage_key
-            conv.prefix_hash = prefix_hash(prefix)
+            _write_prefix(db, store, plan, conv, system=system, pack_text=pack_text_value)
             db.commit()
+        prefix = _stored_prefix(store, conv)
+        if not prefix_matches(prefix, system_prompt=system, pack_text=pack_text_value):
+            _write_prefix(db, store, plan, conv, system=system, pack_text=pack_text_value,
+                          reopen=True)
+            db.commit()
+            prefix = _stored_prefix(store, conv)
         history = [
             ConversationMessage(
                 role=m.role,
@@ -330,10 +400,6 @@ def _conversation(session_factory, plan: SharePlan, purpose: str, *, system: str
                 metadata=m.protocol_metadata_json or {},
             )
             for m in repo.list_messages(db, plan.user_id, conv.id, context_epoch=conv.context_epoch)
-        ]
-        prefix = [
-            ConversationMessage(role=item["role"], content=item["content"])
-            for item in json.loads(store.read_object(conv.prefix_artifact_key).decode("utf-8"))
         ]
         db.refresh(conv)
         return conv, request_messages(prefix=prefix, history=[h for h in history if h.role != "system"])
@@ -454,7 +520,7 @@ def clarify(session_factory, plan: SharePlan) -> None:
     round_no = int(plan.checkpoint.get("clarify_round", 0)) + 1
     conv, messages = _conversation(session_factory, plan, "content",
                                    system=share_prompts.CONTENT_SYSTEM,
-                                   pack_text_value=share_prompts.pack_text(plan.pack))
+                                   pack_text_value=share_prompts.material_text(plan.material_pack))
     tail = share_prompts.clarification_tail(
         instructions=plan.request_text,
         pack_summary=share_prompts.pack_summary_for_clarification(plan.pack),
@@ -521,23 +587,44 @@ def clarify(session_factory, plan: SharePlan) -> None:
         db.commit()
 
 
-# ---- 阶段 3：整合稿 ----
+# ---- 阶段 3：整合稿（ContentDocument v3）----
 
 
 def synthesize(session_factory, plan: SharePlan) -> None:
+    """内容阶段：模型只写 v3 内容主体，程序负责组装与分配公开锚点。
+
+    发布门（docs/24 §4、§9）：整篇草稿组装成 `complete` 且每条引用都能对回本轮固定
+    快照，才继续做页面；`partial`/`failed` 一律不产出可发布版本，已读材料保持原样。
+    """
     conv, messages = _conversation(session_factory, plan, "content",
                                    system=share_prompts.CONTENT_SYSTEM,
-                                   pack_text_value=share_prompts.pack_text(plan.pack))
+                                   pack_text_value=share_prompts.material_text(plan.material_pack))
     tail = share_prompts.synthesis_tail(brief=plan.brief, provenance=plan.provenance,
-                                        confirmed_version=plan.confirmed_brief_version)
+                                        confirmed_version=plan.confirmed_brief_version,
+                                        available_refs=(plan.ref_table.keys() if plan.ref_table else []))
     request = request_messages(prefix=messages, history=[],
                               tail=[ConversationMessage(role="user", content=tail)])
     try:
-        doc, _raw = call_model(session_factory, plan, step_key="synthesis", messages=request,
-                               conv=conv)
-        errors = sharing.validate_synthesis(doc, pack=plan.pack)
-        if errors:
-            raise OutputInvalid("synthesis", errors)
+        output, _raw = call_model(session_factory, plan, step_key="synthesis", messages=request,
+                                  conv=conv)
+        document, report = sharing.assemble_synthesis(
+            output, pack=plan.pack, ref_table=plan.ref_table, run_id=plan.run_id)
+        if sharing.completeness_state(report) != "complete":
+            # 缺口（无效引用、非逐字摘录）由模型自己修最直接：带着诊断再问一次
+            repair_request = request_messages(
+                prefix=messages, history=[],
+                tail=[
+                    ConversationMessage(role="user", content=tail),
+                    ConversationMessage(role="assistant", content=json.dumps(output, ensure_ascii=False)),
+                    ConversationMessage(
+                        role="user",
+                        content=share_prompts.synthesis_repair_tail(sharing.assembly_problems(report))),
+                ])
+            output, _raw = call_model(session_factory, plan, step_key="synthesis-fix",
+                                      messages=repair_request, conv=conv)
+            document, report = sharing.assemble_synthesis(
+                output, pack=plan.pack, ref_table=plan.ref_table, run_id=plan.run_id,
+                repair_calls=1)
     except ProviderAuthFailed as exc:
         _wait(session_factory, plan, state="waiting_key", stage="synthesizing",
               reason="key_rejected", detail=str(exc))
@@ -551,17 +638,33 @@ def synthesize(session_factory, plan: SharePlan) -> None:
     except (OutputInvalid, ProviderInvalidRequest) as exc:
         _finish(session_factory, plan, "failed", reason="model_output_invalid", detail=str(exc))
         return
-    doc.setdefault("schema_version", sharing.SCHEMA_VERSION)
+
+    state = sharing.completeness_state(report)
+    _, problems = (sharing.public_references(document, plan.pack) if document is not None
+                   else ([], ["模型没有给出可用的内容主体"]))
+    if document is None or problems or state != "complete":
+        reason = ("source_mismatch" if problems
+                  else "partial_result" if state == "partial" else "model_output_invalid")
+        detail = "；".join(sharing.assembly_problems(report) + problems)[:2000]
+        _finish(session_factory, plan, "failed", reason=reason,
+                detail=detail or "整合内容没有通过核实")
+        return
+
     store = ObjectStore()
-    _append_assistant(session_factory, plan, conv.id, json.dumps(doc, ensure_ascii=False, sort_keys=True))
+    _append_assistant(session_factory, plan, conv.id, json.dumps(output, ensure_ascii=False,
+                                                                sort_keys=True))
+    extras = dict(report.task_extras or {})
+    extras["material_usage"] = sharing.usage_notes(task_extras=extras, ref_table=plan.ref_table,
+                                                   document=document, pack=plan.pack)
     with session_factory() as db:
         run = repo.submit_with_lease(db, plan.run_id, plan.lease_token)
         if run is None:
             return
         key = repo.register_artifact(db, store, user_id=plan.user_id, work_id=plan.work_id,
                                      run_id=run.id, role="synthesis",
-                                     data=canonical(doc)).storage_key
-        run.checkpoint_json = {**(run.checkpoint_json or {}), "synthesis_key": key}
+                                     data=canonical(document)).storage_key
+        run.checkpoint_json = {**(run.checkpoint_json or {}), "synthesis_key": key,
+                               "content_extras": extras}
         run.stage = "generating"
         run.updated_at = utcnow()
         db.commit()
@@ -571,16 +674,25 @@ def synthesize(session_factory, plan: SharePlan) -> None:
 
 
 def generate_page(session_factory, plan: SharePlan, *, repair: bool = False) -> None:
+    """页面阶段：交给代码会话的是已组装内容与程序生成的公开引用清单。"""
     settings = plan.settings
-    manifest = _read_json(ObjectStore(), plan.checkpoint.get("manifest_key") or plan.input_manifest_key)
+    store = ObjectStore()
+    manifest = _read_json(store, plan.checkpoint.get("manifest_key") or plan.input_manifest_key)
     assets = [{"asset_id": a["asset_id"], "mime": a["mime"], "sha256": a["sha256"],
                "storage_key": a.get("storage_key")}
               for s in manifest.get("sources") or [] for a in s.get("assets") or []]
-    # 发给模型的素材目录一律剥掉 storage_key（domain/sharing.py 的口径：模型只用逻辑
-    # 标识）。原表留在 checkpoint["asset_catalog"] 里，交接 runner 时还要靠它读对象。
+    # 发给模型的素材目录一律剥掉 storage_key（模型只用逻辑标识，不能决定对象路径）。
+    # 原表留在 checkpoint["asset_catalog"] 里，交接 runner 时还要靠它读对象。
     assets_for_model = [{k: v for k, v in a.items() if k != "storage_key"} for a in assets]
-    synthesis = _read_json(ObjectStore(), plan.checkpoint["synthesis_key"])
-    references = sharing.public_reference_view(synthesis, plan.pack)
+    document = _read_json(store, plan.checkpoint["synthesis_key"])
+    content_errors = content_v3.validate_content_document(document)
+    references, problems = sharing.public_references(document, plan.pack)
+    if content_errors or problems:
+        # 内容记录与固定快照对不上就不再往下做页面：宁可不产出，也不公开错引用
+        _finish(session_factory, plan, "failed", reason="content_invalid",
+                detail="；".join(content_errors + problems)[:2000])
+        return
+    extras = plan.checkpoint.get("content_extras") or {}
     runbook = share_prompts.runbook_text(runtime_manifest(settings))
     conv, messages = _conversation(
         session_factory, plan, "code", system=share_prompts.code_system(runbook),
@@ -593,9 +705,12 @@ def generate_page(session_factory, plan: SharePlan, *, repair: bool = False) -> 
             source=plan.checkpoint.get("page_source") or {})
         step = f"repair-{plan.repair_count}"
     else:
-        tail = share_prompts.code_tail(synthesis=synthesis, asset_catalog=assets_for_model,
-                                       reference_catalog=references, runbook=runbook,
-                                       instructions=plan.request_text)
+        tail = share_prompts.code_tail(
+            content=sharing.page_content_view(document), references=references,
+            reader_goal=str(extras.get("reader_goal") or ""),
+            visualization_intent=str(extras.get("visualization_intent") or ""),
+            material_usage=list(extras.get("material_usage") or []),
+            asset_catalog=assets_for_model, runbook=runbook, instructions=plan.request_text)
         step = "page_source"
     request = request_messages(prefix=messages, history=[],
                               tail=[ConversationMessage(role="user", content=tail)])
@@ -623,7 +738,6 @@ def generate_page(session_factory, plan: SharePlan, *, repair: bool = False) -> 
     except (OutputInvalid, ProviderInvalidRequest) as exc:
         _after_failed_build(session_factory, plan, errors=getattr(exc, "errors", [str(exc)]))
         return
-    store = ObjectStore()
     _append_assistant(session_factory, plan, conv.id, canonical(doc))
     with session_factory() as db:
         run = repo.submit_with_lease(db, plan.run_id, plan.lease_token)
@@ -635,15 +749,16 @@ def generate_page(session_factory, plan: SharePlan, *, repair: bool = False) -> 
         run.checkpoint_json = {**(run.checkpoint_json or {}), "page_source_key": key,
                                "page_source": doc, "public_references": references,
                                "asset_catalog": assets,
-                               "keep": _keep_notes(synthesis, references)}
+                               "keep": _keep_notes(document, references)}
         run.stage = "packaging"
         run.updated_at = utcnow()
         db.commit()
     handoff_to_runner(session_factory, plan)
 
 
-def _keep_notes(synthesis: dict, references: list[dict]) -> list[str]:
-    notes = [f"章节：{s.get('heading')}" for s in synthesis.get("sections") or []][:12]
+def _keep_notes(document: dict, references: list[dict]) -> list[str]:
+    """修复时必须保留的东西：章节与公开来源条目不能被为了消除报错而删掉。"""
+    notes = [f"章节：{s.get('heading')}" for s in document.get("sections") or []][:12]
     notes.append(f"公开来源 {len(references)} 条")
     return notes
 
@@ -723,15 +838,17 @@ def handoff_to_runner(session_factory, plan: SharePlan) -> None:
             asset_entries.append({"asset_id": asset["asset_id"], "file": f"assets/{name}",
                                   "mime": asset["mime"], "sha256": asset["sha256"],
                                   "bytes": len(data)})
-        synthesis = _read_json(store, checkpoint["synthesis_key"])
+        document = _read_json(store, checkpoint["synthesis_key"])
+        references = checkpoint.get("public_references") or []
         envelope = {
             "schema_version": "1.0", "kind": "build_check", "task_id": task_id,
             "lease_id": runner_lease_id(run_id, task_id),
             "runtime_version": runtime_version(settings),
             "page_source": "input/page_source.json", "assets": asset_entries,
-            "references": checkpoint.get("public_references") or [],
-            "coverage_notes": sharing.coverage_notes(plan.pack),
-            "limitations": synthesis.get("limitations") or [],
+            "references": references,
+            # 覆盖说明之外，还要如实交代哪些来源没有可公开的链接（不指向私有 API）
+            "coverage_notes": sharing.coverage_notes(plan.pack) + sharing.public_link_notes(references),
+            "limitations": document.get("limitations") or [],
             "revision_label": f"草稿 {work_id[:6]}",
             "limits": {"max_html_bytes": settings.share_max_html_bytes},
             # 交给 runner 的两项自查边界：正文最少字符数（按材料规模给，不让空页面
@@ -1004,10 +1121,17 @@ def load_plan(session_factory, run_id: str, lease_token: str) -> SharePlan | Non
         checkpoint = dict(run.checkpoint_json or {})
         brief_doc = _read_json(store, run.brief_key) if run.brief_key else {}
         pack = _read_json(store, checkpoint["pack_storage_key"]) if checkpoint.get("pack_storage_key") else {}
+        # R 表跟任务固定持久化：同一会话的续接与修复始终用同一份引用绑定
+        ref_table = (content_v3.RefTable.from_json(_read_json(store, checkpoint["ref_table_key"]))
+                     if checkpoint.get("ref_table_key") else None)
+        if ref_table is None and pack:
+            ref_table = content_v3.build_ref_table(sharing.materials_of(pack))
         plan = SharePlan(
             run_id=run.id, lease_token=lease_token, user_id=run.user_id, work_id=run.work_id,
             stage=run.stage, profile_id=profile.id, endpoint=profile.endpoint, model=profile.model,
             capabilities=dict(profile.capabilities_json or {}), settings=settings, pack=pack,
+            ref_table=ref_table,
+            material_pack=(sharing.material_pack_for_model(pack, ref_table) if ref_table else {}),
             brief=brief_doc.get("brief") or {}, provenance=brief_doc.get("provenance") or {},
             checkpoint=checkpoint, request_text=run.request_text or "",
             confirmed_brief_version=run.confirmed_brief_version or run.brief_version or 0,

@@ -233,6 +233,63 @@ export class Suppression {
   }
 }
 
+// ---- 内容格式暂停记录（docs/24 §8） ----
+
+export interface FormatGateEntry {
+  item_id: string;
+  bundle_revision: number;
+  /** content_format_unsupported | content_file_missing | content_file_unparsable */
+  code: string;
+  format_version: string | null;
+  reason: string;
+  detected_at: string;
+}
+
+export interface FormatGateDoc {
+  items: Record<string, FormatGateEntry>;
+}
+
+/** 不支持的内容格式：该项暂停导入、不发成功回执，升级插件后下次同步自动续做。 */
+export class FormatGate {
+  private doc: FormatGateDoc | null = null;
+
+  constructor(private fs: FsLike, private file: string) {}
+
+  private async load(): Promise<FormatGateDoc> {
+    if (this.doc) return this.doc;
+    if (await this.fs.exists(this.file)) {
+      try {
+        this.doc = JSON.parse(await this.fs.read(this.file)) as FormatGateDoc;
+      } catch {
+        this.doc = { items: {} };
+      }
+    } else {
+      this.doc = { items: {} };
+    }
+    this.doc!.items ??= {};
+    return this.doc!;
+  }
+
+  async hold(entry: FormatGateEntry): Promise<void> {
+    const doc = await this.load();
+    doc.items[entry.item_id] = entry;
+    this.doc = doc;
+    await this.fs.write(this.file, JSON.stringify(doc, null, 2));
+  }
+
+  async release(itemId: string): Promise<void> {
+    const doc = await this.load();
+    if (!(itemId in doc.items)) return;
+    delete doc.items[itemId];
+    this.doc = doc;
+    await this.fs.write(this.file, JSON.stringify(doc, null, 2));
+  }
+
+  async list(): Promise<FormatGateEntry[]> {
+    return Object.values((await this.load()).items);
+  }
+}
+
 // ---- 通用 JSON 存储（任务、候选、索引） ----
 
 export class JsonStore<T> {

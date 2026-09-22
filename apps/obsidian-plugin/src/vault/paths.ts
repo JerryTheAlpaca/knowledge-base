@@ -79,21 +79,70 @@ function dateFolder(folder: string, iso: string | null | undefined): { dir: stri
   return { dir: `${folder}/${y}/${m}`, date: d };
 }
 
-/** Source 笔记路径：01 Sources/YYYY/MM/YYYY-MM-DD 标题--<item_id>.md（docs/08 §2）。 */
-export function sourceNotePath(sourcesFolder: string, capturedAt: string | null | undefined, title: string | null, itemId: string): string {
+/** Source 笔记的目标路径：`01 Sources/YYYY/MM/YYYY-MM-DD 标题.md`（docs/24 §8；无 item_id 后缀）。
+ *
+ * 这里只给**期望名**；同目录同名冲突由 `resolveAvailableNotePath` 追加 `（2）`，
+ * 真实路径登记在文档索引里，不按目录重新猜。
+ */
+export function sourceNotePath(sourcesFolder: string, capturedAt: string | null | undefined, title: string | null): string {
   const { dir, date } = dateFolder(sourcesFolder, capturedAt);
-  const name = `${date} ${sanitizeTitle(title ?? "")}--${itemId}`;
-  return `${dir}/${name}.md`.replace(/\\/g, "/");
+  return `${dir}/${noteStem(date, title)}.md`.replace(/\\/g, "/");
 }
 
-/** Digest 笔记路径：02 Digests/YYYY/MM/YYYY-MM-DD 标题--<item_id>.md（docs/08 §2）。
+/** Digest 笔记目标路径：`02 Digests/YYYY/MM/YYYY-MM-DD 标题.md`。
  *
- * 与 Source 同日期同标题，仅目录不同；`kb_id` 为 dig-<item_id> 以区分。
+ * 与 Source 同日期同标题，仅目录不同；`kb_id` 为 `dig-<item_id>` 以区分。
  */
-export function digestNotePath(digestsFolder: string, capturedAt: string | null | undefined, title: string | null, itemId: string): string {
+export function digestNotePath(digestsFolder: string, capturedAt: string | null | undefined, title: string | null): string {
   const { dir, date } = dateFolder(digestsFolder, capturedAt);
-  const name = `${date} ${sanitizeTitle(title ?? "")}--${itemId}`;
-  return `${dir}/${name}.md`.replace(/\\/g, "/");
+  return `${dir}/${noteStem(date, title)}.md`.replace(/\\/g, "/");
+}
+
+function noteStem(date: string, title: string | null): string {
+  return `${date} ${sanitizeTitle(title ?? "")}`;
+}
+
+/** 同目录同名冲突规则：追加全角括号序号 `（2）`、`（3）`（docs/23 §7.2）。 */
+export function withConflictSuffix(path: string, n: number): string {
+  if (n < 2) return path;
+  const idx = path.lastIndexOf("/");
+  const dir = idx === -1 ? "" : path.slice(0, idx + 1);
+  const base = idx === -1 ? path : path.slice(idx + 1);
+  const dot = base.lastIndexOf(".md");
+  const stem = dot > 0 ? base.slice(0, dot) : base;
+  const ext = dot > 0 ? base.slice(dot) : ".md";
+  return `${dir}${stem}（${n}）${ext}`;
+}
+
+/**
+ * 为一个新笔记挑选未被占用的路径：期望名被占（文件或索引里已登记给别的文档）时
+ * 依次尝试 `（2）`、`（3）`。`taken` 必须同时检查文件系统与文档索引，避免为同一
+ * `kb_id` 造出第二份可写副本（docs/23 §7.2、§8.3 第 5 条）。
+ */
+export async function resolveAvailableNotePath(
+  desired: string,
+  taken: (path: string) => Promise<boolean>,
+  maxAttempts = 50,
+): Promise<string> {
+  if (!(await taken(desired))) return desired;
+  for (let n = 2; n <= maxAttempts + 1; n++) {
+    const candidate = withConflictSuffix(desired, n);
+    if (!(await taken(candidate))) return candidate;
+  }
+  // 极端同名堆积：退回带时间戳的确定唯一名，仍按同一文档身份登记
+  return withConflictSuffix(desired, maxAttempts + 1);
+}
+
+/** 从可读文件名还原展示标题：去掉 `YYYY-MM-DD ` 前缀与 `（n）` 冲突后缀。 */
+export function noteTitleFromPath(path: string): string {
+  const base = (path.split("/").pop() ?? path).replace(/\.md$/, "");
+  return base.replace(/^\d{4}-\d{2}-\d{2}\s+/, "").replace(/（\d+）$/, "");
+}
+
+/** 文件名里的采集日期（旧库迁移时用来推断目录；没有则 null）。 */
+export function noteDateFromPath(path: string): string | null {
+  const base = path.split("/").pop() ?? path;
+  return /^\d{4}-\d{2}-\d{2}/.exec(base)?.[0] ?? null;
 }
 
 /** Source 附件目录：01 Sources/_assets/<item_id>/source-000001/（docs/08 §2）。 */
@@ -144,6 +193,21 @@ export function proposalsDir(systemFolder: string): string {
 /** 本地知识索引：99 System/KnowledgeInbox/knowledge-index.json（docs/08 §2、§5）。 */
 export function knowledgeIndexPath(systemFolder: string): string {
   return `${systemFolder}/KnowledgeInbox/knowledge-index.json`;
+}
+
+/** 文档索引（ID→路径）：99 System/KnowledgeInbox/index/documents.json（docs/24 §8）。 */
+export function documentsIndexPath(systemFolder: string): string {
+  return `${systemFolder}/KnowledgeInbox/index/documents.json`;
+}
+
+/** 旧版内容迁移与文件重命名记录：99 System/KnowledgeInbox/migrations/（docs/23 §8.2、§8.3）。 */
+export function renameRecordPath(systemFolder: string, stamp: string): string {
+  return `${migrationDir(systemFolder)}/rename-${stamp}.json`;
+}
+
+/** 主题引用表快照：随正文版本一起保存，回滚时成对恢复（docs/23 §6.4 第 7 条）。 */
+export function knowledgeRefsFileName(revision: number): string {
+  return `refs-r${String(revision).padStart(6, "0")}.json`;
 }
 
 /** 生成稳定的 Knowledge `kb_id`：kn-<slug>；含非 ASCII 时附稳定短哈希。

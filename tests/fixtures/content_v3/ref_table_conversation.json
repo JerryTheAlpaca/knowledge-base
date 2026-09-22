@@ -1,0 +1,40 @@
+{
+  "R1": {
+    "item_id": "itm-55555555-5555-4555-8555-555555555555",
+    "source_revision": 1,
+    "segment_ids": [
+      "s0001",
+      "s0002"
+    ],
+    "text": "我想把提炼做成一次调用还是两步调用。\n建议先分两步：接收落盘，提炼另起任务。",
+    "locator": {
+      "kind": "paragraph",
+      "paragraph_id": "p0001"
+    }
+  },
+  "R2": {
+    "item_id": "itm-55555555-5555-4555-8555-555555555555",
+    "source_revision": 1,
+    "segment_ids": [
+      "s0003"
+    ],
+    "text": "接收环节不调模型，这条我采纳。",
+    "locator": {
+      "kind": "paragraph",
+      "paragraph_id": "p0002"
+    }
+  },
+  "R3": {
+    "item_id": "itm-55555555-5555-4555-8555-555555555555",
+    "source_revision": 1,
+    "segment_ids": [
+      "s0004",
+      "s0005"
+    ],
+    "text": "把摘要直接写回来源笔记的尝试被否掉了，会覆盖人工内容。\n部分结果什么时候能自动晋升，还没定。",
+    "locator": {
+      "kind": "paragraph",
+      "paragraph_id": "p0003"
+    }
+  }
+}

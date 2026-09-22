@@ -1,5 +1,6 @@
 /** 与服务端契约及本地整理契约对应的类型
- * （docs/02 §6.3、§10.1、§13；docs/08 §2、§3、§4–§8；apps/server/kbserver/api/routes_sync.py）。
+ * （docs/24 契约冻结；docs/23 方案；docs/02 §6.3、§10.1、§13；docs/08 §2、§3、§9；
+ * apps/server/kbserver/api/routes_sync.py）。
  */
 
 export interface KbFileEntry {
@@ -37,11 +38,96 @@ export interface KbManifest {
     recipe_version: string;
     result_file_id: string | null;
     source_revision: number;
+    /** v3：内容文档格式版本，只接受 "3.0"（docs/24 §5）。 */
+    format_version?: string | null;
+    /** v3：complete | partial | failed。 */
+    completeness?: string | null;
+    /** v3：content.json 的 file_id。 */
+    content_file_id?: string | null;
   };
   files: KbFileEntry[];
   missing_materials: string[];
   warnings: string[];
   expires_at: string;
+}
+
+// ---- ContentDocument v3（docs/24 §1–§4；Bundle 里的 content.json） ----
+
+/** 引用表条目：指向某条目某固定来源修订中的一段连续原文。 */
+export interface ContentRefV3 {
+  item_id: string;
+  source_revision: number;
+  segment_ids: string[];
+  source_text_hash: string;
+  locator?: ContentLocatorV3 | null;
+}
+
+/** 界面显示用的自然位置（禁止把 R1/e1/s0001 显示给用户）。 */
+export type ContentLocatorV3 =
+  | { kind: "time"; start_ms?: number | null; end_ms?: number | null }
+  | { kind: "paragraph"; paragraph_id?: string | number | null }
+  | { kind: "line"; line_no?: number | null };
+
+export type ContentBlockKindV3 = "claim" | "quote" | "suggestion" | "text";
+
+export interface ContentBlockV3 {
+  kind: ContentBlockKindV3;
+  text: string;
+  /** 文档内引用表键（e1、e2…），不是永久身份。 */
+  refs: string[];
+}
+
+export interface ContentSectionV3 {
+  heading: string;
+  blocks: ContentBlockV3[];
+}
+
+export interface CompletenessGapV3 {
+  code: string;
+  message: string;
+  refs?: string[];
+  segment_ids?: string[];
+  /** 受影响块位置：[sectionIndex, blockIndex]。 */
+  block?: number[];
+}
+
+/** 完整 / 部分 / 失败（docs/24 §4）。 */
+export interface CompletenessV3 {
+  state: "complete" | "partial" | "failed";
+  missing_stages: string[];
+  gaps: CompletenessGapV3[];
+  dropped_blocks: number;
+  repair_calls: number;
+}
+
+export interface ContentProvenanceV3 {
+  recipe_version: string;
+  task: string;
+  input_documents: Array<{ document_id: string; kind: string; revision: number }>;
+  source_revisions: Array<{ item_id: string; source_revision: number }>;
+}
+
+export interface ContentDocumentV3 {
+  format_version: string;
+  document_id: string;
+  kind: string;
+  revision: number;
+  created_at: string;
+  title: string;
+  summary: string;
+  sections: ContentSectionV3[];
+  references: Record<string, ContentRefV3>;
+  limitations: string[];
+  completeness: CompletenessV3;
+  provenance: ContentProvenanceV3;
+}
+
+/** 模型返回的内容主体：只有 title/summary/sections/limitations（docs/24 §3）。 */
+export interface ContentSubjectV3 {
+  title: string;
+  summary: string;
+  sections: ContentSectionV3[];
+  limitations: string[];
 }
 
 export interface KbEvent {
@@ -152,6 +238,8 @@ export interface EngineStatus {
   suppressedCount: number;
   /** 事件积压超过单轮页数上限，还有更多待拉取（下次同步继续，审查 C-33）。 */
   moreEvents?: boolean;
+  /** 因内容格式不受支持而暂停导入的条目数（docs/24 §8；不发回执、不落空白笔记）。 */
+  pausedForUpgrade?: number;
 }
 
 // ---- 本地整理模型配置（docs/08 §8.2） ----
@@ -181,7 +269,7 @@ export interface LocalModelConfig {
   awaitingSync: boolean;
 }
 
-/** 整理任务状态（docs/08 §8.1、§7.2）。 */
+/** 整理任务状态（docs/24 §8；docs/23 §6.1）。 */
 export type OrganizeTaskState =
   | "pending" | "running" | "ready" | "accepted" | "applied"
   | "kept_digest" | "skipped" | "deferred" | "failed" | "unknown_outcome" | "stale";
@@ -190,13 +278,17 @@ export type OrganizeTaskState =
 export interface OrganizeTask {
   task_id: string;
   item_id: string;
-  /** 输入 Digest 的路径与版本基线。 */
+  /** 输入 Digest 的路径与内容基线。 */
   digest_path: string;
   digest_source_revision: number;
+  /** Digest 内容文档身份（`dig-<item_id>`）与版本，用于引用固定原文。 */
+  digest_document_id: string | null;
+  digest_revision: number | null;
+  /** 输入内容文档（content.json 原文）的 SHA-256：真实基线，由程序持有。 */
   digest_cloud_hash: string;
-  /** 目标主题（可能为 null：需要新建节点建议）。 */
+  /** 目标主题（可能为 null：需要新建主题建议）。 */
   target_knowledge_id: string | null;
-  /** 融合时读取的主题正文基线哈希（写入前校验，docs/08 §7.2 第 4 条）。 */
+  /** 融合时读取的主题正文基线哈希（写入前校验，docs/23 §6.4 第 2 条）。 */
   base_hash: string | null;
   state: OrganizeTaskState;
   /** 固定的模型配置版本（Key 不写进任务文件）。 */
@@ -212,48 +304,44 @@ export interface OrganizeTask {
   proposal_path: string | null;
 }
 
-/** 观点级晋升判断（docs/08 §4）。 */
-export interface PromotionDecision {
-  claim_id: string;
-  decision: "review" | "keep_digest" | "deferred" | "skipped";
-  target_knowledge_id: string | null;
-  /** 无匹配主题时建议新建的节点。 */
-  new_topic: { name: string; scope: string } | null;
-  relation: "duplicate" | "supports" | "adds" | "revises" | "conflicts" | "none";
-  reason: string;
-  evidence_refs: string[];
-  /** 五个维度的离散等级与理由（docs/08 §4 表）。 */
-  dimensions: {
-    novelty: { level: string; reason: string };
-    utility: { level: string; reason: string };
-    credibility: { level: string; reason: string };
-    reusability: { level: string; reason: string };
-    increment: { level: string; reason: string };
-  };
-}
-
-/** 融合候选（docs/08 §7.1 输出契约）。 */
-export interface FusionProposal {
+/** 主题修改候选（docs/23 §6.2；取代旧的逐观点晋升候选）。 */
+export interface TopicProposal {
   proposal_id: string;
   task_id: string;
+  /** 候选协议版本；v3 主题候选固定写 3。 */
+  protocol: 3;
   knowledge_id: string | null;
   knowledge_title: string | null;
+  /** 新建主题时由模型给出的标题与范围建议。 */
+  new_topic: { name: string; scope: string } | null;
+  /** 程序持有的真实基线：主题管理区哈希与版本。 */
   base_hash: string;
-  proposed_managed_body: string;
-  added_claims: Array<Record<string, unknown>>;
-  updated_claims: Array<Record<string, unknown>>;
-  retired_claims: Array<Record<string, unknown>>;
-  evidence_map: Record<string, unknown>;
-  conflicts: Array<Record<string, unknown>>;
+  base_revision: number;
+  /** 基线正文（用于程序计算差异与回滚展示）。 */
+  baseline_body: string;
+  /** 候选内容主体（程序已组装的 v3 文档，含 e 引用表）；no_op 时为 null。 */
+  candidate_document: ContentDocumentV3 | null;
   change_summary: string;
-  promotion_decisions: PromotionDecision[];
-  /** 状态：ready（待采纳）/ accepted / applied / skipped / stale。 */
+  conflicts: Array<{ topic: string; description: string }>;
+  /** 目标选择阶段模型给的理由（为什么是这个主题 / 为什么新建）。 */
+  target_reason: string;
+  no_op: boolean;
+  /** 状态：ready（待采纳）/ accepted / applied / skipped / stale / no_op。 */
   state: string;
   created_at: string;
   applied_at: string | null;
   /** 应用时的主题版本（回滚依据）。 */
   applied_knowledge_revision: number | null;
-  no_op: boolean;
+}
+
+/** 旧版逐观点晋升候选：只读归档，不强行转换（docs/23 §8.2 末条）。 */
+export interface LegacyProposal {
+  proposal_id: string;
+  knowledge_id: string | null;
+  knowledge_title: string | null;
+  change_summary: string;
+  created_at: string;
+  state: string;
 }
 
 /** 本地知识索引条目（docs/08 §5；可重建，不随 Vault 同步）。 */
@@ -299,12 +387,14 @@ export interface KbSettings {
   autoPrepareOnSync: boolean;
   /** 每个 Vault 指定一台本地整理设备（docs/08 §7.2）。 */
   organizeDeviceId: string;
-  /** 本地分析 Schema 版本（docs/08 §9）。 */
-  analysisSchemaVersion: string;
-  /** 布局版本：旧库为 1，执行迁移后为 2。 */
+  /** 消费的内容文档格式版本（docs/24 §1）。 */
+  contentFormatVersion: string;
+  /** 布局版本：1/2 为带 item_id 后缀的旧文件名，3 起为可读文件名 + 文档索引。 */
   layoutVersion: number;
 }
 
-export const ANALYSIS_SCHEMA_VERSION = "2.0";
-export const LAYOUT_VERSION = 2;
-export const ORGANIZE_RULE_VERSION = "promotion-v1";
+export const CONTENT_FORMAT_VERSION = "3.0";
+/** Bundle 加工规则版本（docs/24 §5）；仅用于展示与诊断。 */
+export const CONTENT_RECIPE_VERSION = "content-v3-1";
+export const LAYOUT_VERSION = 3;
+export const ORGANIZE_RULE_VERSION = "topic-candidate-v3";

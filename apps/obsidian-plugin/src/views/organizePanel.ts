@@ -1,5 +1,5 @@
 /**
- * 整理知识库面板（docs/08 §8.1）。
+ * 整理知识库面板（docs/08 §8.1；docs/23 §6）。
  *
  * 布局与文档一致：
  * ```
@@ -9,17 +9,20 @@
  * [开始整理]  [暂停]
  *
  * 待处理 → 正在整理 → 待采纳 / 留在 Digest / 失败待重试
- * 候选：目标主题、认知增量、前后差异、原文依据
- * [采纳]  [编辑后采纳]  [跳过]
+ * 主题候选：目标主题、变化摘要、前后差异、原文依据、冲突
+ * [整篇采纳]  [按块选择采纳]  [跳过]  [回滚]
  * ```
  *
- * 后台准备不等于自动写入第三层；初期模型请求串行运行，暂停后不发新请求。
+ * 后台准备不等于自动写入第三层；模型请求串行运行，暂停后不发新请求。
+ * 部分采纳是真的按块勾选后由程序重组正文与引用；不提供把自由文本编辑回写成候选的
+ * “逐段合并”，也不假装它能可靠保留结构。
  */
 
-import { ItemView, Modal, Notice, Setting, WorkspaceLeaf } from "obsidian";
+import { ItemView, Modal, Notice, Setting, TFile, WorkspaceLeaf } from "obsidian";
 import type { OrganizeService } from "../knowledge/organize";
-import { renderDiff } from "../knowledge/organize";
-import type { FusionProposal, OrganizeTask } from "../types";
+import { itemIdOfDigestNote, renderDiff } from "../knowledge/organize";
+import { renderContentMarkdown } from "../vault/content";
+import type { ContentBlockKindV3, LegacyProposal, OrganizeTask, TopicProposal } from "../types";
 
 export const VIEW_TYPE_ORGANIZE = "knowledge-inbox-organize";
 
@@ -34,7 +37,16 @@ export interface OrganizePanelHooks {
   activeDigestPath: () => string | null;
   /** 手动选择范围：弹出候选列表。 */
   pickDigests: () => Promise<string[]>;
+  /** 读当前笔记正文以取 frontmatter 的 item_id（不靠文件名）。 */
+  readNote: (path: string) => Promise<string>;
 }
+
+const KIND_LABEL: Record<ContentBlockKindV3, string> = {
+  claim: "来源主张",
+  quote: "原文摘录",
+  suggestion: "AI 建议（待验证）",
+  text: "导语",
+};
 
 export class OrganizePanelView extends ItemView {
   constructor(leaf: WorkspaceLeaf, private hooks: OrganizePanelHooks) {
@@ -118,11 +130,30 @@ export class OrganizePanelView extends ItemView {
     // 候选
     const proposals = await service.listProposals();
     const pending = proposals.filter((p) => p.state === "ready");
-    c.createEl("h4", { text: `待采纳候选（${pending.length}）` });
+    c.createEl("h4", { text: `待采纳主题候选（${pending.length}）` });
+    c.createEl("p", {
+      text: "部分采纳是真的按块勾选，由程序重组正文并清除不再使用的引用，摘录重新做逐字校验；"
+        + "不提供把自由文本编辑回写成候选的逐段合并。",
+    }).addClass("kb-muted");
     if (!pending.length) {
       c.createEl("p", { text: "暂无待采纳候选。" }).addClass("kb-muted");
     }
     for (const p of pending) this.renderProposal(c, p);
+
+    const applied = proposals.filter((p) => p.state === "applied").slice(0, 5);
+    if (applied.length) {
+      c.createEl("h4", { text: "最近已应用（可回滚）" });
+      for (const p of applied) this.renderApplied(c, p);
+    }
+
+    const legacy = await service.listLegacyProposals();
+    if (legacy.length) {
+      c.createEl("h4", { text: `旧版逐观点候选（${legacy.length}，已归档只读）` });
+      c.createEl("p", {
+        text: "旧候选不强行转换成主题修改规则：这里仅供查看，需要新的修改请基于当前材料重新生成。",
+      }).addClass("kb-muted");
+      for (const item of legacy.slice(0, 10)) this.renderLegacy(c, item);
+    }
   }
 
   private renderTask(host: HTMLElement, task: OrganizeTask): void {
@@ -138,51 +169,69 @@ export class OrganizePanelView extends ItemView {
     }
   }
 
-  private renderProposal(host: HTMLElement, p: FusionProposal): void {
+  private renderProposal(host: HTMLElement, p: TopicProposal): void {
     const box = host.createEl("div");
     box.addClass("kb-list-row", "kb-list-row-roomy");
     box.createEl("strong", { text: p.knowledge_title ?? "（新建主题）" });
-    if (p.no_op) box.createEl("span", { text: " · 无变化" });
+    if (p.no_op) box.createEl("span", { text: " · 判定无需修改" });
     box.createEl("div", { text: `变化：${p.change_summary || "—"}` });
-
-    const increments = p.promotion_decisions.filter((d) => d.decision === "review");
-    if (increments.length) {
-      const ul = box.createEl("ul");
-      for (const d of increments) {
-        ul.createEl("li", {
-          text: `${d.claim_id}（${d.dimensions.increment.level}）：${d.reason}`,
-        });
+    if (p.target_reason) box.createEl("div", { text: `选择该主题的原因：${p.target_reason}` }).addClass("kb-muted");
+    const doc = p.candidate_document;
+    if (doc) {
+      const blocks = doc.sections.reduce((n, s) => n + s.blocks.length, 0);
+      box.createEl("div", { text: `候选内容 ${doc.sections.length} 节 / ${blocks} 块，依据 ${Object.keys(doc.references).length} 条原文` });
+      if (doc.completeness.state !== "complete") {
+        box.createEl("div", { text: `注意：候选为部分结果（丢弃 ${doc.completeness.dropped_blocks} 块）` });
       }
     }
     if (p.conflicts.length) {
-      box.createEl("div", { text: `冲突 ${p.conflicts.length} 项（保留各自依据，不自动平均）` });
-    }
-    if (p.retired_claims.length) {
-      box.createEl("div", { text: `退休观点 ${p.retired_claims.length} 条（含取代说明）` });
+      const ul = box.createEl("ul");
+      for (const conflict of p.conflicts) {
+        ul.createEl("li", { text: `${conflict.topic}：${conflict.description}` });
+      }
     }
 
     const actions = box.createEl("div");
     actions.addClass("kb-actions");
 
-    const accept = actions.createEl("button", { text: "采纳" });
-    accept.addClass("kb-btn", "mod-cta");
-    accept.addEventListener("click", () => void this.accept(p, null));
+    if (doc) {
+      const accept = actions.createEl("button", { text: "整篇采纳" });
+      accept.addClass("kb-btn", "mod-cta");
+      accept.addEventListener("click", () => void this.accept(p));
 
-    const edit = actions.createEl("button", { text: "编辑后采纳" });
-    edit.addClass("kb-btn");
-    edit.addEventListener("click", () => {
-      new EditProposalModal(this.app, p, (body) => void this.accept(p, body)).open();
-    });
+      const partial = actions.createEl("button", { text: "按块选择采纳" });
+      partial.addClass("kb-btn");
+      partial.addEventListener("click", () => {
+        new BlockSelectionModal(this.app, p, (keep) => void this.accept(p, keep)).open();
+      });
+    }
 
     const diff = actions.createEl("button", { text: "查看差异" });
     diff.addClass("kb-btn");
     diff.addEventListener("click", () => {
-      new DiffModal(this.app, p).open();
+      new CandidateDiffModal(this.app, p).open();
     });
 
     const skip = actions.createEl("button", { text: "跳过" });
     skip.addClass("kb-btn");
     skip.addEventListener("click", () => void this.skip(p));
+  }
+
+  private renderApplied(host: HTMLElement, p: TopicProposal): void {
+    const row = host.createEl("div");
+    row.addClass("kb-list-row");
+    row.createEl("div", { text: `${p.knowledge_title ?? "（新建主题）"} · rev ${p.applied_knowledge_revision ?? "?"}` });
+    const btn = row.createEl("button", { text: "回滚到上一版" });
+    btn.addClass("kb-btn");
+    btn.addEventListener("click", () => void this.rollback(p));
+  }
+
+  private renderLegacy(host: HTMLElement, item: LegacyProposal): void {
+    const row = host.createEl("div");
+    row.addClass("kb-list-row");
+    row.createEl("div", {
+      text: `${item.knowledge_title ?? item.knowledge_id ?? "（旧候选）"} · ${item.state} · ${item.change_summary || "—"}`,
+    });
   }
 
   private async run(btn: HTMLButtonElement): Promise<void> {
@@ -214,13 +263,14 @@ export class OrganizePanelView extends ItemView {
       new Notice("当前笔记不是 02 Digests 下的 Digest，请先打开一篇 Digest。");
       return;
     }
-    const itemId = /--([A-Za-z0-9_-]+)\.md$/.exec(path)?.[1];
+    // 身份在 frontmatter：文件名已是可读标题，不再从名字里解析 item_id
+    const itemId = itemIdOfDigestNote(await this.hooks.readNote(path));
     if (!itemId) {
-      new Notice("无法从文件名解析 item_id。");
+      new Notice("当前笔记缺少 kb_item_id，无法加入整理队列。");
       return;
     }
-    await this.hooks.service().enqueue(itemId, path);
-    new Notice("已加入整理队列。");
+    const task = await this.hooks.service().enqueue(itemId, path);
+    new Notice(task ? "已加入整理队列。" : "该 Digest 没有可整理的 v3 内容文档。");
     await this.render();
   }
 
@@ -230,9 +280,9 @@ export class OrganizePanelView extends ItemView {
     await this.render();
   }
 
-  private async accept(p: FusionProposal, editedBody: string | null): Promise<void> {
+  private async accept(p: TopicProposal, keep?: boolean[][]): Promise<void> {
     try {
-      const res = await this.hooks.service().accept(p.proposal_id, editedBody ?? undefined);
+      const res = await this.hooks.service().accept(p.proposal_id, { keep });
       new Notice(res.note, res.applied ? 6000 : 8000);
       await this.hooks.refreshProposalIndex();
     } catch (err) {
@@ -241,35 +291,43 @@ export class OrganizePanelView extends ItemView {
     await this.render();
   }
 
-  private async skip(p: FusionProposal): Promise<void> {
+  private async skip(p: TopicProposal): Promise<void> {
     await this.hooks.service().skip(p.proposal_id);
     await this.hooks.refreshProposalIndex();
     await this.render();
   }
+
+  private async rollback(p: TopicProposal): Promise<void> {
+    const res = await this.hooks.service().rollback(p.proposal_id);
+    new Notice(res.note + (res.diff ? `
+${res.diff.slice(0, 200)}` : ""), 8000);
+    await this.render();
+  }
 }
 
-/** 「编辑后采纳」：允许在写入前修改替换稿。 */
-class EditProposalModal extends Modal {
-  private value: string;
-  constructor(app: ConstructorParameters<typeof Modal>[0], private proposal: FusionProposal,
-              private onSubmit: (body: string) => void) {
+/** 差异预览：程序计算的正文新增／改动／删除（模型漏掉旧内容时删除会显式出现）。 */
+class CandidateDiffModal extends Modal {
+  constructor(app: ConstructorParameters<typeof Modal>[0], private proposal: TopicProposal) {
     super(app);
-    this.value = proposal.proposed_managed_body;
   }
 
   onOpen(): void {
     const { contentEl } = this;
-    contentEl.createEl("h3", { text: `编辑后采纳：${this.proposal.knowledge_title ?? "新建主题"}` });
-    const ta = contentEl.createEl("textarea");
-    ta.value = this.value;
-    ta.addClass("kb-edit-body");
-    ta.addEventListener("input", () => { this.value = ta.value; });
-    new Setting(contentEl)
-      .addButton((b) => b.setButtonText("确认采纳").setCta().onClick(() => {
-        this.close();
-        this.onSubmit(this.value);
-      }))
-      .addButton((b) => b.setButtonText("取消").onClick(() => this.close()));
+    contentEl.createEl("h3", { text: `主题修改候选：${this.proposal.knowledge_title ?? "新建主题"}` });
+    contentEl.createEl("p", { text: this.proposal.change_summary || "—" });
+    const after = this.proposal.candidate_document
+      ? renderContentMarkdown(this.proposal.candidate_document, { hideCitations: true })
+      : "";
+    const diff = renderDiff(this.proposal.baseline_body, after);
+    const pre = contentEl.createEl("pre");
+    pre.setText(diff || "（无内容变化）");
+    pre.addClass("kb-diff-pre");
+    if (this.proposal.conflicts.length) {
+      contentEl.createEl("h4", { text: "冲突与未解决的问题" });
+      for (const c of this.proposal.conflicts) {
+        contentEl.createEl("p", { text: `${c.topic}：${c.description}` });
+      }
+    }
   }
 
   onClose(): void {
@@ -277,24 +335,41 @@ class EditProposalModal extends Modal {
   }
 }
 
-/** 差异预览：新增／删改了什么（docs/08 §6.2、§7.2）。 */
-class DiffModal extends Modal {
-  constructor(app: ConstructorParameters<typeof Modal>[0], private proposal: FusionProposal) {
+/** 按块选择采纳：勾选后由程序重组正文与引用，并重新校验逐字摘录。 */
+class BlockSelectionModal extends Modal {
+  private keep: boolean[][];
+
+  constructor(app: ConstructorParameters<typeof Modal>[0], private proposal: TopicProposal,
+              private onSubmit: (keep: boolean[][]) => void) {
     super(app);
+    const doc = proposal.candidate_document!;
+    this.keep = doc.sections.map((s) => s.blocks.map(() => true));
   }
 
   onOpen(): void {
     const { contentEl } = this;
-    contentEl.createEl("h3", { text: `差异：${this.proposal.knowledge_title ?? "新建主题"}` });
-    contentEl.createEl("p", { text: this.proposal.change_summary || "—" });
-    const diff = renderDiff("", this.proposal.proposed_managed_body);
-    const pre = contentEl.createEl("pre");
-    pre.setText(diff || "（无内容）");
-    pre.addClass("kb-diff-pre");
-    if (this.proposal.conflicts.length) {
-      contentEl.createEl("h4", { text: "冲突与未解决的问题" });
-      contentEl.createEl("pre", { text: JSON.stringify(this.proposal.conflicts, null, 2) });
-    }
+    const doc = this.proposal.candidate_document!;
+    contentEl.createEl("h3", { text: `选择要采纳的内容块：${this.proposal.knowledge_title ?? "新建主题"}` });
+    contentEl.createEl("p", {
+      text: "取消勾选的块不会写入主题；未再使用的原文依据会被自动清除，含逐字摘录的块会重新校验。",
+    }).addClass("kb-muted");
+    doc.sections.forEach((section, si) => {
+      contentEl.createEl("h4", { text: section.heading || "（无标题小节）" });
+      section.blocks.forEach((block, bi) => {
+        const row = contentEl.createEl("label");
+        row.addClass("kb-list-row");
+        const box = row.createEl("input", { attr: { type: "checkbox" } });
+        box.checked = true;
+        box.addEventListener("change", () => { this.keep[si][bi] = box.checked; });
+        row.createEl("span", { text: ` ${KIND_LABEL[block.kind]}｜${block.text.slice(0, 160)}` });
+      });
+    });
+    new Setting(contentEl)
+      .addButton((b) => b.setButtonText("按勾选采纳").setCta().onClick(() => {
+        this.close();
+        this.onSubmit(this.keep);
+      }))
+      .addButton((b) => b.setButtonText("取消").onClick(() => this.close()));
   }
 
   onClose(): void {

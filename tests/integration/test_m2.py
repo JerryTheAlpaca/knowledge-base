@@ -53,59 +53,35 @@ def llm_result(payload) -> GenerateResult:
 
 
 def doc_from_prompt(user_prompt: str) -> dict:
-    """按提示词构造一份必然通过校验的输出（兼容主流程/合并/修复调用提示词）。
+    """按提示词构造一份能组装成 v3 文档的输出（兼容提炼/分块/合并/修复调用）。
 
-    docs/08 §3.2：云端单篇提炼 Schema 2.0 —— claim_id、适用条件、逐字摘录，
-    不输出主题/标签/知识关联/晋升/双链。
+    docs/24 §3：模型只写内容与选本次给定的 R 编号，程序字段一概不回填。
     """
     payload = json.loads(user_prompt)
-    schema = payload.get("output_schema") or payload.get("original_task") or {}
-    source_data = payload.get("source_data") or {}
-    segments = json.loads(source_data["segments"]) if source_data.get("segments") else []
-    if segments:
-        seg_id = segments[0]["segment_id"]
-        seg_text = segments[0]["text"]
-    else:
-        # 合并阶段：只允许引用候选要点携带的片段与摘录（docs/08 §7.1）
-        cands = payload.get("candidates") or {}
-        kps = cands.get("key_points") or []
-        exs = cands.get("excerpts") or []
-        seg_id = (kps[0]["evidence_ids"][0] if kps else
-                  (exs[0]["evidence_ids"][0] if exs else "s0001"))
-        seg_text = exs[0]["text"] if exs else "示例原文"
-    doc = {
-        "schema_version": "2.0",
-        "source_revision": schema["source_revision"],
-        "summary": "演示摘要。",
-        "key_points": [{"claim_id": "c0001", "text": "采集与总结应分开处理。",
-                        "conditions": None, "evidence_ids": [seg_id]}],
-        "excerpts": [{"claim_id": "c0001", "text": seg_text, "evidence_ids": [seg_id]}],
-        "methods": [],
-        "insights": [{"text": "候选启发。", "kind": "ai_suggestion", "basis_ids": [seg_id]}],
+    candidates = payload.get("candidates")
+    if candidates:  # 合并阶段：只沿用候选里已校验的块与引用
+        blocks = [b for c in candidates for s in c["sections"] for b in s["blocks"]]
+        return {"title": "演示标题", "summary": "跨段汇总。",
+                "sections": [{"heading": "主要判断", "blocks": blocks}], "limitations": []}
+    material = payload.get("material") or []
+    if not material:
+        return {}  # 纠错与分段等其它调用：没有内容主体，上层按「无结果」回退
+    first = material[0]
+    return {
+        "title": "演示标题",
+        "summary": "先保存，再提炼。",
+        "sections": [{"heading": "主要判断", "blocks": [
+            {"kind": "claim", "text": "采集与总结应分开处理。", "refs": [first["ref"]]},
+            {"kind": "quote", "text": first["text"], "refs": [first["ref"]]},
+            {"kind": "suggestion", "text": "候选启发。", "refs": []},
+        ]}],
         "limitations": [],
     }
-    if "workflow" in schema:
-        doc["workflow"] = None
-    return doc
 
 
 def chunk_aware_behavior(request):
-    """分段提取 + 合并 + 主流程通吃的行为。"""
-    prompt = request.user
-    if '"task": "这是长材料的分段提取' in prompt or '"task":"这是长材料的分段提取' in prompt:
-        payload = json.loads(prompt)
-        segments = json.loads(payload["source_data"]["segments"])
-        seg_id = segments[0]["segment_id"]
-        seg_text = segments[0]["text"]
-        return llm_result({
-            "key_points": [{"text": "分段要点。", "conditions": None, "evidence_ids": [seg_id]}],
-            "excerpts": [{"text": seg_text, "evidence_ids": [seg_id]}],
-            "methods": [],
-            "insights": [],
-        })
-    if "以下是分段提取的候选要点" in prompt:
-        return llm_result(doc_from_prompt(prompt))
-    return llm_result(doc_from_prompt(prompt))
+    """分段提取 + 合并 + 主流程通吃的行为（都按各自提示词里的 material/candidates 作答）。"""
+    return llm_result(doc_from_prompt(request.user))
 
 
 # ---- 测试辅助 ----
@@ -345,16 +321,23 @@ def test_enrich_success_publishes_ready_bundle(client, user_a, session_factory, 
 
     m = client.get(f"/v1/items/{item_id}/bundles/{rev}/manifest", headers=auth(token)).json()
     assert m["processing"]["state"] == "ready"
+    assert m["processing"]["format_version"] == "3.0"
+    assert m["processing"]["completeness"] == "complete"
+    assert m["processing"]["recipe_version"] == "content-v3-1"
     paths = {f["relative_path"] for f in m["files"]}
-    assert "analysis.json" in paths and "preview.md" in paths
-    analysis_file = next(f for f in m["files"] if f["relative_path"] == "analysis.json")
-    assert m["processing"]["result_file_id"] == analysis_file["file_id"]
+    assert "content.json" in paths and "preview.md" in paths
+    assert "analysis.json" not in paths, "旧输出协议不再写出（docs/23 §5.1）"
+    content_file = next(f for f in m["files"] if f["relative_path"] == "content.json")
+    assert m["processing"]["result_file_id"] == content_file["file_id"]
 
-    analysis_doc = json.loads(
-        client.get(f"/v1/items/{item_id}/bundles/{rev}/files/{analysis_file['file_id']}", headers=auth(token)).content
+    doc = json.loads(
+        client.get(f"/v1/items/{item_id}/bundles/{rev}/files/{content_file['file_id']}", headers=auth(token)).content
     )
-    assert analysis_doc["summary"] == "演示摘要。"
-    assert analysis_doc["key_points"][0]["evidence_ids"]
+    assert doc["format_version"] == "3.0" and doc["kind"] == "digest"
+    assert doc["summary"] == "先保存，再提炼。"
+    blocks = doc["sections"][0]["blocks"]
+    assert {b["kind"] for b in blocks} >= {"claim", "quote"}
+    assert blocks[0]["refs"] and all(r in doc["references"] for r in blocks[0]["refs"])
 
     # 去计费后无 /v1/usage 接口
     assert client.get("/v1/usage", headers=auth(token)).status_code == 404
@@ -642,7 +625,7 @@ def test_manual_organize_overrides_auto_enrich_off(
     assert it["pipeline_state"] == "ready"
     m = client.get(f"/v1/items/{item_id}/bundles/{it['bundle_revision']}/manifest",
                    headers=auth(token)).json()
-    assert "analysis.json" in {f["relative_path"] for f in m["files"]}
+    assert "content.json" in {f["relative_path"] for f in m["files"]}
 
 
 def test_both_auto_switches_off_leaves_item_extracted(
@@ -739,7 +722,11 @@ def test_enrich_repairs_invalid_json(client, user_a, session_factory, fake_llm):
 def test_enrich_validation_failure_keeps_diagnostic(client, user_a, session_factory, fake_llm):
     def behavior(request):
         doc = doc_from_prompt(request.user)
-        doc["key_points"][0]["evidence_ids"] = ["s9999"]  # 永远引用不存在的片段
+        for section in doc.get("sections") or []:
+            for block in section["blocks"]:
+                block["refs"] = ["R9999"]  # 永远引用不存在的阅读单元
+                if block["kind"] == "quote":
+                    block["text"] = "凭空拼出来的摘录"
         return llm_result(doc)
 
     fake_llm.behavior = behavior
@@ -753,8 +740,8 @@ def test_enrich_validation_failure_keeps_diagnostic(client, user_a, session_fact
     assert it["pipeline_state"] == "failed"
     m = client.get(f"/v1/items/{item_id}/bundles/{it['bundle_revision']}/manifest", headers=auth(token)).json()
     assert m["processing"]["state"] == "failed"
-    assert "analysis.error.json" in {f["relative_path"] for f in m["files"]}
-    # 不覆盖成品：没有 analysis.json 的 ready 声明
+    assert "content.error.json" in {f["relative_path"] for f in m["files"]}
+    # 不覆盖成品：没有 content.json 的 ready 声明
     assert m["processing"]["result_file_id"] is None
 
 
@@ -867,7 +854,7 @@ def test_long_text_chunked_processing(client, user_a, session_factory, fake_llm)
         prompt = request.user
         if "这是长材料的分段提取" in prompt:
             calls["chunk"] += 1
-        if "以下是分段提取的候选要点" in prompt:
+        if "请合并成一篇提炼结果" in prompt:
             calls["merge"] += 1
         return chunk_aware_behavior(request)
 
@@ -885,9 +872,20 @@ def test_long_text_chunked_processing(client, user_a, session_factory, fake_llm)
     assert calls["chunk"] >= 2 and calls["merge"] == 1
 
 
-def test_conversation_mode_enables_workflow(client, user_a, session_factory, fake_llm):
-    """对话类输入启用 workflow 输出字段。"""
-    fake_llm.behavior = chunk_aware_behavior
+def test_conversation_mode_prompts_for_decision_context(client, user_a, session_factory, fake_llm):
+    """对话类材料：提示词要求保留提出/接受/否定/未知的决策上下文（docs/23 §3.3、§8.1）。
+
+    v3 不再有 workflow 输出结构，决策状态作为自然章节由模型写在 sections 里。
+    """
+    prompts: dict[str, str] = {}
+
+    def behavior(request):
+        payload = json.loads(request.user)
+        if payload.get("material"):
+            prompts[payload.get("task") or "digest"] = request.user
+        return llm_result(doc_from_prompt(request.user))
+
+    fake_llm.behavior = behavior
     token = user_a["desktop"]["token"]
     _create_profile(client, token)
     c = client.post("/v1/captures", json={
@@ -899,10 +897,11 @@ def test_conversation_mode_enables_workflow(client, user_a, session_factory, fak
     _drain(session_factory)
 
     it = _get_item(client, token, item_id)
-    assert it["pipeline_state"] == "ready"
+    assert it["pipeline_state"] == "ready", it
+    assert "决策与结果" in next(iter(prompts.values())), "对话材料要带决策状态说明"
     m = client.get(f"/v1/items/{item_id}/bundles/{it['bundle_revision']}/manifest", headers=auth(token)).json()
-    analysis_file = next(f for f in m["files"] if f["relative_path"] == "analysis.json")
+    content_file = next(f for f in m["files"] if f["relative_path"] == "content.json")
     doc = json.loads(
-        client.get(f"/v1/items/{item_id}/bundles/{it['bundle_revision']}/files/{analysis_file['file_id']}", headers=auth(token)).content
-    )
-    assert "workflow" in doc
+        client.get(f"/v1/items/{item_id}/bundles/{it['bundle_revision']}/files/{content_file['file_id']}",
+                   headers=auth(token)).content)
+    assert "workflow" not in doc, "对话状态不再走独立的 workflow 结构"

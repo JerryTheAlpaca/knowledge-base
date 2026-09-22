@@ -1,0 +1,107 @@
+{
+  "schema_version": "2.0",
+  "source_revision": 1,
+  "summary": "先可靠保存，再提炼；晋升判断留在本地。",
+  "key_points": [
+    {
+      "claim_id": "c0001",
+      "text": "内容接收和总结应分别记录处理结果。",
+      "conditions": "适用于多来源采集。",
+      "evidence_ids": [
+        "s0001",
+        "s0002"
+      ]
+    },
+    {
+      "claim_id": "c0002",
+      "text": "长期知识的晋升在本地决定。",
+      "conditions": null,
+      "evidence_ids": [
+        "s0003",
+        "s0004"
+      ]
+    }
+  ],
+  "excerpts": [
+    {
+      "claim_id": "c0001",
+      "text": "采集与总结应该分开处理，避免混在一起。",
+      "evidence_ids": [
+        "s0001"
+      ]
+    },
+    {
+      "claim_id": "c0002",
+      "text": "本地整理才决定是否晋升为长期知识。云端不做主题判断，避免把一次阅读当成永久结论。",
+      "evidence_ids": [
+        "s0003",
+        "s0004"
+      ]
+    }
+  ],
+  "methods": [
+    {
+      "text": "分两步处理：先落盘再接着提炼。",
+      "steps": [
+        "接收环节只写原始材料与状态",
+        "提炼任务另起一次调用"
+      ],
+      "conditions": "来源材料已完成提取。",
+      "evidence_ids": [
+        "s0001",
+        "s0002"
+      ]
+    }
+  ],
+  "insights": [
+    {
+      "text": "可以分别统计接收与提炼两阶段的失败原因。",
+      "kind": "ai_suggestion",
+      "basis_ids": [
+        "s0002"
+      ]
+    }
+  ],
+  "limitations": [
+    "原文只覆盖图文来源，未覆盖音频。"
+  ],
+  "workflow": {
+    "questions": [
+      "提炼放进取接收环节，还是单独一步？"
+    ],
+    "constraints": [
+      "接收环节不能在模型失败时丢掉已保存材料。"
+    ],
+    "decisions": [
+      {
+        "status": "proposed",
+        "text": "在接收任务里顺带调用模型。"
+      },
+      {
+        "status": "accepted",
+        "text": "接收与提炼分成两个任务。",
+        "evidence_ids": [
+          "s0001",
+          "s0002"
+        ]
+      },
+      {
+        "status": "rejected",
+        "text": "把摘要写回来源笔记。",
+        "evidence_ids": [
+          "s0003"
+        ]
+      },
+      {
+        "status": "unknown",
+        "text": "部分结果能否自动晋升。"
+      }
+    ],
+    "abandoned": [
+      "直接把模型输出当作 Knowledge 正文。"
+    ],
+    "outcomes": [
+      "已保存材料不会因模型失败消失。"
+    ]
+  }
+}

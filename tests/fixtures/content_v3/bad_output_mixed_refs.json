@@ -1,0 +1,40 @@
+{
+  "note": "同一条结论混有有效与无效引用：整块暂不发布，不悄悄留下有效的那一份。",
+  "model_output": {
+    "title": "混合引用的处理",
+    "summary": "混合有效与无效引用的结论整条暂不发布。",
+    "sections": [
+      {
+        "heading": "主要判断",
+        "blocks": [
+          {
+            "kind": "claim",
+            "text": "这条结论的一份依据有效、一份无效。",
+            "refs": [
+              "R1",
+              "R77"
+            ]
+          },
+          {
+            "kind": "suggestion",
+            "text": "可以让模型带错误原因修一次。",
+            "refs": []
+          }
+        ]
+      },
+      {
+        "heading": "保留的结论",
+        "blocks": [
+          {
+            "kind": "claim",
+            "text": "只引用有效依据的结论照常发布。",
+            "refs": [
+              "R2"
+            ]
+          }
+        ]
+      }
+    ],
+    "limitations": []
+  }
+}

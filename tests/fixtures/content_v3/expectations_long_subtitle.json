@@ -1,0 +1,90 @@
+{
+  "assembly": {
+    "document_id": "dig-itm-22222222-2222-4222-8222-222222222222",
+    "kind": "digest",
+    "revision": 7,
+    "item_id": "itm-22222222-2222-4222-8222-222222222222",
+    "source_revision": 3,
+    "task": "digest",
+    "recipe_version": "content-v3-1",
+    "repair_calls": 1,
+    "missing_stages": [
+      "chunk:2"
+    ],
+    "extra_gaps": [
+      {
+        "code": "chunk_failed",
+        "message": "第 2 段字幕加工失败，本次只保留已核实的部分。",
+        "refs": [],
+        "segment_ids": [
+          "s0005",
+          "s0006"
+        ],
+        "block": []
+      }
+    ],
+    "created_at": "2026-09-22T02:10:00Z"
+  },
+  "expect": {
+    "state": "partial",
+    "summary": "",
+    "summary_cleared": true,
+    "missing_stages": [
+      "chunk:2",
+      "summary",
+      "quote_verification"
+    ],
+    "gap_codes": [
+      "quote_not_verbatim",
+      "chunk_failed"
+    ],
+    "error_codes": [
+      "quote_not_verbatim"
+    ],
+    "dropped_blocks": 1,
+    "repair_calls": 1,
+    "title": "可靠接收与云端提炼的顺序",
+    "sections": [
+      {
+        "heading": "处理顺序",
+        "kinds": [
+          "claim",
+          "quote"
+        ]
+      },
+      {
+        "heading": "来源版本",
+        "kinds": [
+          "claim"
+        ]
+      }
+    ],
+    "references": {
+      "e1": {
+        "item_id": "itm-22222222-2222-4222-8222-222222222222",
+        "source_revision": 3,
+        "segment_ids": [
+          "s0001",
+          "s0002"
+        ]
+      },
+      "e2": {
+        "item_id": "itm-22222222-2222-4222-8222-222222222222",
+        "source_revision": 3,
+        "segment_ids": [
+          "s0003",
+          "s0004"
+        ]
+      }
+    },
+    "locator_of": {
+      "e1": {
+        "kind": "time",
+        "start_ms": 1200,
+        "end_ms": 7800
+      }
+    },
+    "hash_is_sha256": true
+  },
+  "note": "第二块候选调用失败由 W2 传入 chunk:2；被丢摘录独占 R3，故摘要由程序清空。"
+}

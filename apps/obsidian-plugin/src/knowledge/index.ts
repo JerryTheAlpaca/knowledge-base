@@ -24,6 +24,7 @@ import {
   sha256Hex,
 } from "../vault/template";
 import { knowledgeIndexPath } from "../vault/paths";
+import { listMarkdown } from "../vault/documents";
 import type { KnowledgeIndex, KnowledgeIndexEntry } from "../types";
 
 export const INDEX_SCHEMA_VERSION = "1.0";
@@ -125,10 +126,15 @@ export class KnowledgeIndexStore {
     return doc;
   }
 
-  /** 重新扫描 `03 Knowledge`，整表重建（用户改名／移动后按 kb_id 收敛）。 */
+  /** 重新扫描 `03 Knowledge`，整表重建（用户改名／移动后按 kb_id 收敛）。
+   *
+   * 同一 `kb_id` 出现在多个文件时两份都保留在磁盘上，第一个进入检索索引；
+   * 身份冲突由文档索引 `index/documents.json` 的 conflicts 记录并对外报告。
+   */
   async rebuild(knowledgeFolder: string): Promise<KnowledgeIndex> {
     const entries: KnowledgeIndexEntry[] = [];
-    for (const path of await this.listMarkdown(this.fs, knowledgeFolder)) {
+    const seen = new Set<string>();
+    for (const path of await listMarkdown(this.fs, knowledgeFolder)) {
       let text: string;
       try {
         text = await this.fs.read(path);
@@ -136,7 +142,8 @@ export class KnowledgeIndexStore {
         continue;
       }
       const entry = parseKnowledgeEntry(text, path);
-      if (!entry) continue;
+      if (!entry || seen.has(entry.kb_id)) continue;
+      seen.add(entry.kb_id);
       entry.body_hash = await this.bodyHash(text);
       entries.push(entry);
     }
@@ -180,20 +187,5 @@ export class KnowledgeIndexStore {
   private async bodyHash(text: string): Promise<string> {
     const managed = extractPartition(text, KNOWLEDGE_START, KNOWLEDGE_END) ?? "";
     return sha256Hex(managed);
-  }
-
-  /** 递归列出目录下的 .md（`FsLike.list` 只给文件，需自行下钻）。 */
-  private async listMarkdown(fs: FsLike, dir: string): Promise<string[]> {
-    const out: string[] = [];
-    const walk = async (cur: string): Promise<void> => {
-      for (const f of await fs.list(cur)) {
-        if (f.endsWith(".md")) out.push(f);
-      }
-      for (const child of await fs.listDirs(cur)) {
-        await walk(child);
-      }
-    };
-    await walk(dir);
-    return out;
   }
 }

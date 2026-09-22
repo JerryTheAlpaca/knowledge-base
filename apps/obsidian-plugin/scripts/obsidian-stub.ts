@@ -41,3 +41,32 @@ export async function requestUrl(param: RequestUrlParam): Promise<RequestUrlResp
     json: (() => { try { return JSON.parse(text); } catch { return null; } })(),
   };
 }
+
+/** 设置界面在 node 里不渲染：桩只保证能被 import，弹条消息当作记录。 */
+export class Notice {
+  constructor(public message: string) {
+    console.log("[notice]", message);
+  }
+}
+
+export class Setting {
+  setName(): this { return this; }
+  setDesc(): this { return this; }
+  setPlaceholder(): this { return this; }
+  setHeading(): this { return this; }
+  addText(): this { return this; }
+  addTextArea(): this { return this; }
+  addToggle(): this { return this; }
+  addDropdown(): this { return this; }
+  addButton(): this { return this; }
+  addExtraButton(): this { return this; }
+  setDisabled(): this { return this; }
+  then(cb: (s: this) => unknown): this { cb(this); return this; }
+}
+
+export class PluginSettingTab {
+  constructor(public app: unknown, public plugin: unknown) {}
+  containerEl: unknown = { empty() {}, createEl() {}, addClass() {}, removeClass() {} };
+  display(): void {}
+  hide(): void {}
+}

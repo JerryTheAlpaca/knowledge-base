@@ -1,16 +1,17 @@
 /**
- * 本地整理任务、候选与落盘（docs/08 §4、§6、§7.2、§8.1）。
+ * 本地整理：主题候选与落盘（docs/23 §6；docs/24 §8）。
  *
- * 全部在本地插件执行：任务输入、模型配置引用、调用状态、候选、基线哈希与
- * 提交记录都落在 `99 System/KnowledgeInbox/` 下；本系统云端不接收这些内容，
- * 也不新增 Knowledge／主题索引／本地融合任务表。
+ * 主流程已取消逐观点生命周期：没有 `c0001` 晋升账本、没有五维评分、
+ * 没有 added/updated/retired_claims，也不让模型回填 evidence_map 或哈希版本。
  *
- * 关键保护（docs/08 §7.2）：
- * - 每个主题串行处理；任务记录幂等键，同一次提交重试沿用，相同 ID 不重复应用；
- * - 请求已发出但结果未落盘 → `unknown_outcome`，保留显式重试入口，重启后不盲目重发；
- * - 写入前校验主题正文与输入版本，被改过就标 `stale`，不直接覆盖；
- * - 先写历史快照与恢复记录，再在一次读—比较—修改中替换管理区，保留人工区与未知字段；
- * - 回滚以历史版本生成恢复操作，笔记再次被改时先展示差异。
+ *    收到新材料 → 本地检索相关主题（标题/别名/范围索引，不引入向量库）
+ *    → 目标选择最小响应 {"target":"T1","reason":"…"}（无匹配给新主题；无增量 keep_digest）
+ *    → 模型生成主题修改候选（内容主体 + no_op/change_summary/conflicts）
+ *    → 程序计算差异、校验证据与基线 → 用户采纳 / 部分采纳 / 跳过
+ *
+ * 写入保护（docs/23 §6.4）：候选固定基线；采纳前重读正文，被改过即过期不覆盖；
+ * 只替换管理区，保留人工区与未知 frontmatter；先存历史正文与引用表再提交；
+ * 引用缺失的原文不用标题补位；重启恢复不重复应用；回滚时正文与引用表成对恢复。
  *
  * 纯逻辑模块：文件与模型调用全部通过注入依赖，可独立测试。
  */
@@ -18,8 +19,6 @@
 import type { FsLike } from "../vault/records";
 import { JsonStore, RevisionStore } from "../vault/records";
 import {
-  CLOUD_DIGEST_END,
-  CLOUD_DIGEST_START,
   KNOWLEDGE_END,
   KNOWLEDGE_START,
   LOCAL_ORGANIZE_END,
@@ -28,6 +27,7 @@ import {
   managedTags,
   mergeKbFrontmatter,
   mergeManagedTags,
+  readFrontmatterValue,
   renderKnowledgeNote,
   renderLocalOrganize,
   renderProposalIndex,
@@ -35,41 +35,48 @@ import {
   sha256Hex,
 } from "../vault/template";
 import {
-  digestNotePath,
+  assembleContentDocument,
+  buildRefTableFromSegments,
+  parseContentDocument,
+  quoteVerificationErrors,
+  referenceHashErrors,
+  renderContentMarkdown,
+  renderReferenceTable,
+  selectBlocksForAdoption,
+} from "../vault/content";
+import { DocumentIndex } from "../vault/documents";
+import {
+  digestKbId,
+  documentsIndexPath,
   knowledgeIdFromTitle,
   knowledgeNotePath,
   organizeDir,
   proposalsDir,
+  resolveAvailableNotePath,
   revisionDir,
   sourceAssetsDir,
 } from "../vault/paths";
 import { KnowledgeIndexStore, matchKnowledge } from "./index";
+import { refAnchor, TopicReferenceStore } from "./citations";
 import {
-  digestSnapshotPath,
-  renderCitations,
-  renderDigestSnapshot,
-  validateEvidenceMap,
-} from "./citations";
-import {
+  CONTENT_FORMAT_VERSION,
+  CONTENT_RECIPE_VERSION,
   ORGANIZE_RULE_VERSION,
-  type FusionProposal,
-  type KbManifest,
+  type ContentDocumentV3,
+  type ContentRefV3,
   type KbSettings,
+  type LegacyProposal,
   type OrganizeTask,
   type OrganizeTaskState,
-  type PromotionDecision,
+  type TopicProposal,
 } from "../types";
 import {
   buildFusionPrompt,
-  buildPromotionPrompt,
-  validateFusionOutput,
-  validatePromotionOutput,
-  validateSegmentReferences,
-  type DigestClaimInput,
-} from "./prompts";
-import {
+  buildTargetSelectionPrompt,
   FUSION_SYSTEM_PROMPT,
-  PROMOTION_SYSTEM_PROMPT,
+  TARGET_SYSTEM_PROMPT,
+  validateFusionOutput,
+  validateTargetSelection,
 } from "./prompts";
 import { LocalModelError, parseModelJson, type ModelCallerLike } from "../providers/local";
 
@@ -83,27 +90,21 @@ export interface OrganizeDeps {
   onProposalsChanged?: () => Promise<void>;
 }
 
-/** Digest 的结构化输入（来自云端 analysis.json 与 Source 附件）。 */
+/** 一篇 Digest 的整理输入：同版本 content.json 与本地固定原文。 */
 export interface DigestInput {
   itemId: string;
   digestPath: string;
   sourceRevision: number;
   bundleRevision: number;
   title: string;
-  summary: string;
-  claims: DigestClaimInput[];
-  segments: Record<string, string>;
-  /** 云端区哈希（本地整理区的输入基线）。 */
-  cloudHash: string;
-  knowledgePromotion: string | null;
+  document: ContentDocumentV3;
+  /** content.json 原始文本与其哈希：真实输入基线由程序持有。 */
+  raw: string;
+  baselineHash: string;
 }
 
 function nowIso(): string {
   return new Date().toISOString();
-}
-
-function taskFileName(taskId: string): string {
-  return `${taskId}.json`;
 }
 
 /** 任务存储：每个任务一个文件，便于崩溃后逐条恢复。 */
@@ -114,7 +115,7 @@ export class OrganizeTaskStore {
   }
 
   private path(taskId: string): string {
-    return `${this.dir}/${taskFileName(taskId)}`;
+    return `${this.dir}/${taskId}.json`;
   }
 
   async put(task: OrganizeTask): Promise<void> {
@@ -143,10 +144,11 @@ export class OrganizeTaskStore {
     }
     return out.sort((a, b) => a.created_at.localeCompare(b.created_at));
   }
+}
 
-  async remove(taskId: string): Promise<void> {
-    await this.fs.remove(this.path(taskId));
-  }
+/** 旧候选判定：带逐观点字段的候选只归档，不由新流程采纳（docs/23 §8.2 末条）。 */
+export function looksLegacyProposal(raw: Record<string, unknown>): boolean {
+  return Array.isArray(raw.promotion_decisions) || Array.isArray(raw.added_claims) || raw.protocol !== 3;
 }
 
 /** 候选存储：`99 System/KnowledgeInbox/proposals/`。 */
@@ -160,48 +162,66 @@ export class ProposalStore {
     return `${this.dir}/${proposalId}.json`;
   }
 
-  async put(proposal: FusionProposal): Promise<void> {
+  async put(proposal: TopicProposal): Promise<void> {
     await this.fs.write(this.path(proposal.proposal_id), JSON.stringify(proposal, null, 2));
   }
 
-  async get(proposalId: string): Promise<FusionProposal | null> {
+  async get(proposalId: string): Promise<TopicProposal | null> {
     const p = this.path(proposalId);
     if (!(await this.fs.exists(p))) return null;
     try {
-      return JSON.parse(await this.fs.read(p)) as FusionProposal;
+      const raw = JSON.parse(await this.fs.read(p)) as Record<string, unknown>;
+      if (looksLegacyProposal(raw)) return null; // 旧候选不强行转换到新融合规则
+      return raw as unknown as TopicProposal;
     } catch {
       return null;
     }
   }
 
-  async all(): Promise<FusionProposal[]> {
-    const out: FusionProposal[] = [];
+  async all(): Promise<TopicProposal[]> {
+    const out: TopicProposal[] = [];
+    for (const entry of await this.fs.list(this.dir)) {
+      if (!entry.endsWith(".json")) continue;
+      const proposal = await this.get(entry.split("/").pop()!.replace(/\.json$/, ""));
+      if (proposal) out.push(proposal);
+    }
+    return out.sort((a, b) => b.created_at.localeCompare(a.created_at));
+  }
+
+  /** 旧版逐观点候选：可读归档，仅供查看。 */
+  async legacyAll(): Promise<LegacyProposal[]> {
+    const out: LegacyProposal[] = [];
     for (const entry of await this.fs.list(this.dir)) {
       if (!entry.endsWith(".json")) continue;
       try {
-        out.push(JSON.parse(await this.fs.read(entry)) as FusionProposal);
+        const raw = JSON.parse(await this.fs.read(entry)) as Record<string, unknown>;
+        if (!looksLegacyProposal(raw)) continue;
+        out.push({
+          proposal_id: String(raw.proposal_id ?? entry.split("/").pop()),
+          knowledge_id: raw.knowledge_id ? String(raw.knowledge_id) : null,
+          knowledge_title: raw.knowledge_title ? String(raw.knowledge_title) : null,
+          change_summary: String(raw.change_summary ?? ""),
+          created_at: String(raw.created_at ?? ""),
+          state: String(raw.state ?? "ready"),
+        });
       } catch {
-        // 跳过损坏候选
+        // 损坏文件跳过
       }
     }
     return out.sort((a, b) => b.created_at.localeCompare(a.created_at));
   }
 }
 
-/** 幂等键：同一条目同一 Digest 版本只处理一次（docs/08 §7.2 第 1 条）。 */
+/** 幂等键：同一条目同一 Digest 内容版本只处理一次（docs/23 §6.4 第 1 条）。 */
 export function idempotencyKey(itemId: string, digestRevision: number): string {
-  return `${itemId}#digest-r${digestRevision}`;
+  return `${itemId}#content-r${digestRevision}`;
 }
 
 export function taskIdOf(itemId: string): string {
   return `task-${itemId}`;
 }
 
-export function proposalIdOf(itemId: string, digestRevision: number, targetId: string | null): string {
-  return `prop-${itemId}--r${digestRevision}--${targetId ?? "new"}`;
-}
-
-/** 短哈希：用于按主题合并后的候选 ID（同输入得同 ID，重试幂等）。 */
+/** 短哈希：候选 ID 由主题与输入派生（同输入得同 ID，重试幂等）。 */
 export function hashShort(text: string): string {
   let h = 0x811c9dc5;
   for (let i = 0; i < text.length; i++) {
@@ -211,28 +231,40 @@ export function hashShort(text: string): string {
   return h.toString(16).padStart(8, "0");
 }
 
-/** 同一主题的融合输入集合（docs/08 §7.1：同主题合成一个任务）。 */
-interface FusionGroup {
-  kbId: string | null;
-  newTopic: { name: string; scope: string } | null;
-  tasks: OrganizeTask[];
-  inputs: DigestInput[];
-  decisions: PromotionDecision[];
-  incoming: Array<{
-    itemId: string;
-    digestId: string;
-    digestRevision: number;
-    sourceRevision: number;
-    claimId: string;
-    text: string;
-    conditions: string | null;
-    segmentIds: string[];
-  }>;
-  candidates: Array<{ kb_id: string; title: string; scope: string; keywords: string[]; path: string }>;
-  configRef: string;
+/**
+ * 本地固定原文快照：按 `item@source_revision` 惰性加载 `segments.json`。
+ *
+ * 缺少被引修订时返回 null，调用方据此暂缓采纳——不能拿最新原文冒充旧版本。
+ */
+class SegmentCache {
+  private tables = new Map<string, Record<string, string> | null>();
+  constructor(private fs: FsLike, private sourcesFolder: string) {}
+
+  async load(itemId: string, sourceRevision: number): Promise<void> {
+    const key = `${itemId}@${sourceRevision}`;
+    if (this.tables.has(key)) return;
+    const path = `${sourceAssetsDir(this.sourcesFolder, itemId, sourceRevision)}/segments.json`;
+    const out: Record<string, string> = {};
+    if (await this.fs.exists(path)) {
+      try {
+        const doc = JSON.parse(await this.fs.read(path)) as { segments?: Array<{ segment_id?: string; text?: string }> };
+        for (const s of doc.segments ?? []) {
+          if (s.segment_id) out[s.segment_id] = s.text ?? "";
+        }
+      } catch {
+        // 片段索引损坏：留空表，校验会如实报「原文不完整」
+      }
+    }
+    this.tables.set(key, Object.keys(out).length ? out : null);
+  }
+
+  textOf = (itemId: string, sourceRevision: number, segmentId: string): string | null => {
+    const table = this.tables.get(`${itemId}@${sourceRevision}`);
+    return table ? table[segmentId] ?? null : null;
+  };
 }
 
-/** 读取 Digest 笔记 + 对应 Source 附件，得到结构化输入。 */
+/** 读取一篇 Digest 的 v3 内容文档与输入基线（回读以 content.json 为准）。 */
 export async function readDigestInput(
   fs: FsLike,
   settings: KbSettings,
@@ -240,109 +272,30 @@ export async function readDigestInput(
   digestPath: string,
 ): Promise<DigestInput | null> {
   if (!(await fs.exists(digestPath))) return null;
-  const text = await fs.read(digestPath);
-  // 分区访问统一走 template.ts 的导出（审查 C-19），不在此拼分区标记
-  const cloud = extractPartition(text, CLOUD_DIGEST_START, CLOUD_DIGEST_END);
-  const sourceRevision = Number(/^kb_source_revision:\s*(\d+)$/m.exec(text)?.[1] ?? "1") || 1;
-  const bundleRevision = Number(/^kb_digest_revision:\s*(\d+)$/m.exec(text)?.[1] ?? "1") || 1;
-  const promotion = /^kb_promotion:\s*(\S+)$/m.exec(text)?.[1] ?? null;
-  const title = (/^#\s+(.+)$/m.exec(text)?.[1] ?? itemId).replace(/：提炼$/, "").trim();
-
-  const assets = sourceAssetsDir(settings.sourcesFolder, itemId, sourceRevision);
-  let claims: DigestClaimInput[] = [];
-  let summary = "";
-  const analysisPath = `${assets}/analysis.json`;
-  if (await fs.exists(analysisPath)) {
-    try {
-      const doc = JSON.parse(await fs.read(analysisPath)) as {
-        summary?: string;
-        key_points?: Array<{ claim_id?: string; text?: string; conditions?: string | null; evidence_ids?: string[] }>;
-        excerpts?: Array<{ claim_id?: string; text?: string; evidence_ids?: string[] }>;
-      };
-      summary = doc.summary ?? "";
-      claims = (doc.key_points ?? []).filter((k) => k.claim_id).map((k) => ({
-        claim_id: k.claim_id as string,
-        text: k.text ?? "",
-        conditions: k.conditions ?? null,
-        evidence_ids: k.evidence_ids ?? [],
-      }));
-      // 摘录也带 claim_id：作为该观点的逐字证据补充（docs/08 §3.2）
-      for (const ex of doc.excerpts ?? []) {
-        if (!ex.claim_id || !ex.text) continue;
-        const found = claims.find((c) => c.claim_id === ex.claim_id);
-        if (found) found.evidence_ids = [...new Set([...found.evidence_ids, ...(ex.evidence_ids ?? [])])];
-      }
-    } catch {
-      claims = [];
-    }
+  const note = await fs.read(digestPath);
+  const sourceRevision = Number(readFrontmatterValue(note, "kb_source_revision") ?? "1") || 1;
+  const bundleRevision = Number(readFrontmatterValue(note, "kb_digest_revision") ?? "1") || 1;
+  const title = (/^#\s+(.+)$/m.exec(note)?.[1] ?? itemId).replace(/：提炼$/, "").trim();
+  const contentPath = `${sourceAssetsDir(settings.sourcesFolder, itemId, sourceRevision)}/content.json`;
+  if (!(await fs.exists(contentPath))) return null;
+  const raw = await fs.read(contentPath);
+  let parsed: ReturnType<typeof parseContentDocument>;
+  try {
+    parsed = parseContentDocument(JSON.parse(raw));
+  } catch {
+    return null;
   }
-  if (!claims.length && cloud) {
-    // analysis.json 缺失时退化为从云端区解析（旧 Bundle 兼容）
-    claims = parseClaimsFromCloudRegion(cloud);
-    summary = /## 一句话总结\s*\n+([^\n]+)/.exec(cloud)?.[1]?.trim() ?? "";
-  }
-
-  const segments: Record<string, string> = {};
-  const segmentsPath = `${assets}/segments.json`;
-  if (await fs.exists(segmentsPath)) {
-    try {
-      const doc = JSON.parse(await fs.read(segmentsPath)) as {
-        segments?: Array<{ segment_id?: string; text?: string }>;
-      };
-      for (const s of doc.segments ?? []) {
-        if (s.segment_id) segments[s.segment_id] = s.text ?? "";
-      }
-    } catch {
-      // 片段缺失时证据校验会如实报错
-    }
-  }
-
+  if (!parsed.document) return null;
   return {
     itemId,
     digestPath,
     sourceRevision,
     bundleRevision,
     title,
-    summary,
-    claims,
-    segments,
-    cloudHash: cloud === null ? "" : await sha256Hex(cloud),
-    knowledgePromotion: promotion,
+    document: parsed.document,
+    raw,
+    baselineHash: await sha256Hex(raw),
   };
-}
-
-/** 从渲染后的云端区解析观点（仅旧 Bundle 兼容路径）。 */
-export function parseClaimsFromCloudRegion(cloud: string): DigestClaimInput[] {
-  const out: DigestClaimInput[] = [];
-  for (const m of cloud.matchAll(/^- \[(c\d{4})\]\s*(.+)$/gm)) {
-    const body = m[2];
-    const condMatch = /（适用条件：([^）]*)）/.exec(body);
-    const text = body.replace(/（适用条件：[^）]*）/g, "").replace(/（[^）]*s\d{4}[^）]*）/g, "").trim();
-    const segIds = [...body.matchAll(/\b(s\d{4})\b/g)].map((x) => x[1]);
-    out.push({
-      claim_id: m[1],
-      text,
-      conditions: condMatch?.[1] ?? null,
-      evidence_ids: [...new Set(segIds)],
-    });
-  }
-  return out;
-}
-
-/** 汇总 `kb_promotion`：整篇布尔值不能替代观点级状态（docs/08 §4）。 */
-export function aggregatePromotion(decisions: PromotionDecision[], applied: string[]): string {
-  if (!decisions.length) return "not_evaluated";
-  const reviews = decisions.filter((d) => d.decision === "review");
-  if (!reviews.length) return decisions.every((d) => d.decision === "deferred") ? "deferred" : "keep_digest";
-  const appliedSet = new Set(applied);
-  const done = reviews.filter((d) => appliedSet.has(d.claim_id)).length;
-  if (done === 0) return "review";
-  return done === reviews.length ? "applied" : "partially_applied";
-}
-
-/** 从受管理正文中提取已有 claim_id（用于沿用旧 ID，不整体重编号）。 */
-export function extractClaimIds(managedBody: string): string[] {
-  return [...new Set([...managedBody.matchAll(/\[(c\d{4})\]/g)].map((m) => m[1]))];
 }
 
 export interface OrganizeRunResult {
@@ -353,11 +306,7 @@ export interface OrganizeRunResult {
   messages: string[];
 }
 
-/**
- * 本地整理服务。
- *
- * 串行处理任务；暂停后不发新请求，已返回结果及时保存（docs/08 §8.1）。
- */
+/** 本地整理服务：串行处理任务；暂停后不发新请求，已返回结果及时保存。 */
 export class OrganizeService {
   private paused = false;
   private running = false;
@@ -365,12 +314,19 @@ export class OrganizeService {
   private proposals: ProposalStore;
   private revisions: RevisionStore;
   private index: KnowledgeIndexStore;
+  private refs: TopicReferenceStore;
+  private docs: DocumentIndex;
+  private segments: SegmentCache;
 
   constructor(private deps: OrganizeDeps) {
-    this.tasks = new OrganizeTaskStore(deps.fs, deps.settings().systemFolder);
-    this.proposals = new ProposalStore(deps.fs, deps.settings().systemFolder);
-    this.revisions = new RevisionStore(deps.fs, deps.settings().systemFolder);
-    this.index = new KnowledgeIndexStore(deps.fs, deps.settings().systemFolder);
+    const systemFolder = deps.settings().systemFolder;
+    this.tasks = new OrganizeTaskStore(deps.fs, systemFolder);
+    this.proposals = new ProposalStore(deps.fs, systemFolder);
+    this.revisions = new RevisionStore(deps.fs, systemFolder);
+    this.index = new KnowledgeIndexStore(deps.fs, systemFolder);
+    this.refs = new TopicReferenceStore(deps.fs, systemFolder);
+    this.docs = new DocumentIndex(deps.fs, documentsIndexPath(systemFolder));
+    this.segments = new SegmentCache(deps.fs, deps.settings().sourcesFolder);
   }
 
   get isRunning(): boolean { return this.running; }
@@ -379,14 +335,17 @@ export class OrganizeService {
   pause(): void { this.paused = true; }
   resume(): void { this.paused = false; }
 
-  /** 新 Digest 入库后准备候选（docs/08 §8.1「自动准备整理候选」开关）。 */
+  /** 新 Digest 入库后准备整理候选；没有 v3 内容文档时不排队，也不假装成功。 */
   async enqueue(itemId: string, digestPath: string): Promise<OrganizeTask | null> {
     const s = this.deps.settings();
     const input = await readDigestInput(this.deps.fs, s, itemId, digestPath);
-    if (!input || !input.claims.length) return null;
+    if (!input) {
+      this.deps.log(`条目 ${itemId} 没有可读取的 v3 内容文档，未加入整理队列。`);
+      return null;
+    }
     const taskId = taskIdOf(itemId);
     const existing = await this.tasks.get(taskId);
-    const key = idempotencyKey(itemId, input.bundleRevision);
+    const key = idempotencyKey(itemId, input.document.revision);
     if (existing && existing.idempotency_key === key && existing.state !== "failed") return existing;
 
     const task: OrganizeTask = {
@@ -394,7 +353,9 @@ export class OrganizeService {
       item_id: itemId,
       digest_path: digestPath,
       digest_source_revision: input.sourceRevision,
-      digest_cloud_hash: input.cloudHash,
+      digest_document_id: input.document.document_id,
+      digest_revision: input.document.revision,
+      digest_cloud_hash: input.baselineHash,
       target_knowledge_id: null,
       base_hash: null,
       state: "pending",
@@ -417,12 +378,7 @@ export class OrganizeService {
       ["pending", "failed", "unknown_outcome", "stale"].includes(t.state));
   }
 
-  /**
-   * 处理一批任务。
-   *
-   * 两阶段（docs/08 §7.1）：先逐篇做晋升判断，再**按主题分组**融合——
-   * 同一主题同时到达的多个 Digest 合成一次任务，不同主题分开提交。
-   */
+  /** 处理一批任务：每篇材料一次目标选择，每个主题一次候选生成（docs/23 §6.1）。 */
   async runBatch(limit = 20): Promise<OrganizeRunResult> {
     const result: OrganizeRunResult = { prepared: 0, keptDigest: 0, failed: 0, skipped: 0, messages: [] };
     if (this.running) {
@@ -432,12 +388,7 @@ export class OrganizeService {
     this.running = true;
     try {
       const tasks = await this.listPending();
-      // 有待处理任务才整表重建索引（审查 C-34：无任务时白扫一遍 03 Knowledge）
-      if (tasks.length) {
-        await this.index.rebuild(this.deps.settings().knowledgeFolder);
-      }
-      // 阶段 1：晋升判断，按主题收集待融合观点
-      const groups = new Map<string, FusionGroup>();
+      if (tasks.length) await this.index.rebuild(this.deps.settings().knowledgeFolder);
       for (const task of tasks.slice(0, limit)) {
         if (this.paused) {
           result.messages.push("已暂停：不再发起新的模型请求。");
@@ -449,9 +400,15 @@ export class OrganizeService {
           continue;
         }
         try {
-          const outcome = await this.promote(task, groups);
-          if (outcome === "kept_digest") result.keptDigest += 1;
-          else result.skipped += 1;
+          const outcome = await this.prepare(task);
+          if (outcome === "candidate") result.prepared += 1;
+          else if (outcome === "skipped") {
+            result.skipped += 1;
+            result.messages.push(`${task.task_id}：输入已变化，标为过期待复核。`);
+          } else {
+            result.keptDigest += 1;
+            result.messages.push(`${task.task_id}：${outcome === "no_change" ? "现有主题无需修改。" : "无长期增量，留在 Digest。"}`);
+          }
         } catch (err) {
           result.failed += 1;
           const message = err instanceof Error ? err.message : String(err);
@@ -467,30 +424,6 @@ export class OrganizeService {
             result.messages.push("Key 失效：只暂停该配置的任务，不回退到另一配置。");
             break;
           }
-        }
-      }
-
-      // 阶段 2：按主题融合（每个主题一次调用、一次落盘）
-      for (const group of groups.values()) {
-        if (this.paused) {
-          result.messages.push("已暂停：剩余主题的融合未发起。");
-          break;
-        }
-        try {
-          result.prepared += await this.fuse(group);
-        } catch (err) {
-          result.failed += 1;
-          const message = err instanceof Error ? err.message : String(err);
-          for (const task of group.tasks) {
-            task.state = err instanceof LocalModelError && err.kind === "unknown_outcome"
-              ? "unknown_outcome" : "failed";
-            task.attempts += 1;
-            task.last_error = message;
-            task.updated_at = nowIso();
-            await this.tasks.put(task);
-          }
-          result.messages.push(`主题 ${group.kbId ?? group.newTopic?.name}：${message}`);
-          this.deps.log(`融合失败（${group.kbId ?? group.newTopic?.name}）：${message}`);
         }
       }
       if (this.deps.onProposalsChanged) await this.deps.onProposalsChanged();
@@ -510,258 +443,254 @@ export class OrganizeService {
     await this.tasks.put(task);
   }
 
-  /**
-   * 阶段 1：单任务晋升判断（观点级，docs/08 §4）。
-   *
-   * 写入 Digest 的本地整理区，并把 `review` 的观点按主题收集到 `groups`，
-   * 供阶段 2 合成一次融合（docs/08 §7.1）。
-   * 返回 kept_digest（无长期增量）／skipped（输入已过期）。
-   */
-  private async promote(task: OrganizeTask, groups: Map<string, FusionGroup>): Promise<"kept_digest" | "skipped"> {
+  /** 一篇材料 → 主题修改候选（或 keep_digest / 无需修改）。 */
+  private async prepare(task: OrganizeTask): Promise<"candidate" | "kept_digest" | "no_change" | "skipped"> {
     const s = this.deps.settings();
     const input = await readDigestInput(this.deps.fs, s, task.item_id, task.digest_path);
-    if (!input) throw new Error("Digest 笔记不存在，无法整理。");
-    if (input.cloudHash !== task.digest_cloud_hash) {
-      // 云端更新改了本地判断所依赖的输入：标 stale 并保留旧结果（docs/08 §3.2）
+    if (!input) throw new Error("Digest 内容文档不可读取（content.json 缺失或格式不受支持）。");
+    if (input.baselineHash !== task.digest_cloud_hash) {
       task.state = "stale";
       task.updated_at = nowIso();
       await this.tasks.put(task);
-      this.deps.log(`${task.task_id}：Digest 云端区已变化，本地结果标为过期待复核。`);
       return "skipped";
     }
-
     task.state = "running";
     task.updated_at = nowIso();
     await this.tasks.put(task);
 
     const { caller, configRef } = await this.deps.model();
     task.model_config_ref = configRef;
+    this.labels.set(input.itemId, input.title);
 
+    // 1) 本地检索相关主题：复用标题/别名/范围索引
     const matched = matchKnowledge((await this.index.read()).entries, {
       title: input.title,
-      text: [input.summary, ...input.claims.map((c) => c.text)].join("\n"),
+      text: [input.document.summary, ...input.document.sections.flatMap((sec) => sec.blocks.map((b) => b.text))].join("\n"),
     });
-    // 发给模型的只有 ID 与范围；路径留在本地用于渲染链接（docs/08 §5）
-    const candidates = matched.map((m) => ({
-      kb_id: m.entry.kb_id,
-      title: m.entry.title,
-      scope: m.entry.scope,
-      keywords: m.entry.keywords,
-      path: m.entry.path,
+    const candidates = matched.map((m, i) => ({
+      id: `T${i + 1}`, kb_id: m.entry.kb_id, title: m.entry.title, scope: m.entry.scope, path: m.entry.path,
     }));
 
-    const promotionRaw = await caller.call(
-      PROMOTION_SYSTEM_PROMPT,
-      buildPromotionPrompt({
-        itemId: input.itemId,
-        digestRevision: input.bundleRevision,
-        sourceRevision: input.sourceRevision,
+    // 2) 目标选择：最小响应
+    const targetRaw = await caller.call(
+      TARGET_SYSTEM_PROMPT,
+      buildTargetSelectionPrompt({
         title: input.title,
-        summary: input.summary,
-        claims: input.claims,
-        segments: input.segments,
-        candidates,
+        summary: input.document.summary,
+        points: input.document.sections.flatMap((sec) => sec.blocks
+          .filter((b) => b.kind === "claim" || b.kind === "quote")
+          .map((b) => (sec.heading ? `${sec.heading}：` : "") + b.text)),
+        candidates: candidates.map((c) => ({ id: c.id, title: c.title, scope: c.scope })),
       }),
     );
-    const { decisions, errors } = validatePromotionOutput(parseModelJson(promotionRaw.outputText), {
-      claimIds: input.claims.map((c) => c.claim_id),
-      candidateIds: candidates.map((c) => c.kb_id),
-      segmentIds: Object.keys(input.segments),
+    const { selection, errors } = validateTargetSelection(parseModelJson(targetRaw.outputText), {
+      candidateIds: candidates.map((c) => c.id),
     });
-    if (errors.length) throw new Error(`晋升判断输出未通过校验：${errors.slice(0, 3).join("；")}`);
+    if (errors.length) throw new Error(`目标选择未通过校验：${errors.slice(0, 3).join("；")}`);
+    if (!selection) throw new Error("目标选择结果为空。");
 
-    // 写入 Digest 的本地整理区（只替换 kb:local-organize，docs/08 §3.2）
-    // 链接只对已解析到真实笔记的主题渲染（docs/08 §5）
-    const relationNote = buildRelationNote(decisions, candidates);
-    await this.updateDigestLocalRegion(
-      task, input,
-      renderLocalOrganize(decisions, relationNote, (kbId) => {
-        const entry = candidates.find((c) => c.kb_id === kbId);
-        return entry ? `[[${entry.path}|${entry.title}]]` : null;
-      }),
-      aggregatePromotion(decisions, []),
-    );
-
-    const reviews = decisions.filter((d) => d.decision === "review");
-    if (!reviews.length) {
+    if (selection.keepDigest) {
+      await this.writeLocalRegion(task, input, {
+        outcome: "keep_digest", reason: selection.reason, targetTitle: null, targetPath: null,
+      });
       task.state = "kept_digest";
       task.updated_at = nowIso();
       await this.tasks.put(task);
       return "kept_digest";
     }
 
-    // 按主题分组：同一主题的多个 Digest 合成一次融合（docs/08 §7.1）
-    for (const decision of reviews) {
-      const targetId = decision.target_knowledge_id;
-      if (!targetId && !decision.new_topic) continue;
-      const claim = input.claims.find((c) => c.claim_id === decision.claim_id);
-      if (!claim) continue;
-      const key = targetId ?? `new:${decision.new_topic!.name}`;
-      const group = groups.get(key) ?? {
-        kbId: targetId,
-        newTopic: targetId ? null : decision.new_topic,
-        tasks: [],
-        inputs: [],
-        decisions: [],
-        incoming: [],
-        candidates,
-        configRef,
-      };
-      group.tasks.push(task);
-      group.inputs.push(input);
-      group.decisions.push(decision);
-      group.incoming.push({
-        itemId: input.itemId,
-        digestId: `dig-${input.itemId}`,
-        digestRevision: input.bundleRevision,
-        sourceRevision: input.sourceRevision,
-        claimId: claim.claim_id,
-        text: claim.text,
-        conditions: claim.conditions,
-        segmentIds: claim.evidence_ids,
-      });
-      groups.set(key, group);
-    }
-    task.state = "running";
-    task.updated_at = nowIso();
-    await this.tasks.put(task);
-    return "kept_digest";
-  }
+    const chosen = selection.target ? candidates.find((c) => c.id === selection.target) ?? null : null;
+    if (!selection.target && !selection.newTopic) throw new Error("未匹配已有主题时必须给出新主题建议。");
+    task.target_knowledge_id = chosen?.kb_id ?? null;
 
-  /**
-   * 阶段 2：对同一主题做一次融合并落候选（docs/08 §7.1）。
-   *
-   * 输入含该主题下全部待吸收观点；输出替换稿、变更项、证据映射与冲突。
-   */
-  private async fuse(group: FusionGroup): Promise<number> {
-    const s = this.deps.settings();
-    const { caller } = await this.deps.model();
-    const target = group.kbId
-      ? (await this.index.read()).entries.find((e) => e.kb_id === group.kbId) ?? null
-      : null;
-    if (group.kbId && !target) throw new Error("目标主题笔记已不存在，候选无法生成。");
+    const targetTitle = chosen?.title ?? selection.newTopic?.name ?? input.title;
+    const kbId = chosen?.kb_id ?? knowledgeIdFromTitle(targetTitle);
+    const baseline = await this.readTopicBaseline(chosen?.path ?? null, kbId);
+    const baseHash = await sha256Hex(baseline.body);
 
-    const currentBody = target ? await this.readManagedBody(target.path) : "";
-    const baseHash = target ? await sha256Hex(currentBody) : await sha256Hex("");
-    const evidenceMap = target ? await this.readEvidenceMap(target.kb_id) : {};
-    const title = target?.title ?? group.newTopic?.name ?? group.inputs[0]?.title ?? "未命名主题";
-    const kbId = target?.kb_id ?? knowledgeIdFromTitle(title);
-    const allSegments = Object.assign({}, ...group.inputs.map((i) => i.segments));
+    // 3) 现有依据与新来源共用同一张任务引用表：旧依据继续直连原文
+    const sources = await this.collectRefSources(input, baseline.references);
+    const refTable = await buildRefTableFromSegments(sources.entries, this.segments.textOf);
 
     const fusionRaw = await caller.call(
       FUSION_SYSTEM_PROMPT,
       buildFusionPrompt({
-        knowledgeId: kbId,
-        knowledgeTitle: title,
-        knowledgeRevision: target?.revision ?? 0,
-        baseHash,
-        currentManagedBody: currentBody,
-        currentEvidenceMap: evidenceMap,
+        knowledge: { title: targetTitle, scope: chosen?.scope ?? selection.newTopic?.scope ?? "" },
+        currentBody: baseline.body,
+        existingMaterial: sources.existingLabels,
+        newMaterial: {
+          title: input.title,
+          summary: input.document.summary,
+          sections: input.document.sections.map((sec) => ({
+            heading: sec.heading,
+            blocks: sec.blocks.map((b) => ({ kind: b.kind, text: b.text, refs: b.refs })),
+          })),
+          material: sources.newLabels,
+        },
         lockedRegions: ["## 我的实践与补充", "## 我的备注与判断"],
-        incoming: group.incoming,
-        segments: allSegments,
         userInstruction: null,
       }),
     );
     const parsed = parseModelJson(fusionRaw.outputText);
-    const validated = validateFusionOutput(parsed, {
-      baseHash,
-      allowedClaimRefs: group.incoming.map((c) => `${c.digestId}#${c.claimId}`),
-      allowedSegmentIds: Object.keys(allSegments),
-      existingClaimIds: target ? extractClaimIds(currentBody) : [],
-    });
-    const refErrors = validateSegmentReferences(
-      String(parsed.proposed_managed_body ?? ""), Object.keys(allSegments));
-    const allErrors = [...validated.errors, ...refErrors];
-    if (allErrors.length) {
-      throw new Error(`融合输出未通过校验：${allErrors.slice(0, 3).join("；")}`);
+    const extension = validateFusionOutput(parsed);
+    if (extension.errors.length) {
+      throw new Error(`主题候选未通过校验：${extension.errors.slice(0, 3).join("；")}`);
     }
-
-    // 一次主题融合对应一个候选；proposal_id 由主题与输入版本派生（幂等）
-    const versions = group.incoming.map((c) => `${c.itemId}r${c.digestRevision}`).sort().join("+");
-    const proposalId = `prop-${kbId}--${hashShort(versions)}`;
-    const proposal: FusionProposal = {
+    const proposalId = `prop-${kbId}--${hashShort(`${input.document.document_id}r${input.document.revision}+${baseHash.slice(0, 8)}`)}`;
+    const proposalBase = {
       proposal_id: proposalId,
-      task_id: group.tasks[0].task_id,
-      knowledge_id: target?.kb_id ?? null,
-      knowledge_title: title,
+      task_id: task.task_id,
+      protocol: 3 as const,
+      knowledge_id: chosen?.kb_id ?? null,
+      knowledge_title: targetTitle,
+      new_topic: chosen ? null : selection.newTopic,
       base_hash: baseHash,
-      proposed_managed_body: String(parsed.proposed_managed_body ?? ""),
-      added_claims: Array.isArray(parsed.added_claims) ? parsed.added_claims as Array<Record<string, unknown>> : [],
-      updated_claims: Array.isArray(parsed.updated_claims) ? parsed.updated_claims as Array<Record<string, unknown>> : [],
-      retired_claims: Array.isArray(parsed.retired_claims) ? parsed.retired_claims as Array<Record<string, unknown>> : [],
-      evidence_map: (parsed.evidence_map ?? {}) as Record<string, unknown>,
-      conflicts: Array.isArray(parsed.conflicts) ? parsed.conflicts as Array<Record<string, unknown>> : [],
-      change_summary: String(parsed.change_summary ?? ""),
-      promotion_decisions: group.decisions,
+      base_revision: baseline.revision,
+      baseline_body: baseline.body,
+      change_summary: extension.changeSummary,
+      conflicts: extension.conflicts,
+      target_reason: selection.reason,
       state: "ready",
       created_at: nowIso(),
       applied_at: null,
       applied_knowledge_revision: null,
-      no_op: parsed.no_op === true,
     };
-    // 新建主题需要用户确认范围：记录建议的标题与范围
-    if (!target && group.newTopic) {
-      proposal.evidence_map = { ...proposal.evidence_map, __new_topic__: group.newTopic };
-    }
-    await this.proposals.put(proposal);
 
-    for (const task of group.tasks) {
+    if (extension.noOp) {
+      // no_op 不重发整篇正文，也不写任何东西（docs/24 §3）
+      await this.proposals.put({ ...proposalBase, candidate_document: null, no_op: true });
+      await this.writeLocalRegion(task, input, {
+        outcome: "no_change", reason: selection.reason, targetTitle, targetPath: chosen?.path ?? null,
+      });
       task.state = "ready";
       task.proposal_path = `${proposalsDir(s.systemFolder)}/${proposalId}.json`;
       task.updated_at = nowIso();
       await this.tasks.put(task);
+      return "no_change";
     }
-    return 1;
+
+    // 4) 程序组装 v3 文档：身份、来源版本与引用表都由程序填
+    const assembled = await assembleContentDocument(parsed, {
+      documentId: kbId,
+      kind: "knowledge",
+      revision: baseline.revision + 1,
+      task: "knowledge_fusion",
+      recipeVersion: `${CONTENT_RECIPE_VERSION}+${ORGANIZE_RULE_VERSION}`,
+      refTable,
+      segmentTexts: this.segments.textOf,
+      createdAt: nowIso(),
+      inputDocuments: [
+        { document_id: input.document.document_id, kind: "digest", revision: input.document.revision },
+        ...(chosen ? [{ document_id: kbId, kind: "knowledge", revision: baseline.revision }] : []),
+      ],
+      sourceRevisions: sources.sourceRevisions,
+    });
+    if (!assembled.document || assembled.completeness.state === "failed") {
+      const detail = assembled.completeness.gaps.map((g) => g.message).filter(Boolean).join("；");
+      throw new Error(`主题候选没有可用内容：${detail || assembled.errors.join("；") || "未知原因"}`);
+    }
+
+    await this.proposals.put({
+      ...proposalBase,
+      candidate_document: assembled.document,
+      no_op: false,
+    });
+    await this.writeLocalRegion(task, input, {
+      outcome: "candidate", reason: selection.reason, targetTitle, targetPath: chosen?.path ?? null,
+    });
+    task.state = "ready";
+    task.proposal_path = `${proposalsDir(s.systemFolder)}/${proposalId}.json`;
+    task.updated_at = nowIso();
+    await this.tasks.put(task);
+    return "candidate";
   }
 
-  /** 读取主题受管理正文。 */
-  private async readManagedBody(path: string): Promise<string> {
-    if (!(await this.deps.fs.exists(path))) return "";
+  /** 主题基线：受管理正文 + 该版引用表（未迁移主题没有引用表）。 */
+  private async readTopicBaseline(
+    path: string | null,
+    kbId: string,
+  ): Promise<{ body: string; revision: number; references: Record<string, ContentRefV3> }> {
+    if (!path || !(await this.deps.fs.exists(path))) return { body: "", revision: 0, references: {} };
     const text = await this.deps.fs.read(path);
-    return extractPartition(text, KNOWLEDGE_START, KNOWLEDGE_END) ?? "";
+    // 与写盘一致地按 trim 后取哈希：`rewriteKnowledgeNote` 写入的是 trim 过的正文，
+    // 否则回滚恢复旧正文会被误判成「主题正文已被修改」。
+    const body = (extractPartition(text, KNOWLEDGE_START, KNOWLEDGE_END) ?? "").trim();
+    const revision = Number(readFrontmatterValue(text, "kb_revision") ?? "0") || 0;
+    const record = await this.refs.read(kbId, revision) ?? await this.refs.latest(kbId);
+    return { body, revision, references: record?.references ?? {} };
   }
 
-  private evidenceMapPath(kbId: string): string {
-    return `${revisionDir(this.deps.settings().systemFolder, "knowledge", kbId)}/evidence-map.json`;
+  /** 引用表素材：主题现有依据在前，新来源在后；同一范围只分配一个 R 键。 */
+  private async collectRefSources(input: DigestInput, existingRefs: Record<string, ContentRefV3>): Promise<{
+    entries: Array<{ item_id: string; source_revision: number; segment_ids: string[] }>;
+    existingLabels: Array<{ ref: string; source: string; text: string }>;
+    newLabels: Array<{ ref: string; source: string; text: string }>;
+    sourceRevisions: Array<{ item_id: string; source_revision: number }>;
+  }> {
+    const s = this.deps.settings();
+    const entries: Array<{ item_id: string; source_revision: number; segment_ids: string[] }> = [];
+    const existingLabels: Array<{ ref: string; source: string; text: string }> = [];
+    const newLabels: Array<{ ref: string; source: string; text: string }> = [];
+    const seen = new Map<string, { item_id: string; source_revision: number }>();
+
+    const add = async (ref: ContentRefV3, source: string, bucket: Array<{ ref: string; source: string; text: string }>) => {
+      await this.segments.load(ref.item_id, ref.source_revision);
+      const dedupe = `${ref.item_id}@${ref.source_revision}:${ref.segment_ids.join(",")}`;
+      if (seen.has(dedupe)) return;
+      seen.set(dedupe, { item_id: ref.item_id, source_revision: ref.source_revision });
+      entries.push({ item_id: ref.item_id, source_revision: ref.source_revision, segment_ids: ref.segment_ids });
+      const text = ref.segment_ids.map((sid) => this.segments.textOf(ref.item_id, ref.source_revision, sid) ?? "").join("\n");
+      bucket.push({ ref: `R${entries.length}`, source, text });
+    };
+
+    for (const ref of Object.values(existingRefs)) await add(ref, "主题已有依据", existingLabels);
+    for (const ref of Object.values(input.document.references)) await add(ref, input.title, newLabels);
+    return {
+      entries,
+      existingLabels,
+      newLabels,
+      sourceRevisions: [...new Map(
+        [...seen.values()].map((v) => [`${v.item_id}@${v.source_revision}`, v] as const),
+      ).values()],
+    };
   }
 
-  private async readEvidenceMap(kbId: string): Promise<Record<string, unknown>> {
-    const p = this.evidenceMapPath(kbId);
-    if (!(await this.deps.fs.exists(p))) return {};
-    try {
-      return JSON.parse(await this.deps.fs.read(p)) as Record<string, unknown>;
-    } catch {
-      return {};
-    }
-  }
-
-  private async writeEvidenceMap(kbId: string, map: Record<string, unknown>): Promise<void> {
-    await this.deps.fs.write(this.evidenceMapPath(kbId), JSON.stringify(map, null, 2));
-  }
-
-  /** 只替换 Digest 的本地整理区并更新 kb_promotion 展示值。 */
-  private async updateDigestLocalRegion(
+  /** 只替换 Digest 的本地整理区与整理结论（人工区与未知字段不动）。 */
+  private async writeLocalRegion(
     task: OrganizeTask,
     input: DigestInput,
-    localRegion: string,
-    promotion: string,
+    result: {
+      outcome: "candidate" | "keep_digest" | "no_change";
+      reason: string | null;
+      targetTitle: string | null;
+      targetPath: string | null;
+    },
   ): Promise<void> {
     const fs = this.deps.fs;
     const path = task.digest_path;
     if (!(await fs.exists(path))) return;
     const current = await fs.read(path);
-    const updated = mergeKbFrontmatter(current, [
-      `kb_id: "dig-${input.itemId}"`,
+    const region = renderLocalOrganize({
+      relationNote: [
+        result.targetTitle ? `建议修改主题：${result.targetTitle}` : "未匹配到已有主题。",
+        result.reason ? `依据：${result.reason}` : "",
+      ].filter(Boolean).join("\n"),
+      ...result,
+    });
+    const organize = result.outcome === "candidate" ? "candidate"
+      : result.outcome === "keep_digest" ? "keep_digest" : "no_change";
+    const withFm = mergeKbFrontmatter(current, [
+      `kb_id: "${digestKbId(input.itemId)}"`,
       `kb_item_id: "${input.itemId}"`,
       "kb_type: digest",
       `kb_source_revision: ${input.sourceRevision}`,
       `kb_digest_revision: ${input.bundleRevision}`,
-      `kb_promotion: ${promotion}`,
+      `kb_content_revision: ${input.document.revision}`,
+      `kb_format_version: "${CONTENT_FORMAT_VERSION}"`,
+      `kb_organize: ${organize}`,
     ]);
-    const rebuilt = replacePartition(updated, LOCAL_ORGANIZE_START, LOCAL_ORGANIZE_END, localRegion);
-    // `status/*` 是 kb_promotion 的展示，同一次写入保持二者一致（docs/08 §5）
-    const tagged = mergeManagedTags(rebuilt, managedTags("digest", promotion));
+    const rebuilt = replacePartition(withFm, LOCAL_ORGANIZE_START, LOCAL_ORGANIZE_END, region);
+    const tagged = mergeManagedTags(rebuilt, managedTags("digest", organize));
     if (tagged !== current) await fs.write(path, tagged);
   }
 
@@ -770,16 +699,21 @@ export class OrganizeService {
     const items = await this.proposals.all();
     return renderProposalIndex(items.map((p) => ({
       proposalId: p.proposal_id,
-      title: p.knowledge_title ?? "（新建主题）",
       knowledgeTitle: p.knowledge_title,
       state: p.state,
       changeSummary: p.change_summary,
       createdAt: p.created_at,
+      noOp: p.no_op,
     })));
   }
 
-  async listProposals(): Promise<FusionProposal[]> {
+  async listProposals(): Promise<TopicProposal[]> {
     return this.proposals.all();
+  }
+
+  /** 旧版逐观点候选（归档，只读）。 */
+  async listLegacyProposals(): Promise<LegacyProposal[]> {
+    return this.proposals.legacyAll();
   }
 
   /** 跳过候选：只改本地状态，不写 Knowledge。 */
@@ -792,65 +726,80 @@ export class OrganizeService {
     if (this.deps.onProposalsChanged) await this.deps.onProposalsChanged();
   }
 
-  /** 标记用户已采纳（写入前仍要过基线校验，docs/08 §7.2 第 4 条）。 */
-  async accept(proposalId: string, editedBody?: string): Promise<{ applied: boolean; note: string }> {
+  /**
+   * 采纳候选：整篇或按块部分采纳。
+   *
+   * `keep` 是按 section/block 的勾选矩阵：取消勾选的块不写入，未再使用的引用被清除，
+   * 勾选后的 `quote` 块重新做逐字校验（docs/23 §6.3）。自由文本编辑不会回写成结构化
+   * 候选，因此界面只提供整篇采纳与按块采纳，不假装可靠的逐段合并。
+   */
+  async accept(proposalId: string, opts: { keep?: boolean[][] } = {}): Promise<{ applied: boolean; note: string }> {
     const p = await this.proposals.get(proposalId);
-    if (!p) return { applied: false, note: "候选不存在。" };
+    if (!p) return { applied: false, note: "候选不存在；若是旧版逐观点候选，它已归档，需要基于当前材料重新生成。" };
     if (p.state === "applied") return { applied: false, note: "该候选已经应用过（幂等）。" };
-    if (editedBody !== undefined) p.proposed_managed_body = editedBody;
-    p.state = "accepted";
-    await this.proposals.put(p);
-    return this.apply(p);
+    if (p.no_op || !p.candidate_document) {
+      p.state = "applied";
+      p.applied_at = nowIso();
+      await this.proposals.put(p);
+      await this.syncTaskState(p, "applied");
+      return { applied: false, note: "候选判定为无需修改，未写入任何内容。" };
+    }
+    return this.apply(p, opts.keep);
   }
 
-  /**
-   * 写入 Knowledge（docs/08 §7.2 第 5、6 条）。
-   *
-   * 顺序：读取 → 基线校验 → 历史快照 + 恢复记录 → 一次替换管理区 → 记录新哈希与证据映射。
-   */
-  private async apply(p: FusionProposal): Promise<{ applied: boolean; note: string }> {
+  /** 写入 Knowledge：先校验证据与基线，再存历史正文与引用表，最后替换管理区。 */
+  private async apply(p: TopicProposal, keep?: boolean[][]): Promise<{ applied: boolean; note: string }> {
     const s = this.deps.settings();
     const fs = this.deps.fs;
+    let document = p.candidate_document!;
+    if (keep) {
+      const pruned = selectBlocksForAdoption(document, keep);
+      document = pruned.document;
+      if (!document.sections.some((sec) => sec.blocks.length)) {
+        return { applied: false, note: "没有勾选任何内容块，未写入。" };
+      }
+    }
 
-    // 新建主题：实际创建时由插件分配 ID（docs/08 §8.1）
-    let path: string;
-    let kbId: string;
-    let title: string;
-    let scope = "";
-    let revision: number;
-    let isNew = false;
+    // 证据：所引原文必须在本地固定快照中逐字可核（缺版本即暂缓，不拿最新原文冒充）
+    for (const ref of Object.values(document.references)) {
+      await this.segments.load(ref.item_id, ref.source_revision);
+    }
+    const quoteErrors = quoteVerificationErrors(document, this.segments.textOf);
+    if (quoteErrors.length) return { applied: false, note: `摘录校验未通过：${quoteErrors.slice(0, 2).join("；")}` };
+    const hashErrors = await referenceHashErrors(document, this.segments.textOf);
+    if (hashErrors.length) return { applied: false, note: `原文快照校验未通过：${hashErrors.slice(0, 2).join("；")}` };
 
-    if (p.knowledge_id) {
-      const entry = (await this.index.read()).entries.find((e) => e.kb_id === p.knowledge_id);
-      if (!entry) {
+    // 目标定位靠文档身份，不靠文件名
+    const entry = p.knowledge_id ? (await this.index.read()).entries.find((e) => e.kb_id === p.knowledge_id) : null;
+    const kbId = p.knowledge_id ?? knowledgeIdFromTitle(p.knowledge_title ?? "未命名主题");
+    const isNew = !entry;
+    const path = entry?.path ?? await this.reserveKnowledgePath(kbId, p.knowledge_title ?? "未命名主题");
+    const current = (await fs.exists(path)) ? await fs.read(path) : "";
+    const nextRevision = p.base_revision + 1;
+    const body = await this.renderKnowledgeBody(document);
+    const bodyHash = await sha256Hex(body.trim());
+
+    // 恢复记录先于基线判断：本候选若已提交过，正文与基线必然不一致，
+    // 但正确处理是补状态而不是把它标成过期（docs/23 §6.4 第 6 条）。
+    const recovery = new JsonStore<Record<string, unknown>>(fs,
+      `${revisionDir(s.systemFolder, "knowledge", kbId)}/recovery-${p.proposal_id}.json`, () => ({}));
+    const prior = await recovery.read();
+    if (prior.state === "committed" && String(prior.proposed_hash) === bodyHash) {
+      p.state = "applied";
+      p.applied_at = p.applied_at ?? nowIso();
+      p.applied_knowledge_revision = Number(prior.target_revision) || nextRevision;
+      await this.proposals.put(p);
+      await this.index.upsert(s.knowledgeFolder, path);
+      return { applied: false, note: "本次候选此前已提交（恢复检查），未重复写入。" };
+    }
+    if (!isNew) {
+      if (!current) {
         p.state = "stale";
         await this.proposals.put(p);
         return { applied: false, note: "目标主题笔记已不存在；候选标为过期。" };
       }
-      path = entry.path;
-      kbId = entry.kb_id;
-      title = entry.title;
-      revision = entry.revision;
-      scope = entry.scope;
-    } else {
-      const newTopic = (p.evidence_map as { __new_topic__?: { name: string; scope: string } }).__new_topic__;
-      title = newTopic?.name || p.knowledge_title || "未命名主题";
-      scope = newTopic?.scope ?? "";
-      kbId = knowledgeIdFromTitle(title);
-      path = knowledgeNotePath(s.knowledgeFolder, title);
-      revision = 0;
-      isNew = true;
-      if (await fs.exists(path)) {
-        return { applied: false, note: `目标路径已存在同名笔记：${path}；请先处理重名。` };
-      }
-    }
-
-    if (!isNew) {
-      const current = await fs.read(path);
       const currentBody = extractPartition(current, KNOWLEDGE_START, KNOWLEDGE_END) ?? "";
-      const currentHash = await sha256Hex(currentBody);
-      if (currentHash !== p.base_hash) {
-        // 用户或同步工具改过笔记：标过期，不直接覆盖
+      if (await sha256Hex(currentBody.trim()) !== p.base_hash) {
         p.state = "stale";
         await this.proposals.put(p);
         await this.syncTaskState(p, "stale");
@@ -858,167 +807,99 @@ export class OrganizeService {
       }
     }
 
-    const nextRevision = revision + 1;
-    const today = nowIso().slice(0, 10);
-
-    // 冻结被引用的 Digest 证据快照，并校验证据链可追溯（docs/08 §6.1）
-    const citationErrors = await this.freezeEvidence(p, kbId, revision);
-    if (citationErrors.length) {
-      p.state = "stale";
-      await this.proposals.put(p);
-      return { applied: false, note: `证据链校验未通过：${citationErrors.slice(0, 3).join("；")}` };
-    }
-    const citedBody = renderCitations(p.proposed_managed_body, p.evidence_map, {
-      systemFolder: s.systemFolder,
-      sourcesFolder: s.sourcesFolder,
-      digestTitleOf: (digestId) => digestId.replace(/^dig-/, ""),
+    await recovery.write({
+      proposal_id: p.proposal_id,
+      task_id: p.task_id,
+      knowledge_id: kbId,
+      target_revision: nextRevision,
+      base_hash: p.base_hash,
+      proposed_hash: bodyHash,
+      state: "prepared",
+      created_at: nowIso(),
     });
 
-    // 先写历史快照与恢复记录，再替换管理区
-    if (!isNew) {
-      const snapshot = await fs.read(path);
-      await this.revisions.save("knowledge", kbId, revision, snapshot);
-    }
-    await this.saveRecoveryRecord(p, kbId, nextRevision);
+    // 先存历史正文与本版引用表，再提交正文（回滚成对恢复）
+    if (current) await this.revisions.save("knowledge", kbId, p.base_revision, current);
+    await this.refs.save(kbId, {
+      revision: nextRevision,
+      document_id: document.document_id,
+      body_hash: bodyHash,
+      references: document.references,
+    });
 
-    const newText = isNew
+    const today = nowIso().slice(0, 10);
+    const newText = !current
       ? renderKnowledgeNote({
-        kbId, title, aliases: [], scope,
-        managedBody: citedBody,
-        revision: nextRevision,
-        reviewedAt: today,
+        kbId, title: p.knowledge_title ?? "未命名主题", aliases: [],
+        scope: p.new_topic?.scope ?? "", managedBody: body,
+        revision: nextRevision, reviewedAt: today,
       })
-      : await this.rewriteKnowledgeNote(path, citedBody, nextRevision, today);
-
+      : this.rewriteKnowledgeNote(current, body, nextRevision, today);
     await fs.write(path, newText);
-    const writtenBody = extractPartition(newText, KNOWLEDGE_START, KNOWLEDGE_END) ?? "";
-    const writtenHash = await sha256Hex(writtenBody);
-    if (writtenHash !== await sha256Hex(citedBody.trim())) {
-      // 回调外算哈希后再比对实际文本，防止检查与写入之间被编辑
-      return { applied: false, note: "写入后校验不一致，已保留快照；请检查笔记。" };
+    const written = extractPartition(newText, KNOWLEDGE_START, KNOWLEDGE_END) ?? "";
+    if (await sha256Hex(written.trim()) !== bodyHash) {
+      return { applied: false, note: "写入后校验不一致，历史快照与引用表已保留；请检查笔记。" };
     }
-
-    // 证据映射：被引用的 Digest／Source 随本地证据留存（docs/08 §6.1）
-    const map = await this.readEvidenceMap(kbId);
-    for (const [claimId, entry] of Object.entries(p.evidence_map)) {
-      if (claimId.startsWith("__") || !entry || typeof entry !== "object") continue;
-      map[claimId] = entry;
-    }
-    await this.writeEvidenceMap(kbId, map);
+    await recovery.write({ ...(await recovery.read()), state: "committed", committed_at: nowIso() });
 
     p.state = "applied";
     p.applied_at = nowIso();
     p.applied_knowledge_revision = nextRevision;
     await this.proposals.put(p);
+    await this.docs.register({
+      kb_id: kbId, path, kind: "knowledge", item_id: null,
+      title: p.knowledge_title ?? "", updated_at: nowIso(),
+    });
     await this.index.upsert(s.knowledgeFolder, path);
     await this.syncTaskState(p, "applied");
     if (this.deps.onProposalsChanged) await this.deps.onProposalsChanged();
     return {
       applied: true,
       note: isNew
-        ? `已新建主题「${title}」（${kbId}），rev ${nextRevision}。`
-        : `已写入主题「${title}」，rev ${revision} → ${nextRevision}。`,
+        ? `已新建主题「${p.knowledge_title}」（${kbId}），rev ${nextRevision}。`
+        : `已写入主题「${p.knowledge_title}」，rev ${p.base_revision} → ${nextRevision}。`,
     };
   }
 
-  /**
-   * 冻结被引用的 Digest 证据快照并校验证据链可追溯（docs/08 §6.1）。
-   *
-   * 快照含带块 ID 的观点段落，块内链接当时版本的原文片段；旧快照不清理，
-   * 重新提炼不会让旧 Knowledge 的依据悄悄变化。
-   */
-  private async freezeEvidence(p: FusionProposal, kbId: string, baseRevision: number): Promise<string[]> {
+  /** 主题正文 = 内容主体渲染 + 「依据与原文」表（引用直连固定原文）。 */
+  private async renderKnowledgeBody(doc: ContentDocumentV3): Promise<string> {
+    await this.labelRefs(doc);
     const s = this.deps.settings();
-    const fs = this.deps.fs;
-
-    // 先冻结快照，再校验（校验要能看到快照）
-    const referenced = new Map<string, { digestId: string; revision: number; itemId: string }>();
-    for (const [claimId, raw] of Object.entries(p.evidence_map)) {
-      if (claimId.startsWith("__") || !raw || typeof raw !== "object") continue;
-      const e = raw as Record<string, unknown>;
-      const digestId = String(e.digest_id ?? "");
-      const revision = Number(e.digest_revision ?? 0);
-      const itemId = String(e.item_id ?? "");
-      if (digestId && revision && itemId) referenced.set(`${digestId}@${revision}`, { digestId, revision, itemId });
-    }
-    for (const { digestId, revision, itemId } of referenced.values()) {
-      const input = await this.findDigestInput(itemId);
-      if (!input) {
-        // 找不到对应 Digest 笔记时不能凭空造快照；证据链校验会如实报错
-        continue;
-      }
-      const content = renderDigestSnapshot({
-        digestId, digestRevision: revision, sourceRevision: input.sourceRevision,
-        itemId, title: input.title, summary: input.summary, claims: input.claims,
-        sourcesFolder: s.sourcesFolder, createdAt: nowIso(),
-      });
-      await fs.write(digestSnapshotPath(s.systemFolder, digestId, revision), content);
-    }
-
-    const errors = validateEvidenceMap(p.evidence_map, {
-      knowledgeId: kbId,
-      baseKnowledgeRevision: baseRevision,
-      snapshotExists: (digestId, revision) => true, // 已在上一步写入
-      segmentExists: () => true,
+    const linkOf = (ref: ContentRefV3) => refAnchor(s.sourcesFolder, ref);
+    const body = renderContentMarkdown(doc, { sourceLinkOf: linkOf });
+    const table = renderReferenceTable(doc, {
+      sourceLinkOf: linkOf,
+      sourceTitleOf: (ref) => this.sourceLabel(ref),
     });
-    // 片段存在性需要异步确认，逐条复核
-    for (const [claimId, raw] of Object.entries(p.evidence_map)) {
-      if (claimId.startsWith("__") || !raw || typeof raw !== "object") continue;
-      const e = raw as Record<string, unknown>;
-      const itemId = String(e.item_id ?? "");
-      const sourceRevision = Number(e.source_revision ?? 0);
-      const segmentIds = Array.isArray(e.segment_ids) ? e.segment_ids.map(String) : [];
-      if (!itemId || !sourceRevision) continue;
-      const segmentsPath = `${sourceAssetsDir(s.sourcesFolder, itemId, sourceRevision)}/segments.json`;
-      if (!(await fs.exists(segmentsPath))) {
-        errors.push(`evidence_map.${claimId} 的原文片段索引缺失：${segmentsPath}`);
-        continue;
-      }
-      let available: string[] = [];
-      try {
-        const doc = JSON.parse(await fs.read(segmentsPath)) as {
-          segments?: Array<{ segment_id?: string }>;
-        };
-        available = (doc.segments ?? []).map((x) => String(x.segment_id ?? ""));
-      } catch {
-        errors.push(`evidence_map.${claimId} 的原文片段索引无法解析`);
-        continue;
-      }
-      for (const sid of segmentIds) {
-        if (!available.includes(sid)) {
-          errors.push(`evidence_map.${claimId} 指向不存在的原文片段 ${sid}`);
-        }
-      }
-    }
-    return errors;
+    return table ? `${body}\n\n${table}` : body;
   }
 
-  /** 按 item_id 在 `02 Digests` 下定位 Digest 笔记（文件名带稳定 item_id）。 */
-  private async findDigestInput(itemId: string): Promise<DigestInput | null> {
+  /** 引用来源的显示标题从文档索引取（Digest 笔记标题），不显示任何内部编号。 */
+  private async labelRefs(doc: ContentDocumentV3): Promise<void> {
+    for (const ref of Object.values(doc.references)) {
+      if (this.labels.has(ref.item_id)) continue;
+      const entry = await this.docs.entryOf(digestKbId(ref.item_id));
+      if (entry?.title) this.labels.set(ref.item_id, entry.title.replace(/：提炼$/, "").trim());
+    }
+  }
+
+  /** 来源显示名：用该条目 Digest 的标题；本地没有时如实显示条目短号。 */
+  private labels = new Map<string, string>();
+
+  private sourceLabel(ref: ContentRefV3): string {
+    return this.labels.get(ref.item_id) ?? `来源 ${ref.item_id.slice(0, 8)}`;
+  }
+
+  private async reserveKnowledgePath(kbId: string, title: string): Promise<string> {
     const s = this.deps.settings();
-    const suffix = `--${itemId}.md`;
-    const walk = async (dir: string): Promise<string[]> => {
-      const out: string[] = [];
-      for (const f of await this.deps.fs.list(dir)) if (f.endsWith(".md")) out.push(f);
-      for (const child of await this.deps.fs.listDirs(dir)) out.push(...await walk(child));
-      return out;
-    };
-    for (const path of await walk(s.digestsFolder)) {
-      if (!path.endsWith(suffix)) continue;
-      const input = await readDigestInput(this.deps.fs, s, itemId, path);
-      if (input) return input;
-    }
-    return null;
+    const desired = knowledgeNotePath(s.knowledgeFolder, title);
+    await this.docs.ensure([{ folder: s.knowledgeFolder, kind: "knowledge" }]);
+    return resolveAvailableNotePath(desired, async (candidate) =>
+      (await this.deps.fs.exists(candidate)) || (await this.docs.isTakenByOther(candidate, kbId)));
   }
 
-  /** 替换 Knowledge 受管理区，保留人工区、范围说明与未知 frontmatter。 */
-  private async rewriteKnowledgeNote(
-    path: string,
-    managedBody: string,
-    revision: number,
-    reviewedAt: string,
-  ): Promise<string> {
-    const current = await this.deps.fs.read(path);
+  /** 替换 Knowledge 受管理区，保留人工区、范围说明、历史引用区与未知 frontmatter。 */
+  private rewriteKnowledgeNote(current: string, managedBody: string, revision: number, reviewedAt: string): string {
     const withFm = mergeKbFrontmatter(current, [
       `kb_revision: ${revision}`,
       `kb_reviewed_at: ${reviewedAt}`,
@@ -1026,44 +907,21 @@ export class OrganizeService {
     return replacePartition(withFm, KNOWLEDGE_START, KNOWLEDGE_END, managedBody.trim());
   }
 
-  /** 恢复记录：崩溃后据此识别已写入／未写入／冲突（docs/08 §7.2 第 6 条）。 */
-  private async saveRecoveryRecord(p: FusionProposal, kbId: string, revision: number): Promise<void> {
-    const dir = `${this.deps.settings().systemFolder}/KnowledgeInbox/revisions/knowledge/${kbId}`;
-    const record = {
-      proposal_id: p.proposal_id,
-      task_id: p.task_id,
-      knowledge_id: kbId,
-      target_revision: revision,
-      base_hash: p.base_hash,
-      proposed_hash: await sha256Hex(p.proposed_managed_body.trim()),
-      written_at: null as string | null,
-      state: "prepared",
-      created_at: nowIso(),
-    };
-    await this.deps.fs.write(`${dir}/recovery-${p.proposal_id}.json`, JSON.stringify(record, null, 2));
-  }
-
-  /** 任务与候选状态同步（观点级状态以候选记录为准，docs/08 §4）。 */
-  private async syncTaskState(p: FusionProposal, state: OrganizeTaskState): Promise<void> {
+  /** 任务与候选状态同步；采纳后把整理结论写回 Digest 的 `kb_organize`。 */
+  private async syncTaskState(p: TopicProposal, state: OrganizeTaskState): Promise<void> {
     const task = await this.tasks.get(p.task_id);
     if (!task) return;
     task.state = state;
     task.updated_at = nowIso();
     await this.tasks.put(task);
-    // 更新 Digest 的 kb_promotion 汇总展示
-    const applied = p.state === "applied"
-      ? p.promotion_decisions.filter((d) => d.decision === "review").map((d) => d.claim_id)
-      : [];
-    const promotion = aggregatePromotion(p.promotion_decisions, applied);
-    const digestPath = task.digest_path;
-    if (await this.deps.fs.exists(digestPath)) {
-      const text = await this.deps.fs.read(digestPath);
-      const updated = mergeKbFrontmatter(text, [`kb_promotion: ${promotion}`]);
-      if (updated !== text) await this.deps.fs.write(digestPath, updated);
-    }
+    if (state !== "applied" || !(await this.deps.fs.exists(task.digest_path))) return;
+    const text = await this.deps.fs.read(task.digest_path);
+    const updated = mergeKbFrontmatter(text, ["kb_organize: applied"]);
+    const tagged = mergeManagedTags(updated, managedTags("digest", "applied"));
+    if (tagged !== text) await this.deps.fs.write(task.digest_path, tagged);
   }
 
-  /** 回滚：以历史版本生成恢复操作；笔记再次被改时先展示差异（docs/08 §7.2 第 7 条）。 */
+  /** 回滚：正文与引用表成对恢复；笔记再次被改时先展示差异。 */
   async rollback(proposalId: string): Promise<{ rolledBack: boolean; note: string; diff?: string }> {
     const p = await this.proposals.get(proposalId);
     if (!p || p.state !== "applied" || !p.knowledge_id || p.applied_knowledge_revision === null) {
@@ -1071,57 +929,53 @@ export class OrganizeService {
     }
     const entry = (await this.index.read()).entries.find((e) => e.kb_id === p.knowledge_id);
     if (!entry) return { rolledBack: false, note: "主题笔记已不存在。" };
-    const previous = await this.revisions.read("knowledge", p.knowledge_id, p.applied_knowledge_revision - 1);
+    const previousRevision = p.applied_knowledge_revision - 1;
+    const previous = await this.revisions.read("knowledge", p.knowledge_id, previousRevision);
     if (previous === null) return { rolledBack: false, note: "没有找到上一版历史快照。" };
 
     const current = await this.deps.fs.read(entry.path);
     const currentBody = extractPartition(current, KNOWLEDGE_START, KNOWLEDGE_END) ?? "";
     const expected = extractPartition(previous, KNOWLEDGE_START, KNOWLEDGE_END) ?? "";
-    if (currentBody.trim() !== p.proposed_managed_body.trim() && currentBody.trim() !== expected.trim()) {
+    const appliedRecord = await this.refs.read(p.knowledge_id, p.applied_knowledge_revision);
+    // 应用后又被人工改过时不能直接覆盖：正文哈希既不是本版候选也不是旧版结果就拒绝
+    const appliedHash = appliedRecord?.body_hash ?? null;
+    const stillMatches = currentBody.trim() === expected.trim()
+      || (appliedHash !== null && await sha256Hex(currentBody.trim()) === appliedHash);
+    if (!stillMatches) {
       return {
         rolledBack: false,
         note: "当前笔记在应用后又被修改；请先人工合并，不能直接用旧快照覆盖。",
         diff: renderDiff(expected, currentBody),
       };
     }
-    const restored = await this.rewriteKnowledgeNote(
-      entry.path, expected, p.applied_knowledge_revision - 1, nowIso().slice(0, 10));
+    const restored = this.rewriteKnowledgeNote(current, expected, previousRevision, nowIso().slice(0, 10));
     await this.deps.fs.write(entry.path, restored);
+    // 提交恢复记录随之作废：它只用于「崩溃重启不重复写入」，回滚后同一候选应能再次采纳
+    const settings = this.deps.settings();
+    const recovery = new JsonStore<Record<string, unknown>>(this.deps.fs,
+      `${revisionDir(settings.systemFolder, "knowledge", p.knowledge_id)}/recovery-${p.proposal_id}.json`, () => ({}));
+    const prior = await recovery.read();
+    if (prior.state) {
+      await recovery.write({ ...prior, state: "rolled_back", rolled_back_at: nowIso() });
+    }
+    if (appliedRecord) {
+      const prevRefs = await this.refs.read(p.knowledge_id, previousRevision);
+      if (prevRefs) await this.refs.save(p.knowledge_id, prevRefs);
+      else await this.deps.fs.remove(this.refs.path(p.knowledge_id, p.applied_knowledge_revision));
+    }
     p.state = "skipped";
     p.applied_at = null;
+    p.applied_knowledge_revision = null;
     await this.proposals.put(p);
     await this.index.upsert(this.deps.settings().knowledgeFolder, entry.path);
     if (this.deps.onProposalsChanged) await this.deps.onProposalsChanged();
-    return { rolledBack: true, note: `已回滚到 rev ${p.applied_knowledge_revision - 1}。` };
+    return { rolledBack: true, note: `已回滚到 rev ${previousRevision}（正文与引用表一起恢复）。` };
   }
 }
 
-/** 「与已有知识的关系」说明（docs/08 §3.2）。 */
-export function buildRelationNote(
-  decisions: PromotionDecision[],
-  candidates: Array<{ kb_id: string; title: string }>,
-): string {
-  if (!decisions.length) return "尚未本地整理。";
-  const lines: string[] = [];
-  const reviewed = decisions.filter((d) => d.decision === "review");
-  const kept = decisions.filter((d) => d.decision === "keep_digest");
-  const deferred = decisions.filter((d) => d.decision === "deferred");
-  if (reviewed.length) {
-    const targets = [...new Set(reviewed.map((d) =>
-      d.target_knowledge_id
-        ? (candidates.find((c) => c.kb_id === d.target_knowledge_id)?.title ?? d.target_knowledge_id)
-        : (d.new_topic?.name ?? "（待新建主题）")))];
-    lines.push(`有 ${reviewed.length} 条观点具备长期增量，涉及主题：${targets.join("、")}。`);
-  }
-  if (kept.length) lines.push(`有 ${kept.length} 条观点属于重复或无独立补证，留在本 Digest。`);
-  if (deferred.length) lines.push(`有 ${deferred.length} 条观点证据不足，暂缓（不当作确定结论）。`);
-  return lines.join("\n") || "尚未本地整理。";
-}
-
-/** 简单行级差异预览（回滚前的差异展示）。
+/** 程序计算的正文差异预览（新增/改动/删除，docs/23 §6.2）。
  *
- * 先裁掉首尾公共行，让差异聚焦在真实改动段；不做完整 LCS，
- * 中间段仍按行号对齐（审查 C-32：避免插入一行导致整篇误报不同）。
+ * 模型没有可靠复现旧正文时，删除会在这里显式出现；默认仍需用户采纳，绝不静默落盘。
  */
 export function renderDiff(before: string, after: string): string {
   const a = before.split("\n");
@@ -1132,15 +986,17 @@ export function renderDiff(before: string, after: string): string {
   let endB = b.length;
   while (endA > start && endB > start && a[endA - 1] === b[endB - 1]) { endA--; endB--; }
   const lines: string[] = [];
-  for (let i = start; i < Math.max(endA, endB); i++) {
-    if (a[i] === b[i]) continue;
+  const max = Math.max(endA, endB);
+  for (let i = start; i < max; i++) {
+    if (i < endA && i < endB && a[i] === b[i]) continue;
     if (i < endA) lines.push(`- ${a[i]}`);
     if (i < endB) lines.push(`+ ${b[i]}`);
   }
-  return lines.slice(0, 80).join("\n");
+  return lines.slice(0, 200).join("\n");
 }
 
-/** 供同步引擎使用：从 manifest 推断 Source 的捕获时间（用于 Digest 路径）。 */
-export function digestPathFor(settings: KbSettings, manifest: KbManifest, itemId: string): string {
-  return digestNotePath(settings.digestsFolder, manifest.source.captured_at, manifest.source.title, itemId);
+/** 一篇 Digest 笔记对应的 item_id：身份在 frontmatter，不再从文件名猜。 */
+export function itemIdOfDigestNote(text: string): string | null {
+  if (readFrontmatterValue(text, "kb_type") !== "digest") return null;
+  return readFrontmatterValue(text, "kb_item_id");
 }

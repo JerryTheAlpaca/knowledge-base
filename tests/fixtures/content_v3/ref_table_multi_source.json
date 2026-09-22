@@ -1,0 +1,39 @@
+{
+  "R1": {
+    "item_id": "itm-33333333-3333-4333-8333-333333333333",
+    "source_revision": 2,
+    "segment_ids": [
+      "s0001",
+      "s0002"
+    ],
+    "text": "引用表要按来源分开，不能共用一个片段号。\n同一篇里的两处依据，指向的是两份原文。",
+    "locator": {
+      "kind": "paragraph",
+      "paragraph_id": "p0001"
+    }
+  },
+  "R2": {
+    "item_id": "itm-44444444-4444-4444-8444-444444444444",
+    "source_revision": 1,
+    "segment_ids": [
+      "s0001"
+    ],
+    "text": "同号片段分开绑定，依据才知道自己属于谁。",
+    "locator": {
+      "kind": "paragraph",
+      "paragraph_id": "p0001"
+    }
+  },
+  "R3": {
+    "item_id": "itm-44444444-4444-4444-8444-444444444444",
+    "source_revision": 1,
+    "segment_ids": [
+      "s0002"
+    ],
+    "text": "另一份材料的原话，开头同样从一号片段排起。",
+    "locator": {
+      "kind": "paragraph",
+      "paragraph_id": "p0002"
+    }
+  }
+}

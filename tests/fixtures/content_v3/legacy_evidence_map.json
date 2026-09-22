@@ -1,0 +1,54 @@
+{
+  "document_id": "kn-9e2a7c31-4b5d-4a1e-9f2c-legacy000001",
+  "schema_version": "2.0",
+  "source_item_id": "itm-11111111-1111-4111-8111-111111111111",
+  "source_revision": 1,
+  "bundle_revision": 3,
+  "normalized_note": "01 Sources/2026/09/2026-09-21 内容接收与提炼--itm-11111111-1111-4111-8111-111111111111.md",
+  "claims": {
+    "c0001": {
+      "kind": "key_point",
+      "text": "内容接收和总结应分别记录处理结果。",
+      "conditions": "适用于多来源采集。",
+      "evidence_ids": [
+        "s0001",
+        "s0002"
+      ],
+      "excerpt": "采集与总结应该分开处理，避免混在一起。",
+      "excerpt_evidence_ids": [
+        "s0001"
+      ]
+    },
+    "c0002": {
+      "kind": "key_point",
+      "text": "长期知识的晋升在本地决定。",
+      "conditions": null,
+      "evidence_ids": [
+        "s0003",
+        "s0004"
+      ],
+      "excerpt": "本地整理才决定是否晋升为长期知识。云端不做主题判断，避免把一次阅读当成永久结论。",
+      "excerpt_evidence_ids": [
+        "s0003",
+        "s0004"
+      ]
+    }
+  },
+  "extra_anchors": {
+    "c0003": {
+      "kind": "method",
+      "text": "分两步处理：先落盘再接着提炼。",
+      "conditions": "来源材料已完成提取。",
+      "evidence_ids": [
+        "s0001",
+        "s0002"
+      ]
+    }
+  },
+  "human_regions": [
+    "## 我自己补充的部分"
+  ],
+  "unknown_frontmatter": [
+    "kb_custom_local_field"
+  ]
+}

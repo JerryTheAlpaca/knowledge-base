@@ -76,7 +76,7 @@
           "auth"
         ],
         "summary": "Auth Logout",
-        "description": "共享退出：撤销当前中心会话并清理 Cookie（中心会话通道）。\n\n设备 Token 通道不受浏览器退出影响（docs/05 §4.2：区分「退出网站」与「断开设备」）。",
+        "description": "共享退出：先清本地，再尽力通知中心（docs/05 §4.2）。\n\n不经 current_principal：中心不可达时那里先抛 503，本处理器根本进不去，\n用户点了退出其实什么都没清（前端吞掉异常照样 showLogin）。写操作防护不因此\n放松——CSRF 双提交与 Origin 校验照旧执行。\n设备 Token 通道不受浏览器退出影响（区分「退出网站」与「断开设备」）。",
         "operationId": "auth_logout_v1_auth_logout_post",
         "responses": {
           "200": {
@@ -4726,7 +4726,7 @@
             ],
             "title": "Created At"
           },
-          "schema_version": {
+          "format_version": {
             "anyOf": [
               {
                 "type": "string"
@@ -4735,59 +4735,9 @@
                 "type": "null"
               }
             ],
-            "title": "Schema Version"
+            "title": "Format Version"
           },
-          "summary": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Summary"
-          },
-          "key_points": {
-            "items": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "type": "array",
-            "title": "Key Points"
-          },
-          "excerpts": {
-            "items": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "type": "array",
-            "title": "Excerpts"
-          },
-          "methods": {
-            "items": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "type": "array",
-            "title": "Methods"
-          },
-          "insights": {
-            "items": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "type": "array",
-            "title": "Insights"
-          },
-          "limitations": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Limitations"
-          },
-          "workflow": {
+          "content_document": {
             "anyOf": [
               {
                 "additionalProperties": true,
@@ -4797,12 +4747,12 @@
                 "type": "null"
               }
             ],
-            "title": "Workflow"
+            "title": "Content Document"
           },
-          "evidence_map": {
+          "completeness": {
             "additionalProperties": true,
             "type": "object",
-            "title": "Evidence Map"
+            "title": "Completeness"
           },
           "segments": {
             "additionalProperties": {
@@ -4821,6 +4771,14 @@
               }
             ],
             "title": "Stale Note"
+          },
+          "legacy_converted": {
+            "type": "boolean",
+            "title": "Legacy Converted"
+          },
+          "unresolved_count": {
+            "type": "integer",
+            "title": "Unresolved Count"
           }
         },
         "additionalProperties": false,
@@ -4831,19 +4789,16 @@
           "source_revision",
           "bundle_revision",
           "created_at",
-          "schema_version",
-          "summary",
-          "key_points",
-          "excerpts",
-          "methods",
-          "insights",
-          "limitations",
-          "workflow",
-          "evidence_map",
+          "format_version",
+          "content_document",
+          "completeness",
           "segments",
-          "stale_note"
+          "stale_note",
+          "legacy_converted",
+          "unresolved_count"
         ],
-        "title": "CloudDigestOut"
+        "title": "CloudDigestOut",
+        "description": "云端提炼阅读视图（docs/24 §6）：只承载 ContentDocument v3。\n\n旧数组字段（key_points/excerpts/methods/insights/limitations/workflow/\nevidence_map）已随内容协议 v3 一次性移除，不留双写。"
       },
       "CreateShare": {
         "properties": {
@@ -6379,5 +6334,10 @@
         "title": "ValidationError"
       }
     }
-  }
+  },
+  "servers": [
+    {
+      "url": "https://kb.jerrythealpaca.cn"
+    }
+  ]
 }

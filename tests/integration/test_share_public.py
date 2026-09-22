@@ -381,7 +381,18 @@ def test_storage_key_index_comes_from_migrations(tmp_path):
         names = {row[0] for row in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='share_artifacts'")}
         version = conn.execute("SELECT version_num FROM alembic_version").fetchone()
+        job_cols = {row[1] for row in conn.execute("PRAGMA table_info(jobs)")}
+        migration_tables = {row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+        migration_cols = {row[1] for row in conn.execute("PRAGMA table_info(content_migrations)")}
+        migration_ddl = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name='content_migrations'").fetchone()[0]
     finally:
         conn.close()
     assert "ix_share_artifacts_storage_key" in names
-    assert version == ("e9a3c5f7b2d4",)
+    assert version == ("b5e9d3f7c2a8",)
+    # v3 迁移基础设施同样由 alembic 建出来（docs/24 §7）：任务固定输入 + 转换台账
+    assert "input_json" in job_cols
+    assert "content_migrations" in migration_tables
+    assert {"input_sha256", "converter_version", "new_bundle_revision", "status"} <= migration_cols
+    assert "uq_content_migration_input" in migration_ddl

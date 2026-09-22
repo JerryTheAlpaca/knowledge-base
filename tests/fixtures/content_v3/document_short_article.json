@@ -1,0 +1,101 @@
+{
+  "format_version": "3.0",
+  "document_id": "dig-itm-11111111-1111-4111-8111-111111111111",
+  "kind": "digest",
+  "revision": 4,
+  "created_at": "2026-09-22T02:10:00Z",
+  "title": "内容接收与提炼的边界",
+  "summary": "先可靠保存，再提炼；晋升判断留在本地。",
+  "sections": [
+    {
+      "heading": "主要判断",
+      "blocks": [
+        {
+          "kind": "claim",
+          "text": "内容接收和内容总结应分别记录处理结果。",
+          "refs": [
+            "e1"
+          ]
+        },
+        {
+          "kind": "quote",
+          "text": "避免混在一起。 接收环节只负责把原始材料可靠保存下来。",
+          "refs": [
+            "e1"
+          ]
+        },
+        {
+          "kind": "suggestion",
+          "text": "可以分别统计两个阶段的失败原因。",
+          "refs": []
+        }
+      ]
+    },
+    {
+      "heading": "本地整理",
+      "blocks": [
+        {
+          "kind": "text",
+          "text": "晋升与否由用户在 Vault 里决定。",
+          "refs": []
+        },
+        {
+          "kind": "claim",
+          "text": "长期知识的晋升在本地决定，云端只给候选。",
+          "refs": [
+            "e2"
+          ]
+        }
+      ]
+    }
+  ],
+  "references": {
+    "e1": {
+      "item_id": "itm-11111111-1111-4111-8111-111111111111",
+      "source_revision": 1,
+      "segment_ids": [
+        "s0001",
+        "s0002"
+      ],
+      "source_text_hash": "764869f5b0cec64d848abe4b311dd03f49834048e9776537b34413b95f975fbb",
+      "locator": {
+        "kind": "paragraph",
+        "paragraph_id": "p0001"
+      }
+    },
+    "e2": {
+      "item_id": "itm-11111111-1111-4111-8111-111111111111",
+      "source_revision": 1,
+      "segment_ids": [
+        "s0003",
+        "s0004"
+      ],
+      "source_text_hash": "e50411f74f26816bbe81c5221d75e97d2197eb8638334d8b9fb3c6e9285c151b",
+      "locator": {
+        "kind": "paragraph",
+        "paragraph_id": "p0002"
+      }
+    }
+  },
+  "limitations": [
+    "样本只覆盖图文来源，未覆盖音频与视频。"
+  ],
+  "completeness": {
+    "state": "complete",
+    "missing_stages": [],
+    "gaps": [],
+    "dropped_blocks": 0,
+    "repair_calls": 0
+  },
+  "provenance": {
+    "recipe_version": "content-v3-1",
+    "task": "digest",
+    "input_documents": [],
+    "source_revisions": [
+      {
+        "item_id": "itm-11111111-1111-4111-8111-111111111111",
+        "source_revision": 1
+      }
+    ]
+  }
+}

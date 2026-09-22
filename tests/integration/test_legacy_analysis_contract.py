@@ -1,16 +1,13 @@
-"""docs/08 §3.2、§6.1、§9：云端单篇提炼 Schema 2.0 契约测试。
+"""提炼提示词契约（v3，docs/24 §3）+ 旧 Schema 1.0/2.0 校验器测试。
 
-覆盖：
-- Schema 2.0 通过校验并保存结构化 evidence_map；不产出 topics/双链/标签；
-- key_points 的 claim_id 格式与唯一性、excerpts 的 claim_id 引用观点、
-  摘录逐字一致性、evidence_ids 存在性；
-- 1.0 旧产物仍可读取（旧版读取兼容）。
+- 提示词契约：材料以 `R` 阅读单元给出，主体只有四类内容块，程序字段不由模型回填；
+- 旧校验器：`analysis.validate_analysis` 现在只服务历史产物转换（docs/23 §5.1、§8.1），
+  这里守住它继续能读 1.0/2.0，迁移时才不用重新猜旧结构。
 """
 from __future__ import annotations
 
 import json
 
-import pytest
 
 from kbserver.domain import analysis, templates
 
@@ -20,6 +17,7 @@ SEGMENTS = [
 ]
 SEGMENT_IDS = {s["segment_id"] for s in SEGMENTS}
 SEGMENT_TEXTS = {s["segment_id"]: s["text"] for s in SEGMENTS}
+MATERIAL = [{"ref": f"R{i}", "text": s["text"]} for i, s in enumerate(SEGMENTS, start=1)]
 
 
 def base_doc(**overrides) -> dict:
@@ -48,37 +46,40 @@ def validate(doc: dict) -> list[str]:
 
 # ---- 提示词契约 ----
 
-def test_prompt_requests_schema_2_without_knowledge_outputs():
-    prompt = json.loads(templates.build_user_prompt(
-        source_meta={"platform": "web", "coverage": "full_text"},
-        user_note=None, segments=SEGMENTS, conversation_mode=False, source_revision=1,
+def test_prompt_asks_for_content_blocks_with_task_refs():
+    prompt = json.loads(templates.build_digest_user_prompt(
+        source_meta={"platform": "web", "coverage": "full_text", "title": "示例"},
+        user_note=None, material=MATERIAL, conversation_mode=False,
     ))
-    schema = prompt["output_schema"]
-    assert schema["schema_version"] == "2.0"
-    assert "claim_id" in schema["key_points"][0]
-    assert "conditions" in schema["key_points"][0]
-    assert "excerpts" in schema
-    # 云端不输出知识关联、晋升、主题与标签（docs/08 §3.2）
-    assert "topics" not in schema
-    assert "knowledge_id" not in json.dumps(schema)
-    assert "promotion" not in json.dumps(schema)
+    assert [m["ref"] for m in prompt["material"]] == ["R1", "R2"]
+    subject = prompt["output_subject"]
+    kinds = {b["kind"] for s in subject["sections"] for b in s["blocks"]}
+    assert kinds == {"claim", "quote", "suggestion"}
+    # 程序字段不进主体，也不要求模型回填（docs/24 §3）
+    flat_subject = json.dumps(subject, ensure_ascii=False)
+    for forbidden in ("schema_version", "evidence_map", "claim_id", "evidence_ids",
+                      "format_version", "references", "source_text_hash"):
+        assert forbidden not in flat_subject
+    # 云端不输出知识关联、晋升、主题与标签
+    flat = json.dumps(prompt, ensure_ascii=False)
+    assert "knowledge_id" not in flat and "promotion" not in flat
     rules = "".join(prompt["output_rules"])
-    assert "不要输出主题、标签、知识关联、晋升判断或 Obsidian 链接" in rules
-    # 校验规则必须写进提示词，否则模型必然产出被拒的结果
-    assert "excerpts 每条必须带 claim_id" in rules
-    assert "引用某条 key_points 已出现的 claim_id" in rules
+    assert "refs 只能使用 material 中出现过的 R 编号" in rules
+    assert "不要输出知识关联" in templates.SYSTEM_PROMPT
 
 
-def test_merge_prompt_carries_source_revision_and_excerpts():
+def test_merge_prompt_carries_only_validated_candidates():
+    candidates = [{"chunk": 1, "sections": [{"heading": "主要判断", "blocks": [
+        {"kind": "claim", "text": "要点。", "refs": ["R1"]}]}]}]
     prompt = json.loads(templates.build_merge_user_prompt(
-        source_meta={"platform": "web"}, user_note=None,
-        candidates={"key_points": [], "excerpts": [], "methods": [], "insights": []},
-        conversation_mode=False, source_revision=3,
+        source_meta={"platform": "web"}, user_note=None, candidates=candidates,
+        conversation_mode=False,
     ))
-    assert prompt["output_schema"]["source_revision"] == 3
-    assert "excerpts" in prompt["output_schema"]
-    assert "claim_id" in prompt["output_schema"]["key_points"][0]
-    assert "excerpts 每条必须带 claim_id" in "".join(prompt["output_rules"])
+    assert prompt["candidates"] == candidates
+    assert "material" not in prompt, "汇总阶段不再阅读全文，只能沿用已校验候选"
+    rules = "".join(prompt["output_rules"])
+    assert "refs 只能沿用被合并候选里的 R 编号" in rules
+    assert "quote 必须整条沿用候选" in rules
 
 
 # ---- 校验 ----
@@ -221,36 +222,27 @@ def test_excerpt_must_not_join_nonadjacent_segments():
     assert any("相邻" in e for e in errs)
 
 
-def test_excerpt_rules_in_prompts():
-    """三类提示词都带语义完整规则；主提示词带段落索引。"""
-    rules = "".join(templates.EXCERPT_RULES)
-    assert "语义完整" in rules and "相邻片段" in rules
-
-    paragraphs = [{"paragraph_id": "p0001", "segment_ids": ["s0001", "s0002"]}]
-    main = json.loads(templates.build_user_prompt(
-        source_meta={"platform": "web"}, user_note=None, segments=SEGMENTS,
-        conversation_mode=False, source_revision=1, paragraphs=paragraphs,
-    ))
-    assert main["source_data"]["paragraphs"] == [
-        {"paragraph_id": "p0001", "from": "s0001", "to": "s0002"}
-    ]
-    assert "语义完整" in "".join(main["output_rules"])
+def test_quote_rules_reach_every_generation_prompt():
+    """逐字摘录与「只选给定 R」写进提炼、分块与修复三类提示词。"""
+    raw_digest = templates.build_digest_user_prompt(
+        source_meta={"platform": "web"}, user_note=None, material=MATERIAL,
+        conversation_mode=False)
+    digest = json.loads(raw_digest)
+    assert digest["material"] == MATERIAL, "材料以阅读单元 + R 编号交给模型"
+    assert "逐字" in templates.SYSTEM_PROMPT
 
     chunk = json.loads(templates.build_chunk_user_prompt(
-        source_meta={"platform": "web"}, segments=SEGMENTS,
-        chunk_index=1, chunk_total=2, paragraphs=paragraphs,
-    ))
-    assert chunk["source_data"]["paragraphs"] == [
-        {"paragraph_id": "p0001", "from": "s0001", "to": "s0002"}
-    ]
-    assert "语义完整" in "".join(chunk["output_rules"])
+        source_meta={"platform": "web"}, material=MATERIAL[:1], chunk_index=1, chunk_total=2))
+    assert chunk["chunk"] == {"index": 1, "total": 2}
+    chunk_rules = "".join(chunk["output_rules"])
+    assert "refs 只能使用本段 material 中出现过的 R 编号" in chunk_rules
+    assert "逐字" in chunk_rules
 
-    merge = json.loads(templates.build_merge_user_prompt(
-        source_meta={"platform": "web"}, user_note=None,
-        candidates={"key_points": [], "excerpts": [], "methods": [], "insights": []},
-        conversation_mode=False, source_revision=1,
-    ))
-    assert "原样沿用候选" in "".join(merge["output_rules"])
+    repair = json.loads(templates.build_repair_user_prompt(
+        raw_digest, "{}",
+        [{"code": "quote_not_verbatim", "message": "摘录未逐字", "block": [1, 2]}]))
+    assert repair["material"] == MATERIAL, "修复调用仍要能选到正确的 R"
+    assert repair["validation_errors"][0]["block"] == [1, 2]
 
 
 def test_plan_chunks_keeps_paragraphs_whole():

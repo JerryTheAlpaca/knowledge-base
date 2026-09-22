@@ -36,6 +36,19 @@ def stable_prefix(*, system_prompt: str, pack_text: str, initial_request: str) -
     ]
 
 
+def prefix_matches(prefix: Iterable[ConversationMessage], *, system_prompt: str,
+                   pack_text: str) -> bool:
+    """已缓存会话的固定前缀里，规则与材料是否还是原来那两份。
+
+    第三条消息是本轮初始要求，逐次创作可以不同，因此不参与比较。返回 False 说明固定
+    system 前缀已经变了（内容协议换代时 `PROMPT_VERSION` 跟着升），必须开一个新的
+    context_epoch 重新开始，不能把旧会话历史接到新规则后面（docs/24 §9）。
+    """
+    items = list(prefix)
+    return (len(items) >= 2 and items[0].role == "system"
+            and items[0].content == system_prompt and items[1].content == pack_text)
+
+
 def request_messages(*, prefix: Iterable[ConversationMessage], history: Iterable[ConversationMessage],
                      tail: Iterable[ConversationMessage] = ()) -> list[ConversationMessage]:
     """装配本轮请求：固定前缀 + 原顺序历史 + 只在尾部追加的新内容。"""

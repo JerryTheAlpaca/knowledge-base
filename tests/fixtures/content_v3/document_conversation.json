@@ -1,0 +1,137 @@
+{
+  "format_version": "3.0",
+  "document_id": "dig-itm-55555555-5555-4555-8555-555555555555",
+  "kind": "digest",
+  "revision": 2,
+  "created_at": "2026-09-22T02:10:00Z",
+  "title": "两步调用的讨论过程",
+  "summary": "接收与提炼分两步：采纳的判断有原文，被否掉的方案留着原因。",
+  "sections": [
+    {
+      "heading": "讨论起点",
+      "blocks": [
+        {
+          "kind": "text",
+          "text": "这轮对话在解决“提炼放不放进取接收环节”。",
+          "refs": []
+        },
+        {
+          "kind": "claim",
+          "text": "最初的问题是单次调用还是两步调用。",
+          "refs": [
+            "e1"
+          ]
+        }
+      ]
+    },
+    {
+      "heading": "已采纳",
+      "blocks": [
+        {
+          "kind": "claim",
+          "text": "采纳“接收环节不调模型”，因为它让落盘不被模型结果阻塞。",
+          "refs": [
+            "e2"
+          ]
+        }
+      ]
+    },
+    {
+      "heading": "被否定",
+      "blocks": [
+        {
+          "kind": "claim",
+          "text": "摘要写回来源笔记的方案被否掉，理由是会覆盖人工内容。",
+          "refs": [
+            "e3"
+          ]
+        },
+        {
+          "kind": "quote",
+          "text": "把摘要直接写回来源笔记的尝试被否掉了，会覆盖人工内容。",
+          "refs": [
+            "e3"
+          ]
+        }
+      ]
+    },
+    {
+      "heading": "仍未确定",
+      "blocks": [
+        {
+          "kind": "claim",
+          "text": "部分结果能否自动晋升，对话结束时还没有结论。",
+          "refs": [
+            "e3"
+          ]
+        },
+        {
+          "kind": "suggestion",
+          "text": "可以给部分结果加一次人工抽查再决定是否晋升。",
+          "refs": []
+        }
+      ]
+    }
+  ],
+  "references": {
+    "e1": {
+      "item_id": "itm-55555555-5555-4555-8555-555555555555",
+      "source_revision": 1,
+      "segment_ids": [
+        "s0001",
+        "s0002"
+      ],
+      "source_text_hash": "539796ed416a18fd3e95caa0ce945458835e30267a80d6e65ac10a137825f104",
+      "locator": {
+        "kind": "paragraph",
+        "paragraph_id": "p0001"
+      }
+    },
+    "e2": {
+      "item_id": "itm-55555555-5555-4555-8555-555555555555",
+      "source_revision": 1,
+      "segment_ids": [
+        "s0003"
+      ],
+      "source_text_hash": "b44058d1b44105c6f583d62c5f490e3622f784817e996186b944a520e24efe77",
+      "locator": {
+        "kind": "paragraph",
+        "paragraph_id": "p0002"
+      }
+    },
+    "e3": {
+      "item_id": "itm-55555555-5555-4555-8555-555555555555",
+      "source_revision": 1,
+      "segment_ids": [
+        "s0004",
+        "s0005"
+      ],
+      "source_text_hash": "91eef3f4406e291a95dd1d3dc6c03f15533f6ce0e4057bba6e3f3515f9b8b238",
+      "locator": {
+        "kind": "paragraph",
+        "paragraph_id": "p0003"
+      }
+    }
+  },
+  "limitations": [
+    "对话样本很短，未覆盖跨多轮冲突。"
+  ],
+  "completeness": {
+    "state": "complete",
+    "missing_stages": [],
+    "gaps": [],
+    "dropped_blocks": 0,
+    "repair_calls": 0
+  },
+  "provenance": {
+    "recipe_version": "content-v3-1",
+    "task": "digest",
+    "input_documents": [],
+    "source_revisions": [
+      {
+        "item_id": "itm-55555555-5555-4555-8555-555555555555",
+        "source_revision": 1
+      }
+    ]
+  }
+}

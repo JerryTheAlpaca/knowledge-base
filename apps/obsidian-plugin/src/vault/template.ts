@@ -9,13 +9,15 @@
  * - Knowledge：`kb:knowledge`（AI 融合更新）+ 人工区（自动融合不改写）。
  *
  * 纯逻辑模块：不依赖 obsidian，可独立测试。
+ *
+ * v3 起：`kb:cloud-digest` 区内容由同版本 `content.json` 渲染（见 `vault/content.ts`），
+ * 不再从 preview.md 的固定中文标题反解字段；preview.md 只作可阅读产物。
  */
 
 import type {
   KbFileEntry,
   KbManifest,
   KnowledgeIndexEntry,
-  PromotionDecision,
 } from "../types";
 
 /** 分区标记：Source 不再有生成区；保留旧标记用于旧库识别与迁移。 */
@@ -27,6 +29,9 @@ export const LOCAL_ORGANIZE_START = "<!-- kb:local-organize:start -->";
 export const LOCAL_ORGANIZE_END = "<!-- kb:local-organize:end -->";
 export const KNOWLEDGE_START = "<!-- kb:knowledge:start -->";
 export const KNOWLEDGE_END = "<!-- kb:knowledge:end -->";
+/** 旧 `^c0001` 观点原文与锚点的折叠历史区：第一次转新结构时写入，之后不被融合覆盖。 */
+export const KNOWLEDGE_HISTORY_START = "<!-- kb:knowledge-history:start -->";
+export const KNOWLEDGE_HISTORY_END = "<!-- kb:knowledge-history:end -->";
 /** Source 正文区：可随来源版本更新（提取器改进后旧条目也能用上新正文）。 */
 export const SOURCE_BODY_START = "<!-- kb:source-body:start -->";
 export const SOURCE_BODY_END = "<!-- kb:source-body:end -->";
@@ -297,21 +302,18 @@ export function renderSourceNote(
 
 // ---- Digest 模板 ----
 
-/** 云端提炼区内容（docs/08 §3.2）：来自 preview.md，链接改写为本地资产路径。 */
-export function rewriteCloudDigestLinks(previewMd: string, assetsBase: string): string {
-  const withoutNote = previewMd.replace(/\n> 采集备注：\n[\s\S]*$/, "").trim();
-  return withoutNote.replace(
-    /\[\[normalized#\^?([A-Za-z0-9_-]+)(\|([^\]]*))?\]\]/g,
-    (_m, sid: string, _lab, label: string | undefined) =>
-      `[[${assetsBase}/normalized#^${sid}|${label ?? sid}]]`,
-  );
-}
-
-/** 云端尚未完成时的诚实占位（docs/08 §9：不能生成看似有效的空摘要）。 */
+/** 云端尚无可用提炼时的诚实占位（docs/24 §8：绝不写看似有效的空白摘要）。 */
 export function renderCloudPending(manifest: KbManifest): string {
-  const lines = ["## 一句话总结", "", `云端提炼尚未完成（状态：${manifest.processing.state}）。`, ""];
-  lines.push("原始资料已保存；提炼完成后同步时会替换本区域。");
-  for (const w of manifest.warnings ?? []) lines.push(`> [!warning] ${w}`);
+  const state = manifest.processing.state;
+  const lines = ["## 云端整理结果", ""];
+  if (state === "failed") {
+    lines.push("云端整理失败，原始资料已完整保存；可在网页端重新发起整理，成功后同步会替换本区域。");
+  } else if (state === "ready") {
+    lines.push("云端整理结果未能读取（内容文件缺失或格式不受支持）；原始资料已保存，请升级插件后重新同步。");
+  } else {
+    lines.push(`云端整理尚未完成（状态：${state || "未知"}）；原始资料已保存，完成后同步会替换本区域。`);
+  }
+  for (const w of manifest.warnings ?? []) lines.push(``, `> [!warning] ${w}`);
   const missing = manifest.missing_materials ?? [];
   if (missing.length) lines.push("", "缺失材料：" + missing.join("、"));
   return lines.join("\n");
@@ -323,54 +325,53 @@ export function renderLocalOrganizeInitial(): string {
     "## 与已有知识的关系",
     "",
     "尚未本地整理。",
-    "",
-    "## 晋升建议",
-    "",
-    "尚未本地整理。",
   ].join("\n");
 }
 
-/** 本地整理区（已整理）：关系说明与晋升建议（docs/08 §3.2、§4、§5）。
+/** 本地整理区（主题候选结论，docs/23 §6.1）：不再逐观点列晋升建议。
  *
- * 模型只输出候选 Knowledge ID；`resolveLink` 把已解析到真实笔记的 ID 渲染为链接，
- * 未解析到的新概念先用普通文字写入建议（docs/08 §5）。
+ * `resolveLink` 只把已解析到真实笔记的主题渲染成链接；未落地的新主题用普通文字
+ * 写建议，不生成指向不存在文件的链接。
  */
-export function renderLocalOrganize(
-  decisions: PromotionDecision[],
-  relationNote: string | null,
-  resolveLink?: (kbId: string) => string | null,
-): string {
+export function renderLocalOrganize(input: {
+  relationNote: string | null;
+  targetTitle: string | null;
+  targetPath: string | null;
+  reason: string | null;
+  outcome: "candidate" | "keep_digest" | "no_change" | "none";
+  proposalTitle?: string | null;
+}): string {
   const lines = ["## 与已有知识的关系", ""];
-  lines.push(relationNote?.trim() || "尚未本地整理。");
-  lines.push("", "## 晋升建议", "");
-  if (!decisions.length) {
-    lines.push("尚未本地整理。");
+  lines.push(input.relationNote?.trim() || "尚未本地整理。", "");
+  lines.push("## 本地整理结论", "");
+  const target = input.targetPath
+    ? `[[${input.targetPath}|${input.targetTitle ?? "已有主题"}]]`
+    : (input.targetTitle ? `「${input.targetTitle}」（尚未创建）` : null);
+  if (input.outcome === "keep_digest") {
+    lines.push("本次材料对长期主题没有可靠增量，结论保留在本 Digest。");
+  } else if (input.outcome === "no_change") {
+    lines.push("模型判断现有主题无需修改；未写入 Knowledge。");
+  } else if (input.outcome === "candidate") {
+    lines.push(`已生成主题修改候选${target ? `：${target}` : ""}，采纳前不会写入 Knowledge。`);
   } else {
-    for (const d of decisions) {
-      let target = "";
-      if (d.target_knowledge_id) {
-        const link = resolveLink?.(d.target_knowledge_id);
-        target = link ? `→ ${link}` : `→ ${d.target_knowledge_id}（未解析到笔记）`;
-      } else if (d.new_topic) {
-        target = `→ 建议新建主题「${d.new_topic.name}」`;
-      }
-      const label = d.decision === "review" ? "建议晋升"
-        : d.decision === "keep_digest" ? "留在 Digest"
-        : d.decision === "deferred" ? "暂缓"
-        : "跳过";
-      lines.push(`- \`${d.claim_id}\` ${label}${target ? " " + target : ""}：${d.reason}`);
-    }
+    lines.push("尚未本地整理。");
   }
+  if (input.reason) lines.push("", `原因：${input.reason}`);
   return lines.join("\n");
 }
 
-/** Digest 笔记（docs/08 §3.2）：来源链接 + 云端区 + 本地整理区 + 人工区。 */
+/** Digest 笔记（docs/08 §3.2）：来源链接 + 云端区 + 本地整理区 + 人工区。
+ *
+ * 云端区内容由同版本 `content.json` 渲染（见 `vault/content.ts`），Markdown 只是可阅读产物。
+ */
 export function renderDigestNote(
   manifest: KbManifest,
   opts: {
     sourceLink: string | null;
     cloudMd: string | null;
     status: string;
+    /** v3 内容身份与完整度，写进 frontmatter 供回读定位。 */
+    contentLines?: string[];
   },
 ): string {
   const s = manifest.source;
@@ -382,9 +383,10 @@ export function renderDigestNote(
     "kb_type: digest",
     `kb_source_revision: ${manifest.source_revision}`,
     `kb_digest_revision: ${manifest.bundle_revision}`,
-    "kb_promotion: not_evaluated",
+    "kb_organize: not_evaluated",
+    ...(opts.contentLines ?? []),
   ]);
-  // `status/*` 是 kb_promotion 的展示，不独立维护（docs/08 §5）
+  // `status/*` 是 `kb_organize`（本地整理结论）的展示，不独立维护（docs/08 §5）
   const fmWithTags = mergeManagedTags(fm, managedTags("digest", "not_evaluated"));
   return [
     fmWithTags,
@@ -478,27 +480,27 @@ export function renderInboxIndex(
   ].join("\n");
 }
 
-/** 00 Inbox/知识更新候选.md（docs/08 §2、§8.1）。 */
+/** 00 Inbox/知识更新候选.md（docs/23 §6.1；取代旧逐观点晋升候选索引）。 */
 export function renderProposalIndex(
   entries: Array<{
     proposalId: string;
-    title: string;
     knowledgeTitle: string | null;
     state: string;
     changeSummary: string;
     createdAt: string;
+    noOp: boolean;
   }>,
 ): string {
   const rows = [...entries]
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
     .map((e) =>
-      `| ${e.createdAt.slice(0, 10)} | ${e.knowledgeTitle ?? "（新建主题）"} | ${e.changeSummary || "—"} | ${e.state} |`,
+      `| ${e.createdAt.slice(0, 10)} | ${e.knowledgeTitle ?? "（新建主题）"} | ${e.noOp ? "无变化" : (e.changeSummary || "—")} | ${e.state} |`,
     )
     .join("\n");
   return [
     "# 知识更新候选",
     "",
-    "由本地整理生成；采纳前不会写入 Knowledge。使用命令「查看知识更新候选」逐条查看差异与证据。",
+    "由本地整理生成；采纳前不会写入 Knowledge。使用命令「查看知识更新候选」或整理面板逐条查看差异与原文依据。",
     "",
     "| 生成日期 | 目标主题 | 变化摘要 | 状态 |",
     "| --- | --- | --- | --- |",

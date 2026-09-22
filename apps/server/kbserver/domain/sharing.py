@@ -1,23 +1,26 @@
-"""分享作品的 Schema、来源快照与校验（docs/20 §5、§6.2、§6.3）。
+"""分享作品的固定快照、公开引用与页面预检（docs/24 §9、docs/23 §7.3）。
 
 原则：
 - 快照固定当次输入：创建任务时把每条材料的 item_id／source_revision／正文片段
   钉死，生成过程中不再读「最新版本」。
-- 模型只用逻辑标识（source_key、seg0001、asset_id），拿不到 storage_key 与真实路径。
-- 跨篇引用必须带命名空间（s1:seg0001）：c0001 在不同材料里会重复，不能单独作全局 ID。
-- 校验只认代码规则：ID 是否存在、摘录是否逐字来自被引片段、每篇是否交代用途。
-  语义忠实仍需内容核对，不把 ID 通过校验当作结论正确。
+- 内容阶段直接用 ContentDocument v3：模型只写内容主体，引用只填程序给出的 `R` 编号。
+  `sec1`/`k1` 这类模型自编的编号、`s1:segment:seg0001` 这类第二套 citation 语法都
+  退出协议；页面锚点（`ref_id`）在组装之后由程序按文档引用表顺序分配。
+- 模型只拿到按 `R` 打包的阅读单元与来源标题，拿不到 UUID、storage_key 与真实路径。
+- 公开页面只出现来源标题、允许公开的 URL 与已确认引用。私有来源没有公开链接时
+  如实说明，不生成指向私有 API 的链接。
 """
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
 
-from .analysis import normalize_for_quote
+from . import content_v3
 
-SCHEMA_VERSION = "1.0"
-SHARE_RECIPE_VERSION = "share-v1"
-PROMPT_VERSION = "share-prompt-v1"
+SCHEMA_VERSION = "1.0"  # 分享对象结构（澄清稿、页面源文件、runner 信封），不是内容协议版本
+SHARE_RECIPE_VERSION = "share-content-v3"
+PROMPT_VERSION = "share-prompt-v3"
+CONTENT_TASK = "share_synthesis"
 
 # 对象引用角色（docs/20 §11.4）：默认 private，只有白名单产物可被公开路由读取
 ARTIFACT_ROLES = frozenset({
@@ -27,7 +30,6 @@ ARTIFACT_ROLES = frozenset({
 })
 PUBLIC_ARTIFACT_ROLES = frozenset({"html", "public_references"})
 
-CLAIM_KINDS = ("source_claim", "synthesis", "illustration")
 NEXT_ACTIONS = ("ask_user", "confirm_brief")
 CONFIRMATION_KINDS = ("confirm", "delegate_preferences", "explicit_modify")
 BRIEF_FIELDS = (
@@ -35,25 +37,20 @@ BRIEF_FIELDS = (
     "must_keep", "must_avoid", "assumptions",
 )
 
-SEGMENT_ID_RE = re.compile(r"^seg\d{4}$")
-CITATION_RE = re.compile(r"^(s\d{1,3}):([a-z0-9_]+):?(seg\d{4})?$")
-SECTION_ID_RE = re.compile(r"^sec\d{1,3}$")
-CLAIM_ID_RE = re.compile(r"^k\d{1,4}$")
-REF_ID_RE = re.compile(r"^ref\d{1,4}$")
 OPTION_ID_RE = re.compile(r"^[a-z0-9_-]{1,32}$")
+PUBLIC_URL_PREFIXES = ("http://", "https://")
 
 
 @dataclass
 class SourceSpec:
     """一条材料在快照中的固定内容（由 workers/share.py 从库里读出）。"""
 
-    source_key: str
     item_id: str
     source_revision: int
     title: str
     coverage: str
     segments: list[dict] = field(default_factory=list)
-    claims: list[dict] = field(default_factory=list)
+    hints: list[str] = field(default_factory=list)
     assets: list[dict] = field(default_factory=list)
     bundle_revision: int | None = None
     author: str | None = None
@@ -61,30 +58,16 @@ class SourceSpec:
     source_label: str | None = None
 
 
-def citation_id(source_key: str, segment_id: str) -> str:
-    return f"{source_key}:segment:{segment_id}"
-
-
-def parse_citation(value: str) -> tuple[str, str] | None:
-    """解析 `s1:segment:seg0001`；返回 (source_key, segment_id) 或 None。"""
-    if not isinstance(value, str):
-        return None
-    match = CITATION_RE.match(value.strip())
-    if not match:
-        return None
-    return match.group(1), match.group(3) or ""
-
-
 def build_source_pack(specs: list[SourceSpec], *, include_storage: bool = False) -> dict:
-    """私有 source_pack.json（docs/20 §5.1）。
+    """私有 source_pack.json（docs/20 §5.1）：本轮固定输入，不直接交给模型。
 
-    include_storage 只用于编排器自己的 input_manifest 侧车；交给模型的快照不带
-    storage_key，模型不能决定对象路径。
+    片段沿用来源里的真实 `segment_id`（docs/24 §2 的引用范围就是这些片段）；
+    include_storage 只用于编排器自己的 input_manifest 侧车，交给 runner 的素材
+    目录不带 storage_key。
     """
     sources = []
     for spec in specs:
         entry: dict = {
-            "source_key": spec.source_key,
             "item_id": spec.item_id,
             "source_revision": spec.source_revision,
             "bundle_revision": spec.bundle_revision,
@@ -93,13 +76,8 @@ def build_source_pack(specs: list[SourceSpec], *, include_storage: bool = False)
             "canonical_url": spec.canonical_url,
             "source_label": spec.source_label,
             "coverage": spec.coverage,
-            "segments": [
-                {"id": s["id"], "text": s["text"]} for s in spec.segments
-            ],
-            "claims": [
-                {"id": c["id"], "text": c["text"], "segment_ids": list(c.get("segment_ids") or [])}
-                for c in spec.claims
-            ],
+            "segments": [dict(s) for s in spec.segments],
+            "hints": list(spec.hints),
             "assets": [
                 {k: v for k, v in a.items() if include_storage or k != "storage_key"}
                 for a in spec.assets
@@ -109,61 +87,44 @@ def build_source_pack(specs: list[SourceSpec], *, include_storage: bool = False)
     return {"schema_version": SCHEMA_VERSION, "sources": sources}
 
 
-def pack_segment_texts(pack: dict) -> dict[str, dict[str, str]]:
-    return {
-        s["source_key"]: {seg["id"]: seg.get("text") or "" for seg in s.get("segments") or []}
-        for s in pack.get("sources") or []
+def materials_of(pack: dict) -> list[content_v3.Material]:
+    """固定快照 → `build_ref_table` 的输入单元：一条材料一个来源版本。"""
+    return [
+        content_v3.Material(
+            item_id=source["item_id"],
+            source_revision=source["source_revision"],
+            segments=list(source.get("segments") or []),
+        )
+        for source in pack.get("sources") or []
+    ]
+
+
+def material_pack_for_model(pack: dict, ref_table: content_v3.RefTable) -> dict:
+    """模型看到的材料清单：`R` 编号 + 阅读单元原文 + 来源标题与覆盖。
+
+    这是内容会话固定前缀的第二条消息，只含用户自己选中的材料与来源标题；
+    UUID、来源版本、存储键与哈希都留在私有快照里（docs/23 §4.1）。
+    """
+    by_revision = {
+        (s["item_id"], s["source_revision"]): s for s in pack.get("sources") or []
     }
-
-
-def pack_source_keys(pack: dict) -> set[str]:
-    return {s["source_key"] for s in pack.get("sources") or []}
-
-
-def validate_source_pack(pack: dict) -> list[str]:
-    errors: list[str] = []
-    if pack.get("schema_version") != SCHEMA_VERSION:
-        errors.append("source_pack.schema_version 必须是 1.0")
-    sources = pack.get("sources")
-    if not isinstance(sources, list) or not sources:
-        errors.append("source_pack.sources 必须是非空数组")
-        return errors
-    seen: set[str] = set()
-    for i, source in enumerate(sources):
-        if not isinstance(source, dict):
-            errors.append(f"sources[{i}] 必须是对象")
-            continue
-        key = source.get("source_key")
-        if not isinstance(key, str) or not re.match(r"^s\d{1,3}$", key):
-            errors.append(f"sources[{i}].source_key 必须是 s + 数字")
-        elif key in seen:
-            errors.append(f"source_key 重复：{key}")
-        else:
-            seen.add(key)
-        if not isinstance(source.get("item_id"), str) or not source.get("item_id"):
-            errors.append(f"sources[{i}].item_id 必填")
-        if not isinstance(source.get("source_revision"), int) or source["source_revision"] < 1:
-            errors.append(f"sources[{i}].source_revision 必须是正整数")
-        segs = source.get("segments")
-        if not isinstance(segs, list) or not segs:
-            errors.append(f"sources[{i}] 没有可读片段：材料不可用时应在选择阶段就提示")
-            continue
-        seg_ids: set[str] = set()
-        for j, seg in enumerate(segs):
-            sid = seg.get("id") if isinstance(seg, dict) else None
-            if not isinstance(sid, str) or not SEGMENT_ID_RE.match(sid):
-                errors.append(f"sources[{i}].segments[{j}].id 必须是 seg + 4 位数字")
-                continue
-            if sid in seg_ids:
-                errors.append(f"sources[{i}].segments 片段 ID 重复：{sid}")
-            seg_ids.add(sid)
-            if not isinstance(seg.get("text"), str) or not seg["text"].strip():
-                errors.append(f"sources[{i}].segments[{j}].text 必须非空")
-        for j, claim in enumerate(source.get("claims") or []):
-            for sid in (claim.get("segment_ids") or []) if isinstance(claim, dict) else []:
-                if sid not in seg_ids:
-                    errors.append(f"sources[{i}].claims[{j}] 引用了不存在的片段 {sid}")
-    return errors
+    sources: list[dict] = []
+    view_of: dict[tuple, dict] = {}
+    material = []
+    for key, entry in ref_table.entries():
+        material.append({"ref": key, "text": entry.text})
+        ident = (entry.item_id, entry.source_revision)
+        view = view_of.get(ident)
+        if view is None:
+            source = by_revision.get(ident) or {}
+            view = {"title": source.get("title") or "未命名材料",
+                    "coverage": source.get("coverage") or "unknown",
+                    "hints": list(source.get("hints") or []), "refs": []}
+            view_of[ident] = view
+            sources.append(view)
+        view["refs"].append(key)
+    return {"format_version": content_v3.CONTENT_FORMAT_VERSION, "sources": sources,
+            "material": material}
 
 
 # ---- 需求对话（docs/20 §6.1.1）----
@@ -249,178 +210,127 @@ def validate_clarification(doc: dict, *, max_questions: int = 3) -> list[str]:
     return errors
 
 
-# ---- 整合稿（docs/20 §6.2）----
+# ---- 整合稿：ContentDocument v3（docs/24 §1–§4、§9）----
 
 
-def validate_synthesis(doc: dict, *, pack: dict) -> list[str]:
-    """校验整合稿：引用必须能在固定快照里定位，每篇材料都要交代用途。"""
-    errors: list[str] = []
-    if not isinstance(doc, dict):
-        return ["synthesis 顶层必须是对象"]
-    if doc.get("schema_version") != SCHEMA_VERSION:
-        errors.append("schema_version 必须是 1.0")
-    texts = pack_segment_texts(pack)
-    sources = pack_source_keys(pack)
+def assemble_synthesis(model_output: dict | str, *, pack: dict,
+                       ref_table: content_v3.RefTable, run_id: str,
+                       repair_calls: int = 0) -> tuple[dict | None, content_v3.AssemblyReport]:
+    """把模型输出组装成 `kind="synthesis"` 的 v3 文档。
 
-    for name, limit in (("title", 200), ("reader_goal", 500)):
-        value = doc.get(name)
-        if not isinstance(value, str) or not value.strip():
-            errors.append(f"{name} 必须是简短的非空文本")
-        elif len(value) > limit:
-            errors.append(f"{name} 超过 {limit} 字符")
+    引用是否存在、摘录是否逐字、块级失败全部由组装器判定：分享侧不再维护第二套
+    编号与引用校验。整合稿不绑定单一条目，来源版本由引用表写进 provenance。
+    """
+    sources = pack.get("sources") or []
+    return content_v3.assemble_content_document(
+        model_output,
+        ref_table=ref_table,
+        document_id=f"syn-{run_id}",
+        kind="synthesis",
+        revision=1,
+        item_id="",
+        source_revision=0,
+        task=CONTENT_TASK,
+        recipe_version=content_v3.CONTENT_RECIPE_VERSION,
+        repair_calls=repair_calls,
+        source_title=sources[0].get("title") if len(sources) == 1 else None,
+    )
 
-    sections = doc.get("sections")
-    if not isinstance(sections, list) or not sections:
-        errors.append("sections 必须是非空数组（结构自由，但不允许整篇没有内容）")
-        sections = []
-    seen_sec: set[str] = set()
-    for i, sec in enumerate(sections):
-        if not isinstance(sec, dict):
-            errors.append(f"sections[{i}] 必须是对象")
-            continue
-        sid = sec.get("id")
-        if not isinstance(sid, str) or not SECTION_ID_RE.match(sid):
-            errors.append(f"sections[{i}].id 必须是 sec + 数字")
-        elif sid in seen_sec:
-            errors.append(f"sections[{i}].id 重复：{sid}")
-        else:
-            seen_sec.add(sid)
-        body = sec.get("body")
-        if not isinstance(body, str) or not body.strip():
-            errors.append(f"sections[{i}].body 必须是完整正文")
-        if not isinstance(sec.get("heading"), str) or not sec["heading"].strip():
-            errors.append(f"sections[{i}].heading 必填")
 
-    claims = doc.get("claims")
-    if not isinstance(claims, list):
-        errors.append("claims 必须是数组")
-        claims = []
-    seen_claim: set[str] = set()
-    for i, claim in enumerate(claims):
-        if not isinstance(claim, dict):
-            errors.append(f"claims[{i}] 必须是对象")
-            continue
-        cid = claim.get("id")
-        if not isinstance(cid, str) or not CLAIM_ID_RE.match(cid):
-            errors.append(f"claims[{i}].id 必须是 k + 数字")
-        elif cid in seen_claim:
-            errors.append(f"claims[{i}].id 重复：{cid}")
-        else:
-            seen_claim.add(cid)
-        if claim.get("kind") not in CLAIM_KINDS:
-            errors.append(f"claims[{i}].kind 只允许 {'/'.join(CLAIM_KINDS)}")
-        text = claim.get("text")
-        if not isinstance(text, str) or not text.strip():
-            errors.append(f"claims[{i}].text 必填")
-        elif len(text) > 2000:
-            errors.append(f"claims[{i}].text 超过 2000 字符")
-        errors += _citation_errors(claim.get("citations"), field=f"claims[{i}]",
-                                   texts=texts, sources=sources,
-                                   required=claim.get("kind") in ("source_claim", "synthesis"))
-        if claim.get("conditions") is not None and not isinstance(claim.get("conditions"), str):
-            errors.append(f"claims[{i}].conditions 必须是字符串或 null")
+def completeness_state(report: content_v3.AssemblyReport) -> str:
+    return str((report.completeness or {}).get("state") or "failed")
 
-    usage = doc.get("source_usage")
-    if not isinstance(usage, list):
-        errors.append("source_usage 必须是数组：每篇材料都要交代用途")
-    else:
-        covered: set[str] = set()
-        for i, item in enumerate(usage):
-            key = item.get("source_key") if isinstance(item, dict) else None
-            if key not in sources:
-                errors.append(f"source_usage[{i}].source_key 不在快照里：{key}")
+
+def assembly_problems(report: content_v3.AssemblyReport) -> list[str]:
+    """缺口说明：直接用组装器写好的中文文案，这里不再判一遍。"""
+    return [str(gap.get("message") or gap.get("code"))
+            for gap in (report.completeness or {}).get("gaps") or []]
+
+
+def confirmed_quotes(document: dict) -> dict[str, str]:
+    """文档里已过逐字核对的摘录：`e` 键 → 原文引用（页面只公开这些）。"""
+    quotes: dict[str, str] = {}
+    for section in document.get("sections") or []:
+        for block in section.get("blocks") or []:
+            if not isinstance(block, dict) or block.get("kind") != "quote":
                 continue
-            if key in covered:
-                errors.append(f"source_usage[{i}] 重复交代同一篇：{key}")
-            covered.add(key)
-            if not isinstance(item.get("use"), str) or not item["use"].strip():
-                errors.append(f"source_usage[{i}].use 必须说明这篇被怎么用了")
-            omitted = item.get("omitted_reason")
-            if omitted is not None and (not isinstance(omitted, str) or len(omitted) > 500):
-                errors.append(f"source_usage[{i}].omitted_reason 过长")
-        missing = sources - covered
-        if missing:
-            errors.append(f"source_usage 没有交代：{', '.join(sorted(missing))}")
-
-    intents = doc.get("visual_intents")
-    if not isinstance(intents, list):
-        errors.append("visual_intents 必须是数组（可以为空：没有必要时以文字为主）")
-    else:
-        for i, intent in enumerate(intents):
-            if not isinstance(intent, dict):
-                errors.append(f"visual_intents[{i}] 必须是对象")
-                continue
-            if not isinstance(intent.get("question"), str) or not intent["question"].strip():
-                errors.append(f"visual_intents[{i}].question 必须说明这张图解释什么")
-            if not isinstance(intent.get("interactive"), bool):
-                errors.append(f"visual_intents[{i}].interactive 必须是布尔值")
-            errors += _citation_errors(intent.get("citations"), field=f"visual_intents[{i}]",
-                                       texts=texts, sources=sources, required=False)
-
-    refs = doc.get("public_references")
-    if not isinstance(refs, list):
-        errors.append("public_references 必须是数组")
-    else:
-        seen_ref: set[str] = set()
-        for i, ref in enumerate(refs):
-            if not isinstance(ref, dict):
-                errors.append(f"public_references[{i}] 必须是对象")
-                continue
-            rid = ref.get("ref_id")
-            if not isinstance(rid, str) or not REF_ID_RE.match(rid):
-                errors.append(f"public_references[{i}].ref_id 必须是 ref + 数字")
-            elif rid in seen_ref:
-                errors.append(f"public_references[{i}].ref_id 重复：{rid}")
-            else:
-                seen_ref.add(rid)
-            if ref.get("source_key") not in sources:
-                errors.append(f"public_references[{i}].source_key 不在快照里")
-            if not isinstance(ref.get("title"), str) or not ref["title"].strip():
-                errors.append(f"public_references[{i}].title 必填")
-            url = ref.get("url")
-            if url is not None and (not isinstance(url, str) or not url.startswith(("http://", "https://"))):
-                errors.append(f"public_references[{i}].url 必须是 http(s) 链接或 null")
-            citation = ref.get("citation")
-            if citation is not None:
-                errors += _citation_errors([citation], field=f"public_references[{i}]",
-                                           texts=texts, sources=sources, required=True)
-                quote = ref.get("quote")
-                if isinstance(quote, str) and quote.strip():
-                    parsed = parse_citation(citation)
-                    original = ""
-                    if parsed:
-                        original = texts.get(parsed[0], {}).get(parsed[1], "")
-                    if normalize_for_quote(quote) not in normalize_for_quote(original):
-                        errors.append(f"public_references[{i}].quote 不是被引片段里的原文")
-
-    limitations = doc.get("limitations")
-    if not isinstance(limitations, list) or len(limitations) > 12 or not all(
-        isinstance(x, str) and 0 < len(x) <= 500 for x in limitations
-    ):
-        errors.append("limitations 必须是不超过 12 条的字符串数组")
-    return errors
+            for key in block.get("refs") or []:
+                if isinstance(key, str) and block.get("text"):
+                    quotes.setdefault(key, block["text"])
+    return quotes
 
 
-def _citation_errors(value, *, field: str, texts: dict, sources: set[str], required: bool) -> list[str]:
-    errors: list[str] = []
-    if value is None:
-        if required:
-            errors.append(f"{field} 缺少 citations：来源观点与综合归纳都要给出依据")
-        return errors
-    if not isinstance(value, list) or len(value) > 30:
-        errors.append(f"{field}.citations 必须是不超过 30 项的数组")
-        return errors
-    for cit in value:
-        parsed = parse_citation(cit)
-        if not parsed:
-            errors.append(f"{field}.citations 里的 {cit!r} 不是 s<n>:segment:seg<n> 形式")
+def public_references(document: dict, pack: dict) -> tuple[list[dict], list[str]]:
+    """程序分配的公开引用清单（docs/24 §9）：锚点按文档引用表出现顺序编号。
+
+    只暴露来源标题、允许公开的 URL 与已确认摘录；对不上本轮固定快照的引用会报
+    出来并阻断发布，不会凭空生成条目或链接。
+    """
+    sources = {(s["item_id"], s["source_revision"]): s for s in pack.get("sources") or []}
+    quotes = confirmed_quotes(document)
+    refs: list[dict] = []
+    problems: list[str] = []
+    for index, (key, ref) in enumerate((document.get("references") or {}).items(), start=1):
+        source = sources.get((ref.get("item_id"), ref.get("source_revision")))
+        if source is None:
+            problems.append(f"引用 {key} 的来源不在本轮固定快照里，没有生成公开条目")
             continue
-        source_key, segment_id = parsed
-        if source_key not in sources:
-            errors.append(f"{field}.citations 引用了快照外的材料：{source_key}")
-        elif segment_id not in texts.get(source_key, {}):
-            errors.append(f"{field}.citations 引用了不存在的片段：{cit}")
-    return errors
+        url = source.get("canonical_url")
+        refs.append({
+            "ref_id": f"ref{index}",
+            "title": source.get("title") or "未命名来源",
+            "author": source.get("author"),
+            "source_label": source.get("source_label"),
+            "url": url if isinstance(url, str) and url.startswith(PUBLIC_URL_PREFIXES) else None,
+            "quote": quotes.get(key),
+            "revision": ref.get("source_revision"),
+        })
+    return refs, problems
+
+
+def page_content_view(document: dict) -> dict:
+    """交给页面步骤的内容：v3 主体 + 程序分配的锚点，不含内部引用表。
+
+    `e` 键与 `public_references` 的 `ref_id` 同源同序，模型因此只看得到 `ref1`
+    这种最终锚点，看不到来源 UUID、片段范围与哈希。
+    """
+    anchors = {key: f"ref{i}"
+               for i, key in enumerate((document.get("references") or {}), start=1)}
+    sections = []
+    for section in document.get("sections") or []:
+        blocks = [{
+            "kind": block.get("kind"),
+            "text": block.get("text"),
+            "refs": [anchors.get(key, "") for key in block.get("refs") or []],
+        } for block in section.get("blocks") or [] if isinstance(block, dict)]
+        sections.append({"heading": section.get("heading"), "blocks": blocks})
+    return {"format_version": document.get("format_version"), "title": document.get("title"),
+            "summary": document.get("summary"), "sections": sections,
+            "limitations": list(document.get("limitations") or [])}
+
+
+def usage_notes(*, task_extras: dict, ref_table: content_v3.RefTable,
+                document: dict, pack: dict) -> list[dict]:
+    """模型按 `R` 交代的素材用途：换成公开锚点与来源标题后再交给页面步骤。"""
+    titles = {(s["item_id"], s["source_revision"]): s.get("title")
+              for s in pack.get("sources") or []}
+    anchor_of: dict[tuple, str] = {
+        (ref.get("item_id"), ref.get("source_revision"), tuple(ref.get("segment_ids") or [])):
+            f"ref{index}"
+        for index, ref in enumerate((document.get("references") or {}).values(), start=1)
+    }
+    out: list[dict] = []
+    for item in (task_extras or {}).get("material_usage") or []:
+        entry = ref_table.get(item.get("ref")) if isinstance(item, dict) else None
+        if entry is None:
+            continue
+        anchor = anchor_of.get(entry.key())
+        if anchor is None:
+            continue  # 该阅读单元最终没有进入文档引用表，不凭空造一条用途
+        out.append({"ref_id": anchor,
+                    "title": titles.get((entry.item_id, entry.source_revision)),
+                    "note": item.get("note")})
+    return out
 
 
 # ---- 页面源文件（docs/20 §6.3）----
@@ -491,22 +401,15 @@ def validate_page_source(doc: dict, *, allowed_imports: set[str], known_asset_id
     return errors
 
 
-def public_reference_view(synthesis: dict, pack: dict) -> list[dict]:
-    """公开来源清单：只含最终页面需要展示的来源，不含原文包与私人备注（docs/20 §5.4）。"""
-    by_source = {s["source_key"]: s for s in pack.get("sources") or []}
-    out: list[dict] = []
-    for ref in synthesis.get("public_references") or []:
-        source = by_source.get(ref.get("source_key")) or {}
-        out.append({
-            "ref_id": ref.get("ref_id"),
-            "title": ref.get("title") or source.get("title"),
-            "author": ref.get("author") or source.get("author"),
-            "source_label": source.get("source_label"),
-            "url": ref.get("url") or source.get("canonical_url"),
-            "quote": ref.get("quote"),
-            "revision": source.get("source_revision"),
-        })
-    return out
+def public_link_notes(references: list[dict]) -> list[str]:
+    """没有公开链接的来源：如实说明页面只列名称与已确认引用（docs/23 §7.3）。
+
+    这里只写允许公开的措辞，不生成任何指向私有 API 的路径或访问方式。
+    """
+    return [
+        f"《{ref.get('title')}》没有可公开的原文链接，页面只列出来源名称与已确认引用。"
+        for ref in references if not ref.get("url")
+    ]
 
 
 def coverage_notes(pack: dict) -> list[str]:
@@ -514,7 +417,7 @@ def coverage_notes(pack: dict) -> list[str]:
     notes: list[str] = []
     for source in pack.get("sources") or []:
         coverage = source.get("coverage") or "unknown"
-        title = source.get("title") or source.get("source_key")
+        title = source.get("title") or "未命名材料"
         if coverage == "full_text":
             notes.append(f"《{title}》已读取全部已取得文字（{len(source.get('segments') or [])} 段）")
         else:
@@ -557,6 +460,9 @@ REASON_TEXT = {
     "key_rejected": "模型凭据被拒绝或不可用，更新后可以从这里重试",
     "no_profile": "还没有可用的模型配置",
     "model_output_invalid": "模型输出没有通过检查，可重试或调整要求",
+    "partial_result": "整合内容没有全部通过核实（引用或摘录对不上原文），未生成页面，可调整后重试",
+    "source_mismatch": "整合内容与本轮固定快照不一致，未生成页面，请按当前材料重新创建作品",
+    "content_invalid": "已保存的整合内容记录不完整，未生成页面，可重新生成",
     "page_source_invalid": "生成的页面没有通过检查，可重试",
     "check_failed": "页面检查没有通过，已保留之前的可用版本",
     "runner_timeout": "页面构建与检查超时没有返回结果",
