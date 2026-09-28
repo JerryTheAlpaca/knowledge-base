@@ -192,7 +192,7 @@ def _run_extract_dispatch(db: Session, store: ObjectStore, job: Job, item: Item,
             or meta.get("platform") == UPLOAD_PLATFORM
             or meta.get("media_kind") == "audio"):
         _needs_input(db, job, item,
-                     "音频条目：请在详情等待/触发机器转写，或补充字幕、正文。",
+                     "音视频条目：请在详情等待/触发语音识别，或补充字幕、正文。",
                      "audio_transcribe_pending")
         return
     # 5) B 站链接：字幕适配器（docs/04）

@@ -353,7 +353,7 @@ def validate_capture_payload(payload: dict, uploads_index: dict[str, Upload]) ->
                            f"primary_audio_upload_id 不存在或未完成：{primary_audio}")
         if up.bytes > settings.max_audio_upload_bytes:
             raise ApiError("PAYLOAD_TOO_LARGE",
-                           f"音频主体上限 {settings.max_audio_upload_bytes} 字节", status_code=413)
+                           f"音视频主体上限 {settings.max_audio_upload_bytes} 字节", status_code=413)
         # 转写主体必须是能取到音轨的音视频；分块上传已拦一次，直连 /v1/uploads 的
         # 客户端也要在建条目之前拒绝，免得留下一条永远转不出文字的条目
         if not media_formats.is_supported(up.filename, up.mime):

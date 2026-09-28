@@ -1379,7 +1379,7 @@ def _asr_meta(run: AsrRun, manifest: dict, silence: list, failed_ranges: list,
 def _register_asr_files(db, store, item, run, manifest, results, segments,
                         *, retained: bool = False,
                         subtitle_ref: list[dict] | None = None) -> list:
-    """原始模型输出与执行清单进 Bundle；原件（大录音）不进自动投递文件列表。"""
+    """原始模型输出与执行清单进 Bundle；上传原件（几 GB 的录音或视频）不进自动投递文件列表。"""
     raw_doc = {
         "schema": "asr-raw-v1",
         "model_id": run.model_id,

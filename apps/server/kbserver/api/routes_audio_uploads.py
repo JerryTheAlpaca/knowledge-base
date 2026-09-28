@@ -126,7 +126,7 @@ def create_audio_upload(body: AudioUploadCreate,
     store = ObjectStore()
     usage = shutil.disk_usage(str(store.tmp_dir))
     if usage.free < body.total_bytes + DISK_RESERVE_BYTES:
-        raise ApiError("INSUFFICIENT_STORAGE", "服务器磁盘空间不足，暂时无法接收该录音", status_code=507)
+        raise ApiError("INSUFFICIENT_STORAGE", "服务器磁盘空间不足，暂时无法接收这个文件", status_code=507)
 
     staging = store.new_staging_path()
     store.staging_file(staging).touch()
