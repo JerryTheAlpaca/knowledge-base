@@ -27,6 +27,7 @@ from ..models import (
     utcnow,
 )
 from ..storage.objects import ObjectStore
+from . import media_formats
 
 RECIPE_VERSION = "source-light-v1"
 SCHEMA_VERSION = "1.0"
@@ -298,9 +299,11 @@ def enqueue_stage(db: Session, *, user_id: str, item_id: str, source_revision: i
 
 # ---- Capture 接收 ----
 
-ALLOWED_INPUT_KINDS = {"url", "text", "share", "images", "audio", "conversation", "workflow", "file"}
+ALLOWED_INPUT_KINDS = {"url", "text", "share", "images", "audio", "video", "conversation", "workflow", "file"}
 ALLOWED_ARCHIVE_POLICIES = {"source_materials", "minimal"}
 ALLOWED_PROCESSING_INTENTS = {"default", "transcribe_audio"}
+# 转写主体输入：音视频文件都只取音轨做 ASR（docs/13 §6.2）
+MEDIA_INPUT_KINDS = media_formats.MEDIA_KINDS
 
 
 def validate_capture_payload(payload: dict, uploads_index: dict[str, Upload]) -> None:
@@ -351,15 +354,31 @@ def validate_capture_payload(payload: dict, uploads_index: dict[str, Upload]) ->
         if up.bytes > settings.max_audio_upload_bytes:
             raise ApiError("PAYLOAD_TOO_LARGE",
                            f"音频主体上限 {settings.max_audio_upload_bytes} 字节", status_code=413)
+        # 转写主体必须是能取到音轨的音视频；分块上传已拦一次，直连 /v1/uploads 的
+        # 客户端也要在建条目之前拒绝，免得留下一条永远转不出文字的条目
+        if not media_formats.is_supported(up.filename, up.mime):
+            raise ApiError("MEDIA_UNSUPPORTED",
+                           media_formats.unsupported_message(up.filename, up.mime))
 
     if payload.get("archive_policy") not in ALLOWED_ARCHIVE_POLICIES:
         raise ApiError("SCHEMA_INVALID", "archive_policy 非法")
 
 
-def _capture_platform(payload: dict) -> tuple[str, str]:
+def _upload_input_media_kind(payload: dict, uploads: dict[str, Upload] | None) -> str:
+    """上传转写主体的媒体类型：按文件实测，取不到文件时退回输入类型（录音默认 audio）。"""
+    uid = payload.get("primary_audio_upload_id")
+    up = (uploads or {}).get(uid) if uid else None
+    kind = media_formats.classify(up.filename, up.mime) if up is not None else None
+    if kind is not None:
+        return kind
+    return "video" if payload.get("input_kind") == "video" else "audio"
+
+
+def _capture_platform(payload: dict,
+                      uploads: dict[str, Upload] | None = None) -> tuple[str, str]:
     """确定来源平台与 media_kind：只按真实输入判定，不信任客户端 hint（渠道不是平台）。
 
-    - 音频转写意图 + 音频主体上传 → audio_upload/audio；
+    - 音频转写意图 + 上传主体 → audio_upload + 该文件的媒体类型（录音 audio、视频 video）；
     - 音频转写意图 + 链接（B 站 → bilibili/video，公众号/网页 → 该平台/audio）；
     - 其余按 URL 推断平台（公众号仍是 wechat_mp，只有普通网页才是 web）。
 
@@ -369,16 +388,17 @@ def _capture_platform(payload: dict) -> tuple[str, str]:
     from .source_labels import default_media_kind, normalize_platform
 
     intent = payload.get("processing_intent") or "default"
+    kind = payload.get("input_kind")
     url = (payload.get("original_url") or "").strip()
     guessed = normalize_platform(guess_platform(url)) if url else "unknown"
     if intent == "transcribe_audio":
         if url:
             return ("bilibili", "video") if guessed == "bilibili" else (guessed, "audio")
-        if payload.get("primary_audio_upload_id") or payload.get("input_kind") == "audio":
-            return "audio_upload", "audio"
-    if payload.get("input_kind") == "audio":
+        if payload.get("primary_audio_upload_id") or kind in MEDIA_INPUT_KINDS:
+            return "audio_upload", _upload_input_media_kind(payload, uploads)
+    if kind in MEDIA_INPUT_KINDS:
         if payload.get("primary_audio_upload_id") or not url:
-            return "audio_upload", "audio"
+            return "audio_upload", _upload_input_media_kind(payload, uploads)
         return guessed, "audio"
     return guessed, default_media_kind(guessed)
 
@@ -412,7 +432,7 @@ def create_capture(db: Session, store: ObjectStore, *, user_id: str, payload: di
 
     from .source_labels import source_fields
 
-    platform, media_kind = _capture_platform(payload)
+    platform, media_kind = _capture_platform(payload, uploads)
     fields = source_fields(platform, media_kind)
     meta = {
         "platform": fields["platform"],
@@ -504,6 +524,6 @@ def _initial_missing(payload: dict) -> list[str]:
         missing.append("main_content")
     if kind == "images":
         missing.append("ocr_text")
-    if kind == "audio" or payload.get("processing_intent") == "transcribe_audio":
+    if kind in MEDIA_INPUT_KINDS or payload.get("processing_intent") == "transcribe_audio":
         missing.append("transcript")
     return missing

@@ -391,6 +391,30 @@
         }
       }
     },
+    "/v1/media-formats": {
+      "get": {
+        "tags": [
+          "audio-uploads"
+        ],
+        "summary": "Get Media Formats",
+        "description": "服务端接受的音频/视频容器清单：采集框据此决定文件走转写还是普通附件。",
+        "operationId": "get_media_formats_v1_media_formats_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Get Media Formats V1 Media Formats Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/audio-uploads": {
       "post": {
         "tags": [

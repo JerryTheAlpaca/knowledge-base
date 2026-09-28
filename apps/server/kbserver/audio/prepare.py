@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import math
 import os
+import re
 import subprocess
 import threading
 import time
@@ -46,6 +47,10 @@ _FFMPEG_WAIT_S = 60
 # 远程输入落到本次 attempt 目录的临时文件名；解码产物齐全后立即删除。
 # 不带容器后缀，让 FFmpeg 按内容探测格式（与原先读管道时的行为一致）。
 REMOTE_INPUT_FILE = "input.bin"
+# 上传的视频可能压根没有音轨：FFmpeg 对 `-map 0:a:0` 报这一句，与解码失败分开讲
+_NO_AUDIO_STREAM_RE = re.compile(r"matches no streams|does not contain any stream", re.I)
+# FFmpeg 对 -map 0:a:0 的「这个文件里没有音轨」说法（视频常见）
+_NO_AUDIO_STREAM_RE = re.compile(r"matches no streams|does not contain any stream", re.I)
 
 
 @dataclass
@@ -169,12 +174,19 @@ def _finalize(attempt_dir: Path, chunks_dir: Path, limits: AudioLimits,
               source_bytes: int, expected: float, stderr_tail: deque, returncode: int,
               *, strict_duration: bool) -> PreparedAudio:
     if returncode != 0:
+        detail = _stderr_text(stderr_tail)[:200]
+        if _NO_AUDIO_STREAM_RE.search(detail):
+            # 视频只有画面没有声音：这类文件不是"格式不支持"，是压根没东西可转写，
+            # 说清楚才不会被当成解码器故障反复重试
+            raise AudioPrepareError(
+                "no_audio_stream",
+                "这个文件里没有声音轨，语音识别无从下手。",
+            )
         # 输入已完整落到本地文件，解码仍失败就是容器/编码本身不支持；
         # 原先「管道不可 seek」造成的那一类误判已经不存在
         raise AudioPrepareError(
             "audio_stream_unsupported",
-            f"FFmpeg 无法解码该音频（exit {returncode}）："
-            f"{_stderr_text(stderr_tail)[:200]}",
+            f"FFmpeg 无法解码该音频（exit {returncode}）：{detail}",
         )
 
     chunk_paths = sorted(chunks_dir.glob("chunk-*.wav"))

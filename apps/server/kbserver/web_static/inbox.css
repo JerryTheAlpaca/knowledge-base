@@ -285,8 +285,10 @@ label { display: block; font-size: var(--fs-small); color: var(--text-2); margin
                          width: 18px; height: 18px; border-radius: 50%;
                          border: 2px solid rgba(36, 23, 3, .3); border-top-color: var(--on-accent);
                          animation: rot .8s linear infinite; }
-.capmeta { display: flex; align-items: center; gap: 8px; padding: 0 12px; min-height: 0; }
+.capmeta { display: flex; align-items: center; gap: 8px; padding: 0 12px; min-height: 0; flex-wrap: wrap; }
 .capmeta:not(:has(span:not(:empty))) { height: 0; overflow: hidden; }
+/* 不支持的格式要说得看得见：这一行是采集框里唯一的告警位 */
+.capmeta .warn { color: var(--warn); }
 /* —— 链接/文件/录音 chips —— */
 .chiprow { display: flex; flex-wrap: wrap; gap: 6px; padding: 4px 14px 8px; }
 .chip { display: inline-flex; align-items: center; gap: 4px; background: rgba(243, 233, 210, .06);

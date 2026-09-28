@@ -4,7 +4,7 @@
 - B 站视频音频：extractors/bilibili_audio（保留既有登录态/WBI/音轨规则）；
 - 音频直链：DirectAudioAdapter（响应 MIME/格式探测确认，不靠后缀）；
 - 静态网页音频：WebAudioAdapter（<audio>/<source>/og:audio/JSON-LD，多候选需选择）；
-- 上传录音：ObjectAudioInput（服务端解析的已授权对象路径）。
+- 上传原件（录音或视频）：ObjectAudioInput（服务端解析的已授权对象路径，只取音轨）。
 
 顺序分发即可，不建设可动态安装的插件注册系统（docs/13 §3）。
 """
@@ -28,7 +28,10 @@ from ..audio.types import (
     RemoteAudioInput,
     ResolvedAudioSource,
 )
+from ..domain.media_formats import MEDIA_KINDS
+from ..domain.media_formats import classify as classify_media
 from ..domain.source_labels import (
+    UPLOAD_PLATFORM,
     WEB_LIKE_PLATFORMS,
     default_media_kind,
     resolve_platform,
@@ -217,7 +220,11 @@ def parse_audio_candidates(html: bytes, base_url: str) -> list[dict]:
 
 def _upload_object_input(db: Session, item: Item, payload: dict,
                          store: ObjectStore) -> ResolvedAudioSource:
-    """上传录音：解析服务端登记的原件引用，绝不接受客户端传入的路径/Key。"""
+    """上传原件：解析服务端登记的已授权对象引用，绝不接受客户端传入的路径/Key。
+
+    录音与视频走同一条路：FFmpeg `-map 0:a:0` 只取音轨，视频画面不参与识别，
+    所以 media_kind 只决定来源标签与原件下载文案，不改变转写流程（docs/13 §6.2）。
+    """
     asset = (
         db.query(AudioAsset)
         .filter(AudioAsset.user_id == item.user_id, AudioAsset.item_id == item.id,
@@ -233,23 +240,24 @@ def _upload_object_input(db: Session, item: Item, payload: dict,
         if uid:
             upload = db.query(Upload).filter(Upload.user_id == item.user_id, Upload.id == uid).one_or_none()
     if upload is None:
-        raise AudioSourceError("audio_source_unsupported", "条目没有可用的上传录音原件。")
+        raise AudioSourceError("audio_source_unsupported", "条目没有可用的上传原件。")
     if upload.state != "completed":
-        raise AudioSourceError("audio_source_unsupported", "上传录音尚未完成，无法转写。")
+        raise AudioSourceError("audio_source_unsupported", "上传文件尚未完成，无法转写。")
 
     path = store.object_path(upload.storage_key)
     if not path.exists():
         raise AudioSourceError("network_error", "上传原件在对象存储中缺失，需重新上传。")
+    media_kind = classify_media(upload.filename, upload.mime) or "audio"
     source = AudioSource(
-        platform="audio_upload",
-        media_kind="audio",
+        platform=UPLOAD_PLATFORM,
+        media_kind=media_kind,
         adapter_id=_ADAPTER_UPLOAD,
         adapter_version=EXTRACTOR_VERSION,
         original_url=None,
         canonical_url=None,
         title=(asset.filename if asset else None) or upload.filename or None,
         author=None,
-        source_locator={"type": "uploaded_audio", "upload_id": upload.id,
+        source_locator={"type": f"uploaded_{media_kind}", "upload_id": upload.id,
                         "filename": upload.filename, "sha256": upload.sha256},
         duration_hint=None,
         acquisition=ACQ_UPLOADED,
@@ -370,7 +378,7 @@ def resolve_audio_source(db: Session, item: Item, *, selection: str | None = Non
     """解析条目的音频来源并返回通用输入；失败抛 AudioSourceError。
 
     - B 站：播放接口独立音轨（沿用现有登录态/音轨规则）；
-    - 上传录音：服务端登记的已授权对象原件；
+    - 上传原件（录音或视频）：服务端登记的已授权对象文件；
     - 普通网页/音频直链：静态解析或直链探测，多候选时抛选择异常。
     """
     from ..config import get_settings
@@ -392,15 +400,16 @@ def resolve_audio_source(db: Session, item: Item, *, selection: str | None = Non
 
     if platform == "bilibili":
         return _bilibili_resolved(db, item, payload, settings)
-    if platform == "audio_upload" or (media_kind == "audio" and _has_primary_upload(payload)):
+    if platform == UPLOAD_PLATFORM or (media_kind in MEDIA_KINDS and _has_primary_upload(payload)):
         return _upload_object_input(db, item, payload, store)
     if url and platform in WEB_LIKE_PLATFORMS:
         return _web_direct_or_page(url, settings, selection)
     if media_kind == "audio" and payload.get("upload_ids"):
+        # 旧客户端只用 upload_ids 传录音；视频始终以 primary_audio_upload_id 登记
         return _upload_object_input(db, item, payload, store)
     raise AudioSourceError(
         "audio_source_unsupported",
-        "该条目没有可转写的音频来源（需 B 站视频、网页音频、音频直链或上传录音）。",
+        "该条目没有可转写的音频来源（需 B 站视频、网页音频、音频直链或上传的录音/视频）。",
     )
 
 
@@ -410,12 +419,13 @@ def _has_primary_upload(payload: dict) -> bool:
 
 def _guess_media_kind(payload: dict, meta: dict) -> str:
     """按输入意图推断 media_kind；无法确认是否音频的旧 web 记录保持 text。"""
+    kind = payload.get("input_kind")
     if payload.get("processing_intent") == "transcribe_audio":
         if payload.get("primary_audio_upload_id"):
-            return "audio"
-        return "audio" if payload.get("input_kind") == "audio" else "text"
-    if payload.get("input_kind") == "audio":
-        return "audio"
+            return "video" if kind == "video" else "audio"
+        return "audio" if kind in MEDIA_KINDS else "text"
+    if kind in MEDIA_KINDS:
+        return "video" if kind == "video" else "audio"
     return default_media_kind(meta.get("platform"), has_audio=False)
 
 
@@ -436,7 +446,7 @@ def candidate_list(candidates: list[dict]) -> list[dict]:
 def audio_capability(db: Session, item: Item) -> tuple[bool, str]:
     """条目是否具备可转写的音频来源（不触网的能力判断，供 API 显示按钮/校验）。
 
-    B 站、上传录音、带链接的普通网页都视为**可能**支持；实际能否取得音频由
+    B 站、上传的录音/视频、带链接的普通网页都视为**可能**支持；实际能否取得音轨由
     prepare 阶段决定（可能是 audio_source_unsupported / 需要选择）。
     """
     capture = db.get(Capture, item.capture_id)
@@ -452,7 +462,10 @@ def audio_capability(db: Session, item: Item) -> tuple[bool, str]:
     media_kind = meta.get("media_kind") or _guess_media_kind(payload, meta)
     if platform == "bilibili":
         return True, "bilibili"
-    if platform == "audio_upload" or payload.get("primary_audio_upload_id") or media_kind == "audio":
+    if platform == UPLOAD_PLATFORM or payload.get("primary_audio_upload_id"):
+        return True, "upload"
+    if media_kind in MEDIA_KINDS and not url:
+        # 没有链接的音视频条目只能是上传原件（旧记录的 platform 可能被渠道值污染）
         return True, "upload"
     if platform in WEB_LIKE_PLATFORMS and url:
         return True, "web"

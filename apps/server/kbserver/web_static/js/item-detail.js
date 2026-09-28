@@ -415,7 +415,10 @@ function renderMoreMenu(it) {
     seen.add(code);
     if (labels[code]) items.push({ code, label: labels[code] });
   }
-  if (it.audio_original_retained && it.audio_original_download) items.push({ code: "download-audio", label: "下载上传的录音原件" });
+  if (it.audio_original_retained && it.audio_original_download) {
+    items.push({ code: "download-audio",
+                 label: it.media_kind === "video" ? "下载上传的视频原件" : "下载上传的录音原件" });
+  }
   items.push({ code: "share-page", label: "用这篇生成分享页" });
   items.push({ code: "view-records", label: "查看处理记录" });
   const menu = $("moreMenu");

@@ -29,6 +29,7 @@ from ..config import get_settings
 from ..db import make_engine, make_session_factory
 from ..domain import pipeline, platform_sessions
 from ..domain.platforms import guess_platform
+from ..domain.source_labels import UPLOAD_PLATFORM
 from ..extractors import bilibili as bili
 from ..extractors import paragraphs as parafmt
 from ..extractors import subtitles as subfmt
@@ -186,8 +187,10 @@ def _run_extract_dispatch(db: Session, store: ObjectStore, job: Job, item: Item,
             origin="user_submission" if (user_text or share_text) else "user_supplement",
         )
         return
-    # 4) 音频条目（上传录音/网页音频）：正文由机器转写产生，这里不伪造
-    if payload.get("primary_audio_upload_id") or meta.get("media_kind") == "audio":
+    # 4) 音视频条目（上传录音/上传视频/网页音频）：正文由机器转写产生，这里不伪造
+    if (payload.get("primary_audio_upload_id")
+            or meta.get("platform") == UPLOAD_PLATFORM
+            or meta.get("media_kind") == "audio"):
         _needs_input(db, job, item,
                      "音频条目：请在详情等待/触发机器转写，或补充字幕、正文。",
                      "audio_transcribe_pending")

@@ -1,7 +1,7 @@
 // capture.js — 统一采集框（docs/17 §4.2–§4.5）
 //
 // 一个框接收链接、文字与文件，不先选来源类型：
-// - 粘贴 URL → 来源条目；纯文字 → 文字条目；音频 → 自动进入加工（转写）
+// - 粘贴 URL → 来源条目；纯文字 → 文字条目；音频/视频 → 自动进入加工（转写）
 // - 提取图片/音轨不再常驻：识别到网页/公众号链接才出现「同时保存正文图片」轻量选项
 // - 多链接拆分为独立条目；文字自动成为备注；文件独立成条，不绑到第一个链接
 
@@ -34,13 +34,44 @@ function bodyText() {
   return text.trim();
 }
 
-// ---------- 文件与录音状态 ----------
+// ---------- 文件与音视频状态 ----------
 const capFilesState = [];   // 普通附件
-const capAudiosState = [];  // 录音：{ file, sessionId, uploadId }
+const capAudiosState = [];  // 待转写的音视频原件：{ file, kind, sessionId, uploadId }
 const MAX_AUDIOS = 10;
-const AUDIO_EXT_RE = /\.(m4a|mp3|aac|wav|flac|ogg|opus|wma|amr|mka|aiff?|caf)$/i;
-function isAudioFile(f) {
-  return (f.type || "").startsWith("audio/") || AUDIO_EXT_RE.test(f.name || "");
+// 支持的容器清单由服务端给（/v1/media-formats）：界面不复制一份，免得两边各自漂移。
+// 清单还没到就退回浏览器 MIME 判定（音视频仍能识别），真正的接受/拒绝在创建上传
+// 会话时由服务端裁定（docs/13 §6.2）。
+let mediaFormats = null;
+const capRejected = [];     // 认成音视频但格式不支持的文件，只在框里提示不入队
+
+function loadMediaFormats() {
+  api("/v1/media-formats").then((r) => { mediaFormats = r; })
+    .catch(() => { /* 取不到清单不拦用户：按 MIME 判定，服务端仍会拒绝不支持的容器 */ });
+}
+
+function extOf(name) {
+  const base = String(name || "").replace(/\\/g, "/").split("/").pop();
+  const i = base.lastIndexOf(".");
+  return i > 0 ? base.slice(i).toLowerCase() : "";
+}
+
+// 返回 "audio" | "video" | "unsupported" | null（null = 不是音视频，走普通附件）
+function classifyMedia(f) {
+  const mime = f.type || "";
+  const ext = extOf(f.name);
+  const mediaMime = mime.indexOf("audio/") === 0 || mime.indexOf("video/") === 0;
+  if (mediaFormats) {
+    if (ext && (mediaFormats.audio || []).indexOf(ext) >= 0) return "audio";
+    if (ext && (mediaFormats.video || []).indexOf(ext) >= 0) return "video";
+    // 明确不接受的音视频容器要说「不支持」，不能悄悄当成普通附件收下一条空条目；
+    // 图片/PDF/文字这类本来就不是音视频的文件仍走附件（返回 null）
+    if (ext && (mediaFormats.rejected || []).indexOf(ext) >= 0) return "unsupported";
+    return mediaMime ? "unsupported" : null;
+  }
+  if (!ext) return null;
+  if (mime.indexOf("audio/") === 0) return "audio";
+  if (mime.indexOf("video/") === 0) return "video";
+  return null;
 }
 
 export function saveDrafts() {
@@ -102,9 +133,10 @@ function renderCapChips() {
   const ah = $("audioChips");
   ah.hidden = capAudiosState.length === 0;
   ah.innerHTML = capAudiosState.map((a, i) =>
-    '<span class="chip"><span class="lbl" title="' + esc(a.file.name) + '">录音 ' + esc(a.file.name) +
+    '<span class="chip"><span class="lbl" title="' + esc(a.file.name) + '">' +
+    (a.kind === "video" ? "视频 " : "录音 ") + esc(a.file.name) +
     "（" + (a.file.size / (1024 * 1024)).toFixed(1) + " MiB）</span>" +
-    '<button class="xbtn" data-ai="' + i + '" aria-label="移除该录音">✕</button></span>').join("");
+    '<button class="xbtn" data-ai="' + i + '" aria-label="移除该音视频">✕</button></span>').join("");
   renderContextOptions(urls);
   renderMultipleNote(urls);
   syncCapShape();
@@ -140,13 +172,38 @@ function renderMultipleNote(urls) {
 
 function refreshAudioSummary() {
   const st = $("capAudioState");
+  const parts = [];
   const n = capAudiosState.length;
-  if (!n) { st.textContent = ""; return; }
-  const total = capAudiosState.reduce((s, a) => s + a.file.size, 0);
-  st.textContent = "已选择 " + n + " 个录音，共 " + (total / (1024 * 1024)).toFixed(1) + " MiB";
+  if (n) {
+    const total = capAudiosState.reduce((s, a) => s + a.file.size, 0);
+    parts.push("已选择 " + n + " 个音视频，共 " + (total / (1024 * 1024)).toFixed(1) + " MiB");
+  }
+  if (capRejected.length) {
+    const names = capRejected.slice(0, 3).map((f) => f.name).join("、");
+    const more = capRejected.length > 3 ? " 等 " + capRejected.length + " 个" : "";
+    const hint = (mediaFormats && mediaFormats.hint) || "可以上传常见的视频与音频文件";
+    parts.push("不支持的格式：" + names + more + "；" + hint);
+  }
+  st.textContent = parts.join("；");
+  st.classList.toggle("warn", capRejected.length > 0);
 }
 
-// ---------- 录音分块续传（沿用已验证协议，docs/13 §6.2） ----------
+// ---------- 音视频分块续传（沿用已验证协议，docs/13 §6.2） ----------
+function addPickedFiles(picked) {
+  let overflow = 0;
+  for (const f of picked) {
+    const kind = classifyMedia(f);
+    if (kind === "unsupported") {
+      if (!capRejected.some((r) => r.name === f.name)) capRejected.push(f);
+      continue;
+    }
+    if (!kind) { capFilesState.push(f); continue; }
+    if (capAudiosState.length >= MAX_AUDIOS) { overflow++; continue; }
+    capAudiosState.push({ file: f, kind, sessionId: null, uploadId: null });
+  }
+  if (overflow) toast("一次最多提交 " + MAX_AUDIOS + " 个音视频，超出部分未加入", { type: "error" });
+}
+
 async function uploadAudioFile(entry, onProgress) {
   if (entry.uploadId) return entry.uploadId;
   if (!crypto.subtle || !crypto.subtle.digest) {
@@ -330,7 +387,8 @@ export async function submitCapture() {
         body.input_kind = "file";
         body.upload_ids = uploadIds;
       } else if (j.kind === "audio") {
-        body.input_kind = "audio";
+        // 录音与视频同一条路：都只取音轨转写；input_kind 如实记文件类型
+        body.input_kind = j.entry.kind;
         body.processing_intent = "transcribe_audio";
         body.primary_audio_upload_id = j.entry.uploadId;
       }
@@ -353,7 +411,8 @@ export async function submitCapture() {
     $("capText").value = "";
     capFilesState.length = 0; $("capFiles").value = "";
     capAudiosState.length = 0;
-    $("capAudioState").textContent = "";
+    capRejected.length = 0;
+    refreshAudioSummary();
     progress.textContent = "";
     renderCapChips(); autosizeCap(); clearDraft();
     toast("已接收 " + ids.length + " 条，后台开始处理", { type: "ok" });
@@ -385,6 +444,7 @@ function dropSubmittedJob(job) {
 
 export function initCapture({ onSubmit }) {
   setSubmittedHandler(onSubmit);
+  loadMediaFormats();
   $("capSubmit").addEventListener("click", submitCapture);
   $("capText").addEventListener("input", () => { autosizeCap(); renderCapChips(); });
   // focusin/focusout 会冒泡，挂在采集框上就同时接得住输入框和两个按钮的进出
@@ -399,17 +459,8 @@ export function initCapture({ onSubmit }) {
   window.addEventListener("resize", autosizeCap);
   $("uploadPick").addEventListener("click", () => $("capFiles").click());
   $("capFiles").addEventListener("change", (e) => {
-    const audios = [];
-    for (const f of e.target.files) (isAudioFile(f) ? audios : capFilesState).push(f);
+    addPickedFiles(Array.from(e.target.files || []));
     e.target.value = "";
-    if (audios.length) {
-      let overflow = 0;
-      for (const f of audios) {
-        if (capAudiosState.length >= MAX_AUDIOS) { overflow++; continue; }
-        capAudiosState.push({ file: f, sessionId: null, uploadId: null });
-      }
-      if (overflow) toast("一次最多提交 10 个录音，超出部分未加入", { type: "error" });
-    }
     renderCapChips(); refreshAudioSummary();
   });
   $("urlChips").addEventListener("click", (e) => {

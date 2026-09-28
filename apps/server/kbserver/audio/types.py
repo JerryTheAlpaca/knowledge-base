@@ -18,7 +18,7 @@ from pathlib import Path
 # 获取方式（写进 asr 元数据，不是来源）
 ACQ_PLAYER_STREAM = "player_audio_stream"   # B 站播放接口独立音轨
 ACQ_WEB_STREAM = "web_audio_stream"         # 普通网页/直链音频
-ACQ_UPLOADED = "uploaded_audio"             # 用户上传录音原件
+ACQ_UPLOADED = "uploaded_audio"             # 用户上传录音/视频原件（只取音轨）
 
 REMOTE_KIND = "remote"
 OBJECT_KIND = "object"

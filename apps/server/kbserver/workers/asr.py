@@ -71,6 +71,11 @@ MAX_RUN_FAILURES = 5
 FAIL_BACKOFF_BASE_S = 30
 LEASE_REFRESH_S = 20.0
 RUNNING_CHECK_INTERVAL_S = 5.0
+# 准备阶段这些失败分类是「材料本身不行」，不是「服务器暂时不行」：条目要按不支持
+# 显示，不再给重试按钮（重试只会把同一个文件再解一遍）。
+UNSUPPORTED_PREPARE_STATUSES = frozenset({
+    "audio_source_unsupported", "audio_stream_unsupported", "no_audio_stream", "empty_audio",
+})
 
 
 class AsrEngineError(Exception):
@@ -384,8 +389,12 @@ def _pause_run(db: Session, run: AsrRun, job: Job, reason: str, cooldown_s: int)
 
 
 def _fail_run(db: Session, run: AsrRun, job: Job, item: Item, error: str, *,
-              final: bool) -> None:
-    """业务失败：连续 ≥5 次终态化；未终态时有限退避重试。"""
+              final: bool, reason: str = "asr_failed") -> None:
+    """业务失败：连续 ≥5 次终态化；未终态时有限退避重试。
+
+    reason 只影响终态的机器码与说明：材料本身不行（音轨缺失/格式解不出）要标成
+    media_unsupported，WorkflowView 据此显示「不支持」而不是「可以重试」。
+    """
     run.failed_count += 1
     run.last_error = error[:500]
     run.updated_at = utcnow()
@@ -396,15 +405,17 @@ def _fail_run(db: Session, run: AsrRun, job: Job, item: Item, error: str, *,
         job.state = "failed"
         job.last_error = error[:200]
         item.pipeline_state = "needs_input"
-        item.state_detail = f"音频转写失败：{error[:120]}"
-        item.state_reason = "asr_failed"
+        item.state_detail = (f"这个文件不支持语音识别：{error[:120]}"
+                             if reason == "media_unsupported"
+                             else f"音频转写失败：{error[:120]}")
+        item.state_reason = reason
         # 终态后这批 PCM 再也用不上（重跑走 start_asr，本来就先清目录）；
         # 不清的话最长尾的那类失败会把整小时级的解码产物永久留在盘上。
         _remove_work_dir(get_settings(), run)
         pipeline.emit_event(db, item.user_id, item_id=item.id,
                             bundle_revision=item.bundle_revision,
                             event_type="item_needs_input",
-                            payload={"reason": "asr_failed", "detail": error[:200], "stage": "asr"})
+                            payload={"reason": reason, "detail": error[:200], "stage": "asr"})
     else:
         backoff = min(300, FAIL_BACKOFF_BASE_S * (2 ** (run.failed_count - 1)))
         job.state = "retry_wait"
@@ -652,7 +663,9 @@ def _handle_prepare_failure(session_factory, job_id: str, lease_token: str,
             return
         # 记录失败分类，供 /audio-sources 区分 unsupported 与暂时失败
         ctx.run.input_json = {**(ctx.run.input_json or {}), "last_prepare_status": status}
-        _fail_run(db, ctx.run, ctx.job, ctx.item, message, final=not retryable)
+        _fail_run(db, ctx.run, ctx.job, ctx.item, message, final=not retryable,
+                  reason="media_unsupported" if status in UNSUPPORTED_PREPARE_STATUSES
+                         else "asr_failed")
         db.commit()
 
 

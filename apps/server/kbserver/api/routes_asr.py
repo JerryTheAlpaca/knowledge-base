@@ -48,7 +48,7 @@ def _require_audio_item(db: Session, user_id: str, item_id: str) -> Item:
     if not capable:
         raise ApiError(
             "SCHEMA_INVALID",
-            "该条目没有可转写的音频来源（需 B 站视频、网页音频、音频直链或上传录音）",
+            "该条目没有可转写的音频来源（需 B 站视频、网页音频、音频直链或上传的录音/视频）",
             status_code=422,
         )
     return item

@@ -1,12 +1,17 @@
-"""音频大文件上传：最小串行分块续传（docs/13 §6.2）与原件下载（§6.3）。
+"""音视频大文件上传：最小串行分块续传（docs/13 §6.2）与原件下载（§6.3）。
 
 传输机制，不是通用上传服务：
-- POST   /v1/audio-uploads                     声明 filename/总字节/mime，创建会话
+- GET    /v1/media-formats                     服务端接受的音频/视频容器清单（Web 据此路由文件）
+- POST   /v1/audio-uploads                     声明 filename/总字节/mime，创建会话（格式不支持当场拒绝）
 - GET    /v1/audio-uploads/{id}                返回可恢复 offset/state（仅本人）
 - PUT    /v1/audio-uploads/{id}/chunks         原始二进制块（X-Upload-Offset + X-Chunk-Sha256）
 - POST   /v1/audio-uploads/{id}/complete       长度一致后对象化，返回标准 UploadResult
 - DELETE /v1/audio-uploads/{id}                取消未完成会话（已完成对象按引用规则处理）
 - GET    /v1/items/{id}/audio-original         鉴权流式下载上传原件（不进 Bundle 自动投递）
+
+格式不支持必须在创建会话时就拒绝：视频动辄几 GB，传完才说「不支持」等于白耗用户
+一条上行带宽。这里只判容器是否在服务端接受范围内；有没有音轨、能否解码仍由准备
+阶段实测（docs/13 §6.2）。
 
 崩溃恢复：块写盘与 offset 更新之间中断时，按最后确认 offset 截去未提交尾部再重传；
 完成阶段计算摘要与对象化都在事务外执行，进程中断可重试完成。
@@ -26,6 +31,7 @@ from sqlalchemy.orm import Session
 from ..config import get_settings
 from ..db import get_db
 from ..domain.errors import ApiError
+from ..domain.media_formats import formats_payload, is_supported, unsupported_message
 from ..models import AudioAsset, AudioUploadSession, Upload, utcnow
 from ..repositories import core as repo
 from ..api.deps import require_scope
@@ -94,6 +100,12 @@ def _touch(sess: AudioUploadSession, settings) -> None:
     sess.updated_at = utcnow()
 
 
+@router.get("/v1/media-formats")
+def get_media_formats(principal=Depends(require_scope("uploads:create"))) -> dict:
+    """服务端接受的音频/视频容器清单：采集框据此决定文件走转写还是普通附件。"""
+    return formats_payload()
+
+
 @router.post("/v1/audio-uploads", response_model=AudioUploadSessionOut, status_code=201)
 def create_audio_upload(body: AudioUploadCreate,
                         principal=Depends(require_scope("uploads:create")),
@@ -102,6 +114,8 @@ def create_audio_upload(body: AudioUploadCreate,
     settings = get_settings()
     if body.total_bytes <= 0:
         raise ApiError("SCHEMA_INVALID", "total_bytes 必须为正数", status_code=422)
+    if not is_supported(body.filename, body.mime):
+        raise ApiError("MEDIA_UNSUPPORTED", unsupported_message(body.filename, body.mime))
     if body.total_bytes > settings.max_audio_upload_bytes:
         raise ApiError(
             "PAYLOAD_TOO_LARGE",

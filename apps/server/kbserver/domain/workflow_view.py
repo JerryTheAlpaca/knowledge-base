@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from ..models import AsrRun, BundleRevision, Device, Item, Job, Receipt, SourceRevision
 from . import platform_sessions
+from .source_labels import UPLOAD_PLATFORM
 
 WORKFLOW_VERSION = "1.0"
 
@@ -27,6 +28,16 @@ _ASR_ACTIVE_STATES = ("queued", "preparing", "transcribing", "paused")
 _ASR_RESOURCE_PAUSES = {
     "idle_wait", "resource_busy", "disabled", "metrics_unavailable",
     "idle_window_filling", "cpu_busy", "memory_low", "normal_jobs_active",
+}
+# 准备阶段失败分类的用户说法（docs/13 §6.2）：这类失败不是「再试一次就好」，
+# 而是这份材料本身转不出来——界面要说清不支持在哪，重试按钮不该出现。
+# 不透传 state_detail 与 FFmpeg 原文，只按机器码给固定文案。
+_TRANSCRIBE_IMPOSSIBLE = {
+    "audio_stream_unsupported": "这个文件格式不支持语音识别，服务器解不出里面的声音",
+    "no_audio_stream": "这个文件里没有声音轨，语音识别没有内容可转",
+    "empty_audio": "这个文件里没有取到可识别的声音",
+    "audio_source_unsupported": "这个来源没有可转写的音频",
+    "audio_too_long": "这条音视频超过了单次转写的时长上限，请拆分后再上传",
 }
 
 
@@ -58,6 +69,10 @@ def _extract_attention(item: Item, platform: str, session_platforms: set[str]) -
     登录墙按 Item.state_reason 机器码判定，不解析 state_detail 的中文文案
     （审查 C-14）；只有设置页确实开放了该平台登录态入口时才给连接/更新动作。
     """
+    if item.state_reason == "media_unsupported":
+        # 上传的录音/视频已经完整收到服务器，是音轨解不出来，不是材料没到手：
+        # 把「需要你处理」让给语音识别那一步，用户看到的才是真正的原因
+        return _step("extract", "completed", "SOURCE_READY", "已收到原始文件", label="提取")
     spec = platform_sessions.SPECS.get(platform)
     if (item.state_reason == "login_required" and spec is not None
             and platform in platform_sessions.SESSION_UI_PLATFORMS):
@@ -107,12 +122,19 @@ def derive_item_workflow(
     # B 站无字幕音轨转写）；网页正文/B 站字幕在提取时已是文字，不渲染该节点。
     # 未来 OCR 实装后，图片条目才出现「提取文字」节点。
     process = None
-    if run is not None or meta.get("media_kind") == "audio" or "transcript" in missing:
+    if (run is not None or meta.get("platform") == UPLOAD_PLATFORM
+            or meta.get("media_kind") == "audio" or "transcript" in missing):
         if run is not None and run.state == "succeeded":
             process = _step("process", "completed", "PROCESS_DONE", "转写完成", 100, label="语音识别")
         elif run is not None and run.state == "failed":
-            process = _step("process", "failed", "TRANSCRIBE_FAILED",
-                            "语音识别没有完成，可以重新识别", label="语音识别")
+            impossible = _TRANSCRIBE_IMPOSSIBLE.get(
+                (run.input_json or {}).get("last_prepare_status") or "")
+            if impossible is not None:
+                process = _step("process", "failed", "TRANSCRIBE_UNSUPPORTED",
+                                impossible, label="语音识别")
+            else:
+                process = _step("process", "failed", "TRANSCRIBE_FAILED",
+                                "语音识别没有完成，可以重新识别", label="语音识别")
         elif run is not None and run.state == "cancelled":
             process = _step("process", "waiting", "PROCESS_CANCELLED",
                             "语音识别已取消，可以重新识别或补充内容", label="语音识别")
@@ -292,7 +314,8 @@ def _primary_action(current: dict, extract: dict, organize: dict, delivery: dict
         if current["reason_code"] == "SELECTION_REQUIRED":
             return None  # 选择音频走「更多操作」，不占主按钮
     if status == "failed":
-        return "retry"
+        # 材料本身转不出来（没音轨/格式解不出/超时长）：重试只会把同一个文件再解一遍
+        return None if current["reason_code"] == "TRANSCRIBE_UNSUPPORTED" else "retry"
     return None
 
 
@@ -304,14 +327,17 @@ def _available_actions(item: Item, meta: dict, steps: dict[str, dict] | list,
     steps_by_id = {s["id"]: s for s in steps}
     extract = steps_by_id["extract"]
     organize = steps_by_id["organize"]
+    process = steps_by_id.get("process")
+    unsupported = bool(process and process["reason_code"] == "TRANSCRIBE_UNSUPPORTED")
     acts = ["view_source"]
     if meta.get("original_url") and extract["status"] in ("completed", "attention", "failed"):
         acts.append("refetch")
     if run is not None and run.state in _ASR_ACTIVE_STATES:
         acts.append("cancel_process")
-    if run is not None and run.state in ("failed", "cancelled"):
+    if run is not None and run.state in ("failed", "cancelled") and not unsupported:
         acts.append("retry_process")
-    if extract["status"] == "attention":
+    if extract["status"] == "attention" or unsupported:
+        # 转写不了的音视频，用户仍可自己补一份文字稿或要点（docs/13 §6.2）
         acts.append("supplement")
         # 登录墙：先给连接/更新登录态，补充材料仍是兜底路径（docs/18 §7.7）
         if extract["reason_code"] == "WAITING_PLATFORM_AUTH":

@@ -15,6 +15,7 @@
 | web | text | web | 网页 | web_page |
 | web / wechat_mp / xiaohongshu | audio | web_audio | 网页音频 | web_audio |
 | audio_upload | audio | audio_upload | 上传录音 | audio_upload |
+| audio_upload | video | audio_upload | 上传视频 | audio_upload |
 
 平台身份不被合并：微信公众号仍是 wechat_mp，不并进"网页"；只有普通网页才是"网页"。
 icon_key 仍由服务端派生（留给客户端将来做图形标识），界面当前只显示文字，不用表情符号。
@@ -41,6 +42,8 @@ SOURCE_MAP: dict[tuple[str, str], tuple[str, str, str]] = {
     ("xiaohongshu", "text"): ("xiaohongshu", "小红书", "xiaohongshu"),
     ("web", "text"): ("web", "网页", "web_page"),
     ("audio_upload", "audio"): ("audio_upload", "上传录音", "audio_upload"),
+    # 上传视频与上传录音同属"上传的音视频原件"这一来源身份，只换展示标签（docs/13 §6.2）
+    ("audio_upload", "video"): ("audio_upload", "上传视频", "audio_upload"),
     ("web", "audio"): ("web_audio", "网页音频", "web_audio"),
     ("wechat_mp", "audio"): ("web_audio", "网页音频", "web_audio"),
     ("xiaohongshu", "audio"): ("web_audio", "网页音频", "web_audio"),
@@ -125,7 +128,14 @@ def derive_source_type(platform: str | None, media_kind: str | None) -> str:
 
 def display_for(source_type: str, platform: str | None = None,
                 media_kind: str | None = None) -> dict:
-    """展示字段：source_type、label（纯文字）、icon_key。缺失组合按平台名回退。"""
+    """展示字段：source_type、label（纯文字）、icon_key。缺失组合按平台名回退。
+
+    同一 source_type 会按 media_kind 分标签（上传录音与上传视频同属 audio_upload），
+    所以先按 (platform, media_kind) 精确取，取不到再按 source_type 扫描。
+    """
+    exact = SOURCE_MAP.get((normalize_platform(platform), (media_kind or "").strip()))
+    if exact is not None and exact[0] == source_type:
+        return {"source_type": exact[0], "source_label": exact[1], "icon_key": exact[2]}
     for (_p, _kind), (st, label, icon_key) in SOURCE_MAP.items():
         if st == source_type:
             return {"source_type": st, "source_label": label, "icon_key": icon_key}
