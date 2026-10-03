@@ -29,10 +29,11 @@ COMPOSE_FILE="deploy/docker-compose.yml"
 # 除当前 latest 外额外保留的旧构建版本数；只多留 app 代码层（约 5MB），
 # python/pip/ffmpeg 基础层按内容去重共享，所以留 3 份几乎不占额外空间
 KEEP_VERSIONS=3
-# 磁盘水位线（%）。常规那套清理动不到与镜像层共享的 BuildKit 缓存记录——2026-09-28
-# 实测 `builder du` 报 12.77GB 可回收里 327 条标着「与镜像层同一份」，只有 5 条不是，
-# 所以 `builder prune -f` 每轮只回收 65–800MB，用量还是一路涨。到 WARN 之后改用
-# `prune -af` 把记录整排摘掉（代价：下一次构建要重跑 pip/npm，基础层本身还在镜像里）。
+# 磁盘水位线（%）。`builder prune -f` 只清不被引用的缓存记录，实测每轮回收 65–800MB；
+# 而标着「与镜像层同一份（Shared）」的那部分并非清不掉——10-03 在生产实测
+# `builder prune -af` 把 12.91GB 记录整排摘掉，containerd 从 19G 降到 7.8G，回收 11.2G，
+# 期间一张镜像没少、四个容器没重启。所以到 WARN 就升级成 -af。
+# 代价只有一项：下一次构建要重跑 pip install / npm ci（基础镜像仍在，不会重拉 787MB 层）。
 DISK_WARN_PCT=90
 # 到 FAIL 且本轮需要构建时直接跳过：2 核机上 share_runner（底座 Playwright 镜像 3.4GB）
 # 构建中途写满会同时留下半成品层和缓存记录，而且失败不会自动重试（ timer 只会看到
