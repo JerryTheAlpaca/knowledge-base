@@ -1,9 +1,8 @@
 /**
- * 路径安全、三层目录与文件命名（docs/02 §12.3；docs/08 §2、§9）。
+ * 路径安全、目录与文件命名（docs/02 §12.3；docs/24 §8）。
  * 纯逻辑模块：不依赖 obsidian，可独立测试。
  *
- * 三层：01 Sources 保存原始证据，02 Digests 提炼单个来源，
- * 03 Knowledge 按主题持续维护；附件放 Sources 下以便一起归档。
+ * 两层：01 Sources 保存原始证据，02 Digests 放云端提炼；附件放 Sources 下以便一起归档。
  */
 
 const RESERVED_NAMES = new Set(
@@ -150,84 +149,34 @@ export function sourceAssetsDir(sourcesFolder: string, itemId: string, sourceRev
   return `${sourcesFolder}/_assets/${itemId}/source-${String(sourceRevision).padStart(6, "0")}`;
 }
 
-/** Knowledge 笔记路径：03 Knowledge/<主题名>.md，用稳定主题名，不加日期（docs/08 §2）。 */
-export function knowledgeNotePath(knowledgeFolder: string, title: string): string {
-  return `${knowledgeFolder}/${sanitizeTitle(title)}.md`.replace(/\\/g, "/");
-}
-
-/** bundle 目录名：bundle-000003 */
-export function bundleDirName(revision: number): string {
-  return `bundle-${String(revision).padStart(6, "0")}`;
-}
-
 /** commit 标记文件名：<item_id>--000003.json */
 export function commitMarkerName(itemId: string, revision: number): string {
   return `${itemId}--${String(revision).padStart(6, "0")}.json`;
 }
 
-/** 历史快照目录：99 System/KnowledgeInbox/revisions/<kind>/<id>/（docs/08 §2、§6.1）。 */
-export function revisionDir(systemFolder: string, kind: "digests" | "knowledge", id: string): string {
+/** 历史快照目录：99 System/KnowledgeInbox/revisions/digests/<id>/ */
+export function revisionDir(systemFolder: string, kind: "digests", id: string): string {
   return `${systemFolder}/KnowledgeInbox/revisions/${kind}/${sanitizeTitle(id, 80)}`;
 }
 
-/** 快照文件名：r000003.md（零填充，便于排序与引用）。 */
+/** 快照文件名：r000003.md */
 export function revisionFileName(revision: number): string {
   return `r${String(revision).padStart(6, "0")}.md`;
 }
 
-/** 迁移清单目录：99 System/KnowledgeInbox/migrations/（docs/08 §2、§10）。 */
+/** 迁移清单目录：99 System/KnowledgeInbox/migrations/ */
 export function migrationDir(systemFolder: string): string {
   return `${systemFolder}/KnowledgeInbox/migrations`;
 }
 
-/** 整理任务目录：99 System/KnowledgeInbox/organize/（docs/08 §8.1）。 */
-export function organizeDir(systemFolder: string): string {
-  return `${systemFolder}/KnowledgeInbox/organize`;
-}
-
-/** 候选目录：99 System/KnowledgeInbox/proposals/（docs/08 §2）。 */
-export function proposalsDir(systemFolder: string): string {
-  return `${systemFolder}/KnowledgeInbox/proposals`;
-}
-
-/** 本地知识索引：99 System/KnowledgeInbox/knowledge-index.json（docs/08 §2、§5）。 */
-export function knowledgeIndexPath(systemFolder: string): string {
-  return `${systemFolder}/KnowledgeInbox/knowledge-index.json`;
-}
-
-/** 文档索引（ID→路径）：99 System/KnowledgeInbox/index/documents.json（docs/24 §8）。 */
+/** 文档索引（ID→路径）：99 System/KnowledgeInbox/index/documents.json */
 export function documentsIndexPath(systemFolder: string): string {
   return `${systemFolder}/KnowledgeInbox/index/documents.json`;
 }
 
-/** 旧版内容迁移与文件重命名记录：99 System/KnowledgeInbox/migrations/（docs/23 §8.2、§8.3）。 */
+/** 文件重命名记录：99 System/KnowledgeInbox/migrations/rename-<stamp>.json */
 export function renameRecordPath(systemFolder: string, stamp: string): string {
   return `${migrationDir(systemFolder)}/rename-${stamp}.json`;
-}
-
-/** 主题引用表快照：随正文版本一起保存，回滚时成对恢复（docs/23 §6.4 第 7 条）。 */
-export function knowledgeRefsFileName(revision: number): string {
-  return `refs-r${String(revision).padStart(6, "0")}.json`;
-}
-
-/** 生成稳定的 Knowledge `kb_id`：kn-<slug>；含非 ASCII 时附稳定短哈希。
- *
- * 纯 ASCII 标题直接转 slug（`Agent Operations` → `kn-agent-operations`）；
- * 含中文等非 ASCII 字符时附上标题哈希，避免「Agent 操作技巧」与
- * 「Agent 上下文管理」都退化成 `kn-agent` 而撞同一个 ID（docs/08 §2）。
- */
-export function knowledgeIdFromTitle(title: string): string {
-  const ascii = title.normalize("NFKD").replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
-  if (ascii && !/[^\x00-\x7F]/.test(title)) return `kn-${ascii.slice(0, 40)}`;
-  // 非 ASCII：用稳定短哈希，保证同名得同 ID、不同名不撞
-  let h = 0x811c9dc5;
-  for (let i = 0; i < title.length; i++) {
-    h ^= title.charCodeAt(i);
-    h = Math.imul(h, 0x01000193) >>> 0;
-  }
-  const suffix = h.toString(16).padStart(8, "0");
-  return ascii ? `kn-${ascii.slice(0, 24)}-${suffix}` : `kn-zh-${suffix}`;
 }
 
 /** 生成稳定的 Source/Digest `kb_id`（docs/08 §3.1、§3.2）。 */

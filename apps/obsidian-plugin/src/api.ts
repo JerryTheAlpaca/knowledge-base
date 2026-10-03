@@ -1,5 +1,5 @@
 /**
- * 服务端 API 客户端（docs/02 §10.1；docs/08 §8.3、§8.4）：Bearer 服务 Token。
+ * 服务端 API 客户端（docs/02 §10.1；docs/24 §8）：Bearer 服务 Token。
  * 使用 Obsidian requestUrl（Electron 环境下 fetch 会被 CORS 拦截）。
  */
 
@@ -40,30 +40,6 @@ export interface CloudProfile {
   created_at: string;
 }
 
-/** 本地绑定响应（POST /v1/provider-profiles/{id}/local-binding）。 */
-export interface LocalBindingSecret {
-  binding_id: string;
-  profile_id: string;
-  profile_version: number;
-  credential_version: number;
-  endpoint: string;
-  model: string;
-  capabilities: Record<string, unknown>;
-  secret: string;
-  bound_at: string;
-  note: string;
-}
-
-export interface LocalBindingStatus {
-  profile_id: string;
-  bound: boolean;
-  device_id: string | null;
-  profile_version: number | null;
-  credential_version: number | null;
-  bound_at: string | null;
-  note: string;
-}
-
 function baseUrlOf(serverUrl: string): string {
   return serverUrl.trim().replace(/\/+$/, "");
 }
@@ -97,18 +73,16 @@ export class KbClient {
     return JSON.parse(text) as T;
   }
 
-  /** 发起浏览器授权（无需凭据）：返回 browser_url 与 poll_secret
-   * （docs/05 §4.5；docs/08 §8.3 可申请 profiles:bind-local）。 */
+  /** 发起浏览器授权（无需凭据）：返回 browser_url 与 poll_secret（docs/05 §4.5）。 */
   static async deviceStart(
     serverUrl: string,
     deviceName: string,
-    requestedScopes: string[] = [],
   ): Promise<DeviceStartResult> {
     const res = await requestUrl({
       url: `${baseUrlOf(serverUrl)}/v1/auth/device/start`,
       method: "POST",
       contentType: "application/json",
-      body: JSON.stringify({ device_name: deviceName, requested_scopes: requestedScopes }),
+      body: JSON.stringify({ device_name: deviceName, requested_scopes: [] }),
       throw: false,
     });
     if (res.status < 200 || res.status >= 300) throw toApiError(res.status, res.text);
@@ -180,7 +154,7 @@ export class KbClient {
     });
   }
 
-  // ---- 模型配置与本地 Key 绑定（docs/08 §8.2、§8.3） ----
+  // ---- 模型配置（云端提炼在服务器完成，Key 不下发到本机） ----
 
   /** 线上配置列表：不含 Key。 */
   async listProfiles(): Promise<CloudProfile[]> {
@@ -190,29 +164,6 @@ export class KbClient {
   /** 服务器默认模型配置 ID（云端提炼默认值）。 */
   async getSettings(): Promise<{ default_profile_id: string | null }> {
     return this.requestJson("/v1/settings");
-  }
-
-  async localBindingStatus(profileId: string): Promise<LocalBindingStatus> {
-    return this.requestJson(`/v1/provider-profiles/${encodeURIComponent(profileId)}/local-binding`);
-  }
-
-  /** 领取线上配置的 Key（仅在用户明确绑定时调用一次）。 */
-  async bindLocalKey(profileId: string): Promise<LocalBindingSecret> {
-    return this.requestJson(`/v1/provider-profiles/${encodeURIComponent(profileId)}/local-binding`, {
-      method: "POST",
-    });
-  }
-
-  /** 解绑本机：不撤销线上或供应商 Key。 */
-  async unbindLocalKey(profileId: string): Promise<{ unbound: boolean; note: string }> {
-    return this.requestJson(`/v1/provider-profiles/${encodeURIComponent(profileId)}/local-binding`, {
-      method: "DELETE",
-    });
-  }
-
-  /** 条目阅读视图（原始资料 + 云端提炼）。 */
-  async getReading(itemId: string): Promise<Record<string, unknown>> {
-    return this.requestJson(`/v1/items/${encodeURIComponent(itemId)}/reading`);
   }
 
   constructor(readonly serverUrl: string, readonly token: string, readonly deviceId: string = "") {}

@@ -7,7 +7,7 @@
  *   restore → 恢复命令（unsuppressAll + removeForItem + rebuildIndex）
  *   status  → 打印 pending/commits/suppression
  *
- * 前置：vaultRoot/.obsidian/plugins/kb-inbox/data.json 已含 serverUrl 与 tokenFallback。
+ * 前置：vaultRoot/.obsidian/plugins/golden-rose-inbox/data.json 已含 serverUrl 与 tokenFallback。
  * 用法：node acceptance-headless.cjs <vaultRoot> <sync|restore|status>
  */
 
@@ -15,7 +15,7 @@ import * as fs from "node:fs";
 import { SyncEngine, EMPTY_STATE } from "../src/sync/engine";
 import { KbClient } from "../src/api";
 import { CommitStore, Suppression } from "../src/vault/records";
-import { DEFAULT_SETTINGS, defaultLocalModel } from "../src/settings";
+import { DEFAULT_SETTINGS } from "../src/settings";
 import { NodeFs } from "./nodefs";
 import type { KbSettings, SyncState } from "../src/types";
 
@@ -26,7 +26,7 @@ if (!vaultRoot) {
   process.exit(1);
 }
 
-const dataFile = `${vaultRoot.replace(/\/+$/, "")}/.obsidian/plugins/kb-inbox/data.json`
+const dataFile = `${vaultRoot.replace(/\/+$/, "")}/.obsidian/plugins/golden-rose-inbox/data.json`
   .replace(/\\/g, "/");
 
 function loadPluginData(): Record<string, unknown> {
@@ -40,7 +40,7 @@ async function savePluginData(data: Record<string, unknown>): Promise<void> {
 function buildEngine() {
   const data = loadPluginData();
   // 与 main.ts 一致：插件设置永远带默认值（真机不会因为旧 data.json 缺字段而空目录）
-  const settings = { ...DEFAULT_SETTINGS, localModel: defaultLocalModel(), ...data } as unknown as KbSettings;
+  const settings = { ...DEFAULT_SETTINGS, ...data } as unknown as KbSettings;
   const token = (data["tokenFallback"] as string) ?? "";
   if (!token) throw new Error("data.json 无 tokenFallback，无法认证");
   const client = new KbClient(settings.serverUrl, token);

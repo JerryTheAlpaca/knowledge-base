@@ -1,6 +1,6 @@
 {
-  "id": "kb-inbox",
-  "name": "KB Inbox",
+  "id": "golden-rose-inbox",
+  "name": "Golden-Rose-Inbox",
   "version": "0.3.0",
   "minAppVersion": "1.11.4",
   "description": "Self-hosted knowledge inbox for Obsidian: bring web clips, articles and videos into your vault with incremental sync, verified writes and edit protection.",

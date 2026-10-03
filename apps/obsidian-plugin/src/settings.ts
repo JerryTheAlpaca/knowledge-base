@@ -1,31 +1,14 @@
-/** 设置、秘密存储与设置面板
- * （docs/02 §13.3；docs/08 §8.1、§8.2、§8.3、§9）。
+/**
+ * 设置、秘密存储与设置面板
+ * （docs/02 §13.3；docs/24 §8）。
  *
- * 秘密存储规则（docs/08 §8.3）：
- * - 服务 Token 可沿用旧的 data.json 降级（历史行为，已明确提示）。
- * - 模型 API Key（线上绑定导入的与本机独立配置的）**不得**套用该明文降级：
- *   秘密存储不可用时只提供会话内使用方式，重启后重新配置，不阻塞原始资料同步。
+ * 本插件只做同步：服务器地址、账号、同步开关、Vault 目录。
+ * 服务 Token 允许沿用旧的 data.json 降级（历史行为，会明确提示）。
  */
 
 import { App, Notice, PluginSettingTab, Setting } from "obsidian";
-import type { KbSettings, LocalModelConfig, LocalModelMode } from "./types";
+import type { KbSettings } from "./types";
 import { CONTENT_FORMAT_VERSION, LAYOUT_VERSION } from "./types";
-
-/** 本地整理默认配置工厂：每次返回新对象，避免模块级常量被运行时修改污染。 */
-export function defaultLocalModel(): LocalModelConfig {
-  return {
-    mode: "follow_cloud",
-    cloudProfileId: "",
-    local: { name: "", baseUrl: "", model: "", secretRef: "kb-local-llm-key" },
-    pinnedProfileVersion: null,
-    pinnedCredentialVersion: null,
-    pinnedEndpoint: "",
-    pinnedModel: "",
-    awaitingSync: false,
-  };
-}
-
-export const DEFAULT_LOCAL_MODEL: LocalModelConfig = defaultLocalModel();
 
 export const DEFAULT_SETTINGS: KbSettings = {
   serverUrl: "",
@@ -41,23 +24,13 @@ export const DEFAULT_SETTINGS: KbSettings = {
   deviceId: "",
   userId: "",
   cloudProfileId: "",
-  localModel: DEFAULT_LOCAL_MODEL,
-  localOrganizeEnabled: false,
-  autoPrepareOnSync: false,
-  organizeDeviceId: "",
   contentFormatVersion: CONTENT_FORMAT_VERSION,
   layoutVersion: LAYOUT_VERSION,
 };
 
-/** Obsidian SecretStorage 特性检测。
- *
- * 服务 Token 允许 data.json 降级；模型 Key 走 `getSecretStrict`，
- * 无 SecretStorage 时返回 null（调用方改用会话内方式），绝不写明文。
- */
+/** Obsidian SecretStorage 特性检测；不可用时服务 Token 降级保存在插件数据里（仅本机）。 */
 export class SecretBridge {
   readonly available: boolean;
-  /** 会话内秘密：SecretStorage 不可用时的临时通道，插件重启即失效。 */
-  private sessionSecrets = new Map<string, string>();
   private store: {
     getSecret?: (n: string) => Promise<string | null>;
     setSecret?: (n: string, v: string) => Promise<void>;
@@ -69,8 +42,6 @@ export class SecretBridge {
     this.store = (candidate && typeof candidate === "object" ? candidate : {}) as typeof this.store;
     this.available = typeof this.store.getSecret === "function" && typeof this.store.setSecret === "function";
   }
-
-  // ---- 服务 Token：允许降级（历史行为） ----
 
   async getToken(ref: string): Promise<string | null> {
     if (this.available && this.store.getSecret) {
@@ -107,62 +78,6 @@ export class SecretBridge {
     }
   }
 
-  // ---- 模型 API Key：禁止明文降级（docs/08 §8.3） ----
-
-  /**
-   * 读取模型 Key：秘密存储优先，其次会话内临时值；两者都没有返回 null。
-   *
-   * 注意：Obsidian `SecretStorage.getSecret` 是**同步**方法（返回 string|null），
-   * 这里用 `await` 包一层以兼容可能的异步实现，同步返回值同样被正确取出。
-   */
-  async getSecretStrict(ref: string): Promise<string | null> {
-    if (this.available && this.store.getSecret) {
-      try {
-        const v = await this.store.getSecret(ref);
-        if (typeof v === "string" && v) return v;
-      } catch (err) {
-        console.error("[kb-inbox] 读取秘密存储失败:", err);
-      }
-    }
-    return this.sessionSecrets.get(ref) ?? null;
-  }
-
-  /** 写入模型 Key。返回 true 表示持久化成功；false 表示仅会话内可用。
-   *
-   * Obsidian `setSecret` 是同步方法，ID 非法时会同步抛错；此处捕获并降级为
-   * 会话内使用，避免整个绑定流程中断。
-   */
-  async setSecretStrict(ref: string, value: string): Promise<boolean> {
-    if (this.available && this.store.setSecret) {
-      try {
-        await this.store.setSecret(ref, value);
-        this.sessionSecrets.set(ref, value);
-        return true;
-      } catch (err) {
-        console.error("[kb-inbox] 写入秘密存储失败，降级为会话内使用:", err);
-      }
-    }
-    this.sessionSecrets.set(ref, value);
-    new Notice("无法写入本机秘密存储：该 API Key 仅在本次会话内可用，重启后需要重新配置。");
-    return false;
-  }
-
-  async clearSecretStrict(ref: string): Promise<void> {
-    if (this.available && this.store.deleteSecret) {
-      try {
-        await this.store.deleteSecret(ref);
-      } catch (err) {
-        console.error("[kb-inbox] 清除秘密失败:", err);
-      }
-    }
-    this.sessionSecrets.delete(ref);
-  }
-
-  /** 断开账号时清理该账号导入的线上 Key（本地独立配置保持独立，docs/08 §8.3）。 */
-  async clearImportedCloudSecrets(refs: string[]): Promise<void> {
-    for (const ref of refs) await this.clearSecretStrict(ref);
-  }
-
   // 降级通道：借用插件 data.json 的未注册键，由 main 提供 loadData/saveData
   private fallbackLoader: (() => Promise<Record<string, unknown>>) | null = null;
   private fallbackSaver: ((d: Record<string, unknown>) => Promise<void>) | null = null;
@@ -182,7 +97,7 @@ export class SecretBridge {
   }
 }
 
-/** 线上配置摘要（设置面板展示与本地整理配置选择用）。 */
+/** 线上配置摘要（设置面板展示用；不含 Key）。 */
 export interface CloudProfileOption {
   id: string;
   kind: string;
@@ -190,8 +105,6 @@ export interface CloudProfileOption {
   endpoint: string;
   version: number;
   configured: boolean;
-  credentialVersion: number | null;
-  boundLocally: boolean;
 }
 
 export interface SettingsTabHooks {
@@ -199,19 +112,7 @@ export interface SettingsTabHooks {
   onLogin: () => Promise<void>;
   onDisconnect: () => Promise<void>;
   loadCloudProfiles: () => Promise<CloudProfileOption[]>;
-  /** 绑定线上 Key 到本设备（docs/08 §8.3）；失败时抛出可展示的错误。 */
-  onBindLocalKey: (profileId: string) => Promise<string>;
-  onUnbindLocalKey: (profileId: string) => Promise<string>;
-  /** 测试本地整理连接（直连所选模型服务）。 */
-  onTestLocalModel: () => Promise<string>;
-  onOpenOrganizePanel: () => void;
 }
-
-const MODE_LABELS: Record<LocalModelMode, string> = {
-  follow_cloud: "与云端提炼使用同一配置",
-  cloud_profile: "选择另一线上配置",
-  local_profile: "使用本地独立配置",
-};
 
 export class KbSettingTab extends PluginSettingTab {
   constructor(
@@ -225,10 +126,10 @@ export class KbSettingTab extends PluginSettingTab {
 
   display(): void {
     const { containerEl } = this;
-    // 每次打开设置重新拉一次线上配置（本页所有消费方共享同一次请求，审查 C-30）
+    // 每次打开设置重新拉一次线上配置（本页所有消费方共享同一次请求）
     this.cloudProfilesLoad = null;
     containerEl.empty();
-    containerEl.createEl("h2", { text: "Knowledge Inbox 设置" });
+    containerEl.createEl("h2", { text: "Golden-Rose-Inbox 设置" });
 
     // ---- 账号与服务器 ----
     containerEl.createEl("h3", { text: "账号与服务器" });
@@ -242,7 +143,7 @@ export class KbSettingTab extends PluginSettingTab {
 
     const account = new Setting(containerEl)
       .setName("账号")
-      .setDesc("点击登录后打开系统浏览器：使用统一账号（与记账/火车足迹相同）在网页上批准本设备。")
+      .setDesc("点击登录后打开系统浏览器：使用统一账号在网页上批准本设备。")
       .addButton((b) => b.setButtonText("登录账号").setCta().onClick(async () => {
         await this.hooks.onLogin();
         this.display();
@@ -269,127 +170,14 @@ export class KbSettingTab extends PluginSettingTab {
     });
     pairInfo.addClass("kb-muted");
 
-    // ---- 模型设置（docs/08 §8.2） ----
-    containerEl.createEl("h3", { text: "模型设置" });
+    // ---- 云端提炼配置（模型 Key 由服务器保管，docs/24 §8） ----
+    containerEl.createEl("h3", { text: "云端提炼" });
     const cloudHost = containerEl.createEl("div");
     cloudHost.createEl("p", {
-      text: "云端提炼：服务器保存 Key，用于关机时的单篇提炼。",
+      text: "云端提炼在服务器完成：服务器保存 Key，用于关机时的单篇提炼。",
     }).addClass("kb-muted");
     const cloudSelectHost = cloudHost.createEl("div");
     void this.renderCloudProfiles(cloudSelectHost);
-
-    const localHost = containerEl.createEl("div");
-    localHost.createEl("p", {
-      text: "本地整理：插件直接调用所选模型服务，必要的 Digest／Knowledge 内容会发送给模型供应商；"
-        + "本系统云端不接收这些内容。使用远程 API 时仍需联网，不是完全离线。",
-    }).addClass("kb-muted");
-
-    new Setting(localHost)
-      .setName("本地整理模型")
-      .setDesc("整理知识库时使用哪个 Key。切换本地模式不会修改云端默认值。")
-      .addDropdown((d) => {
-        for (const [value, label] of Object.entries(MODE_LABELS)) d.addOption(value, label);
-        d.setValue(this.settings.localModel.mode);
-        d.onChange(async (v) => {
-          this.settings.localModel.mode = v as LocalModelMode;
-          this.settings.localModel.awaitingSync = false;
-          await this.hooks.onSave();
-          this.display();
-        });
-      });
-
-    if (this.settings.localModel.mode === "cloud_profile") {
-      // 列表就绪后再构建下拉，不再同步读取可能为空的 _cloudProfiles（审查 C-30）
-      void this.renderCloudProfilePicker(localHost);
-    }
-
-    if (this.settings.localModel.mode === "local_profile") {
-      const loc = this.settings.localModel.local;
-      new Setting(localHost)
-        .setName("配置名称")
-        .addText((t) => t.setValue(loc.name).onChange(async (v) => {
-          loc.name = v.trim();
-          await this.hooks.onSave();
-        }));
-      new Setting(localHost)
-        .setName("API Base URL")
-        .setDesc("例如 https://api.deepseek.com/v1")
-        .addText((t) => t.setValue(loc.baseUrl).onChange(async (v) => {
-          loc.baseUrl = v.trim();
-          await this.hooks.onSave();
-        }));
-      new Setting(localHost)
-        .setName("模型名")
-        .addText((t) => t.setValue(loc.model).onChange(async (v) => {
-          loc.model = v.trim();
-          await this.hooks.onSave();
-        }));
-      new Setting(localHost)
-        .setName("API Key")
-        .setDesc("只保存在本机秘密存储，不进入 Vault 笔记、任务文件或日志。")
-        .addText((t) => {
-          t.inputEl.type = "password";
-          t.setPlaceholder("粘贴后失焦保存");
-          t.onChange(async (v) => {
-            if (!v.trim()) return;
-            const persisted = await this.pluginSecrets().setSecretStrict(loc.secretRef, v.trim());
-            new Notice(persisted ? "API Key 已保存到本机秘密存储。" : "API Key 仅本次会话可用。");
-          });
-        })
-        .addButton((b) => b.setButtonText("清除").setWarning().onClick(async () => {
-          await this.pluginSecrets().clearSecretStrict(loc.secretRef);
-          new Notice("已清除本机保存的 API Key。");
-        }));
-    }
-
-    new Setting(localHost)
-      .setName("测试本地连接")
-      .setDesc("只验证所选模型服务可达；不发送任何笔记正文。")
-      .addButton((b) => b.setButtonText("测试").onClick(async () => {
-        b.setDisabled(true);
-        try {
-          const result = await this.hooks.onTestLocalModel();
-          new Notice(result, 6000);
-        } catch (err) {
-          new Notice(`测试失败：${err instanceof Error ? err.message : String(err)}`, 8000);
-        } finally {
-          b.setDisabled(false);
-        }
-      }));
-
-    const boundNote = containerEl.createEl("p");
-    boundNote.addClass("kb-muted");
-    boundNote.setText(
-      this.settings.localModel.awaitingSync
-        ? "等待配置同步：无法确认线上配置时不静默换 Key；可主动切到独立本地配置。"
-        : "复用线上配置时，需把该 Key 绑定到本设备（见下方「线上 Key 绑定」）。",
-    );
-
-    // ---- 线上 Key 绑定（docs/08 §8.3） ----
-    containerEl.createEl("h3", { text: "线上 Key 绑定" });
-    const bindHost = containerEl.createEl("div");
-    void this.renderBindings(bindHost);
-
-    // ---- 整理知识库 ----
-    containerEl.createEl("h3", { text: "整理知识库" });
-    new Setting(containerEl)
-      .setName("启用本地整理")
-      .setDesc("未启用时，云端提炼、网页阅读与 Source/Digest 投递照常工作。")
-      .addToggle((t) => t.setValue(this.settings.localOrganizeEnabled).onChange(async (v) => {
-        this.settings.localOrganizeEnabled = v;
-        await this.hooks.onSave();
-      }));
-    new Setting(containerEl)
-      .setName("新 Digest 入库后自动准备整理候选")
-      .setDesc("后台准备不等于自动写入第三层；是否自动应用仍按指定主题的设置执行。")
-      .addToggle((t) => t.setValue(this.settings.autoPrepareOnSync).onChange(async (v) => {
-        this.settings.autoPrepareOnSync = v;
-        await this.hooks.onSave();
-      }));
-    new Setting(containerEl)
-      .setName("本机整理设备")
-      .setDesc("每个 Vault 指定一台本地整理设备；换机后先停止旧机整理并检查版本。")
-      .addButton((b) => b.setButtonText("打开整理面板").setCta().onClick(() => this.hooks.onOpenOrganizePanel()));
 
     // ---- 同步 ----
     containerEl.createEl("h3", { text: "同步" });
@@ -406,7 +194,6 @@ export class KbSettingTab extends PluginSettingTab {
       ["inboxFolder", "00 收件箱目录"],
       ["sourcesFolder", "01 Sources 目录"],
       ["digestsFolder", "02 Digests 目录"],
-      ["knowledgeFolder", "03 Knowledge 目录"],
       ["systemFolder", "99 系统状态目录"],
     ] as const) {
       new Setting(folders)
@@ -422,7 +209,7 @@ export class KbSettingTab extends PluginSettingTab {
   }
 
   private _cloudProfiles: CloudProfileOption[] = [];
-  /** 本页共享的配置列表加载（审查 C-30：一次 display 只发一次请求）。 */
+  /** 本页共享的配置列表加载：一次 display 只发一次请求。 */
   private cloudProfilesLoad: Promise<CloudProfileOption[]> | null = null;
 
   private loadCloudProfilesOnce(): Promise<CloudProfileOption[]> {
@@ -438,49 +225,9 @@ export class KbSettingTab extends PluginSettingTab {
     return this.cloudProfilesLoad;
   }
 
-  /** cloud_profile 模式下的配置下拉：等列表加载完成后再渲染。 */
-  private async renderCloudProfilePicker(host: HTMLElement): Promise<void> {
-    let profiles: CloudProfileOption[];
-    try {
-      profiles = await this.loadCloudProfilesOnce();
-    } catch (err) {
-      host.createEl("p", {
-        text: `无法读取线上配置：${err instanceof Error ? err.message : String(err)}`,
-      }).addClass("kb-muted");
-      return;
-    }
-    new Setting(host)
-      .setName("使用的线上配置")
-      .setDesc("固定一个本人线上配置；该配置的 Key 需要绑定到本设备才能本地调用。")
-      .addDropdown((d) => {
-        d.addOption("", "（请选择）");
-        for (const p of profiles.filter((x) => x.kind === "llm")) {
-          d.addOption(p.id, `${p.model}（v${p.version}${p.configured ? "" : "，无 Key"}）`);
-        }
-        d.setValue(this.settings.localModel.cloudProfileId);
-        d.onChange(async (v) => {
-          this.settings.localModel.cloudProfileId = v;
-          this.settings.localModel.awaitingSync = false;
-          await this.hooks.onSave();
-          this.display();
-        });
-      });
-  }
-
-  /** 由 main 注入的秘密桥（避免设置面板直接依赖插件实例）。 */
-  private secretsGetter: (() => SecretBridge) | null = null;
-  registerSecrets(getter: () => SecretBridge): void {
-    this.secretsGetter = getter;
-  }
-
-  private pluginSecrets(): SecretBridge {
-    if (!this.secretsGetter) throw new Error("SecretBridge 未注册");
-    return this.secretsGetter();
-  }
-
   private async renderCloudProfiles(host: HTMLElement): Promise<void> {
     host.empty();
-    let profiles: CloudProfileOption[] = [];
+    let profiles: CloudProfileOption[];
     try {
       profiles = await this.loadCloudProfilesOnce();
     } catch (err) {
@@ -505,58 +252,6 @@ export class KbSettingTab extends PluginSettingTab {
     if (!llm.length) {
       host.createEl("p", { text: "服务器上还没有 llm 配置；可在网页收件箱的「模型与账号」中创建。" })
         .addClass("kb-muted");
-    }
-  }
-
-  private async renderBindings(host: HTMLElement): Promise<void> {
-    host.empty();
-    host.createEl("p", {
-      text: "把某个线上配置的 Key 配置到本设备，用于本地直接调用模型服务。"
-        + "服务端撤销绑定会阻止再次领取，但无法远程收回已下发的供应商 Key；"
-        + "彻底失效需在供应商处撤销。",
-    }).addClass("kb-muted");
-    if (!this.settings.deviceId) {
-      host.createEl("p", { text: "请先登录账号后再绑定。" }).addClass("kb-muted");
-      return;
-    }
-    let profiles: CloudProfileOption[];
-    try {
-      profiles = await this.loadCloudProfilesOnce();
-    } catch (err) {
-      host.createEl("p", { text: `读取失败：${err instanceof Error ? err.message : String(err)}` }).addClass("kb-muted");
-      return;
-    }
-    for (const p of profiles.filter((x) => x.kind === "llm")) {
-      new Setting(host)
-        .setName(p.model)
-        .setDesc(`v${p.version} · ${p.endpoint}${p.configured ? "" : " · 服务器上没有可用 Key"}`)
-        .addButton((b) => {
-          b.setButtonText(p.boundLocally ? "重新绑定" : "配置到本设备");
-          if (!p.configured) b.setDisabled(true);
-          b.onClick(async () => {
-            b.setDisabled(true);
-            try {
-              const msg = await this.hooks.onBindLocalKey(p.id);
-              new Notice(msg, 6000);
-              this.display();
-            } catch (err) {
-              new Notice(`绑定失败：${err instanceof Error ? err.message : String(err)}`, 8000);
-              b.setDisabled(false);
-            }
-          });
-        })
-        .addButton((b) => {
-          if (!p.boundLocally) return;
-          b.setButtonText("解绑本机").setWarning().onClick(async () => {
-            try {
-              const msg = await this.hooks.onUnbindLocalKey(p.id);
-              new Notice(msg, 6000);
-              this.display();
-            } catch (err) {
-              new Notice(`解绑失败：${err instanceof Error ? err.message : String(err)}`, 8000);
-            }
-          });
-        });
     }
   }
 }

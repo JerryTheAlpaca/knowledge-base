@@ -28,13 +28,10 @@ import {
 import {
   CLOUD_DIGEST_END,
   CLOUD_DIGEST_START,
-  LOCAL_ORGANIZE_END,
-  LOCAL_ORGANIZE_START,
   extractPartition,
   mergeKbFrontmatter,
   mergeManagedTags,
   managedTags,
-  readFrontmatterValue,
   renderCloudPending,
   renderDigestNote,
   renderInboxIndex,
@@ -81,8 +78,6 @@ export interface EngineDeps {
   saveState: (s: SyncState) => Promise<void>;
   onStatus: (s: EngineStatus) => void;
   log: (msg: string) => void;
-  /** 新 Digest 入库后自动准备整理候选（docs/08 §8.1）；默认不启用。 */
-  onDigestWritten?: (itemId: string, digestPath: string) => Promise<void>;
 }
 
 const SUPPORTED_SCHEMA = "1.0";
@@ -346,7 +341,6 @@ export class SyncEngine {
     await docs.ensure([
       { folder: s.sourcesFolder, kind: "source", skipDirs: ["_assets"] },
       { folder: s.digestsFolder, kind: "digest" },
-      { folder: s.knowledgeFolder, kind: "knowledge" },
     ]);
 
     // 已被用户删除的条目：记录 suppression，停止复建（docs/02 §8.2）
@@ -494,13 +488,8 @@ export class SyncEngine {
       this.deps.log(`条目 ${entry.item_id} 部分笔记未写入，保留待办下次重试`);
     }
 
-    // 8. 重建 00 Inbox 索引；新 Digest 入库后按开关准备整理候选
+    // 8. 重建 00 Inbox 索引
     await this.rebuildInboxIndex(s, commits);
-    if (digestResult.state === "written" && this.deps.onDigestWritten) {
-      await this.deps.onDigestWritten(entry.item_id, digestResult.note_path).catch((err) => {
-        this.deps.log(`准备整理候选失败：${err instanceof Error ? err.message : String(err)}`);
-      });
-    }
   }
 
   /**
@@ -597,7 +586,7 @@ export class SyncEngine {
       `## 完整文字稿\n\n${SOURCE_BODY_START}\n${inner}\n${SOURCE_BODY_END}\n`;
   }
 
-  /** Digest 笔记：只替换 kb:cloud-digest 区，本地整理区与人工区保留（docs/08 §3.2）。 */
+  /** Digest 笔记：只替换 kb:cloud-digest 区，人工区保留。 */
   private async writeDigestNote(
     manifest: KbManifest,
     notePath: string,
@@ -670,10 +659,8 @@ export class SyncEngine {
       };
     }
 
-    // 更新 frontmatter 与云端区，保留本地整理区与人工区
+    // 更新 frontmatter 与云端区，人工区保留
     const newInner = cloudMd?.trim() || currentInner;
-    // 本地整理结论是文档级字段：逐观点晋升账本已随 v3 退出（docs/23 §6.1）
-    const organize = readFrontmatterValue(current, "kb_organize") ?? "not_evaluated";
     const withFm = mergeKbFrontmatter(current, [
       `kb_id: "dig-${manifest.item_id}"`,
       `kb_item_id: "${manifest.item_id}"`,
@@ -682,14 +669,11 @@ export class SyncEngine {
       `kb_source_revision: ${manifest.source_revision}`,
       `kb_digest_revision: ${manifest.bundle_revision}`,
       `kb_status: "${status}"`,
-      `kb_organize: ${organize}`,
       `kb_source_url: ${manifest.source.original_url ? `"${manifest.source.original_url}"` : ""}`.trimEnd(),
       ...contentLines,
     ].filter((l) => !l.endsWith(":")));
     const rebuilt = replacePartition(withFm, CLOUD_DIGEST_START, CLOUD_DIGEST_END, newInner);
-    // `status/*` 由 `kb_organize` 派生（云端更新不改本地整理结论，docs/08 §5）
-    const tagged = mergeManagedTags(rebuilt, managedTags("digest", organize));
-    await fs.write(notePath, tagged);
+    await fs.write(notePath, mergeManagedTags(rebuilt, managedTags("digest", null)));
     return {
       role: "digest", note_path: notePath,
       managed_digest: await sha256Hex(newInner), state: "written", conflicts: [],

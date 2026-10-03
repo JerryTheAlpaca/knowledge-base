@@ -1,12 +1,13 @@
 /**
- * 三层模板、分区管理、frontmatter 外科式更新与冲突检测
- * （docs/02 §12.2、§12.3；docs/08 §3、§5、§6、§9）。
+ * 两层模板、分区管理、frontmatter 外科式更新与冲突检测
+ * （docs/02 §12.2、§12.3；docs/24 §5、§8）。
  *
- * 分区（docs/08 §3.2、§3.3）：
+ * 本插件只做同步：一层原始资料（01 Sources）、一层云端提炼（02 Digests）。
+ * 第三层主题整理已移除，Digest 只保留云端区与用户自管的人工区。
+ *
+ * 分区：
  * - Source：无机器生成区；正文只放原始证据与链接。
- * - Digest：`kb:cloud-digest`（云端更新）+ `kb:local-organize`（本地整理更新）
- *   + 人工区（用户管理）；三者单独记录哈希。
- * - Knowledge：`kb:knowledge`（AI 融合更新）+ 人工区（自动融合不改写）。
+ * - Digest：`kb:cloud-digest`（云端更新）+ 人工区（用户管理）；两者分别记录哈希。
  *
  * 纯逻辑模块：不依赖 obsidian，可独立测试。
  *
@@ -17,21 +18,13 @@
 import type {
   KbFileEntry,
   KbManifest,
-  KnowledgeIndexEntry,
 } from "../types";
 
-/** 分区标记：Source 不再有生成区；保留旧标记用于旧库识别与迁移。 */
+/** 分区标记：Source 不再有生成区；保留旧标记用于旧库识别。 */
 export const LEGACY_GEN_START = "<!-- kb:generated:start -->";
 export const LEGACY_GEN_END = "<!-- kb:generated:end -->";
 export const CLOUD_DIGEST_START = "<!-- kb:cloud-digest:start -->";
 export const CLOUD_DIGEST_END = "<!-- kb:cloud-digest:end -->";
-export const LOCAL_ORGANIZE_START = "<!-- kb:local-organize:start -->";
-export const LOCAL_ORGANIZE_END = "<!-- kb:local-organize:end -->";
-export const KNOWLEDGE_START = "<!-- kb:knowledge:start -->";
-export const KNOWLEDGE_END = "<!-- kb:knowledge:end -->";
-/** 旧 `^c0001` 观点原文与锚点的折叠历史区：第一次转新结构时写入，之后不被融合覆盖。 */
-export const KNOWLEDGE_HISTORY_START = "<!-- kb:knowledge-history:start -->";
-export const KNOWLEDGE_HISTORY_END = "<!-- kb:knowledge-history:end -->";
 /** Source 正文区：可随来源版本更新（提取器改进后旧条目也能用上新正文）。 */
 export const SOURCE_BODY_START = "<!-- kb:source-body:start -->";
 export const SOURCE_BODY_END = "<!-- kb:source-body:end -->";
@@ -101,19 +94,13 @@ export function replacePartition(text: string, startMark: string, endMark: strin
   return `${text.slice(0, start + startMark.length)}\n${inner}\n${text.slice(end)}`;
 }
 
-/** 三个分区各自的哈希；缺失的分区为 null（docs/08 §3.2「三者单独记录哈希」）。 */
+/** 各分区各自的哈希；缺失的分区为 null。 */
 export async function partitionHashes(text: string): Promise<{
   cloud_digest: string | null;
-  local_organize: string | null;
-  knowledge: string | null;
 }> {
   const cloud = extractPartition(text, CLOUD_DIGEST_START, CLOUD_DIGEST_END);
-  const local = extractPartition(text, LOCAL_ORGANIZE_START, LOCAL_ORGANIZE_END);
-  const kn = extractPartition(text, KNOWLEDGE_START, KNOWLEDGE_END);
   return {
     cloud_digest: cloud === null ? null : await sha256Hex(cloud),
-    local_organize: local === null ? null : await sha256Hex(local),
-    knowledge: kn === null ? null : await sha256Hex(kn),
   };
 }
 
@@ -185,7 +172,7 @@ export function isManagedTag(tag: string): boolean {
 }
 
 /** 系统管理标签：类型 + 处理状态展示（`status/*` 由 `kb_*` 派生，不独立维护）。 */
-export function managedTags(kind: "source" | "digest" | "knowledge", state: string | null): string[] {
+export function managedTags(kind: "source" | "digest", state: string | null): string[] {
   const tags = [`type/${kind}`];
   if (state) tags.push(`status/${state}`);
   return tags;
@@ -319,48 +306,7 @@ export function renderCloudPending(manifest: KbManifest): string {
   return lines.join("\n");
 }
 
-/** 本地整理区初始内容（docs/08 §3.2）：首次投递显示「尚未本地整理」。 */
-export function renderLocalOrganizeInitial(): string {
-  return [
-    "## 与已有知识的关系",
-    "",
-    "尚未本地整理。",
-  ].join("\n");
-}
-
-/** 本地整理区（主题候选结论，docs/23 §6.1）：不再逐观点列晋升建议。
- *
- * `resolveLink` 只把已解析到真实笔记的主题渲染成链接；未落地的新主题用普通文字
- * 写建议，不生成指向不存在文件的链接。
- */
-export function renderLocalOrganize(input: {
-  relationNote: string | null;
-  targetTitle: string | null;
-  targetPath: string | null;
-  reason: string | null;
-  outcome: "candidate" | "keep_digest" | "no_change" | "none";
-  proposalTitle?: string | null;
-}): string {
-  const lines = ["## 与已有知识的关系", ""];
-  lines.push(input.relationNote?.trim() || "尚未本地整理。", "");
-  lines.push("## 本地整理结论", "");
-  const target = input.targetPath
-    ? `[[${input.targetPath}|${input.targetTitle ?? "已有主题"}]]`
-    : (input.targetTitle ? `「${input.targetTitle}」（尚未创建）` : null);
-  if (input.outcome === "keep_digest") {
-    lines.push("本次材料对长期主题没有可靠增量，结论保留在本 Digest。");
-  } else if (input.outcome === "no_change") {
-    lines.push("模型判断现有主题无需修改；未写入 Knowledge。");
-  } else if (input.outcome === "candidate") {
-    lines.push(`已生成主题修改候选${target ? `：${target}` : ""}，采纳前不会写入 Knowledge。`);
-  } else {
-    lines.push("尚未本地整理。");
-  }
-  if (input.reason) lines.push("", `原因：${input.reason}`);
-  return lines.join("\n");
-}
-
-/** Digest 笔记（docs/08 §3.2）：来源链接 + 云端区 + 本地整理区 + 人工区。
+/** Digest 笔记：来源链接 + 云端区 + 人工区。 *
  *
  * 云端区内容由同版本 `content.json` 渲染（见 `vault/content.ts`），Markdown 只是可阅读产物。
  */
@@ -383,13 +329,10 @@ export function renderDigestNote(
     "kb_type: digest",
     `kb_source_revision: ${manifest.source_revision}`,
     `kb_digest_revision: ${manifest.bundle_revision}`,
-    "kb_organize: not_evaluated",
     ...(opts.contentLines ?? []),
   ]);
-  // `status/*` 是 `kb_organize`（本地整理结论）的展示，不独立维护（docs/08 §5）
-  const fmWithTags = mergeManagedTags(fm, managedTags("digest", "not_evaluated"));
   return [
-    fmWithTags,
+    mergeManagedTags(fm, managedTags("digest", null)),
     "",
     `# ${title}：提炼`,
     "",
@@ -399,63 +342,11 @@ export function renderDigestNote(
     opts.cloudMd?.trim() || renderCloudPending(manifest),
     CLOUD_DIGEST_END,
     "",
-    LOCAL_ORGANIZE_START,
-    renderLocalOrganizeInitial(),
-    LOCAL_ORGANIZE_END,
-    "",
     "## 我的备注与判断",
     "",
     "此区域归用户管理。",
     "",
   ].join("\n");
-}
-
-// ---- Knowledge 模板 ----
-
-/** Knowledge 笔记（docs/08 §3.3）：主题说明 + 机器区 + 人工区。 */
-export function renderKnowledgeNote(opts: {
-  kbId: string;
-  title: string;
-  aliases: string[];
-  scope: string;
-  managedBody: string;
-  revision: number;
-  reviewedAt: string | null;
-}): string {
-  const fm = [
-    "---",
-    `kb_id: ${yamlValue(opts.kbId)}`,
-    "kb_type: knowledge",
-    `kb_revision: ${opts.revision}`,
-    `kb_reviewed_at: ${opts.reviewedAt ?? new Date().toISOString().slice(0, 10)}`,
-    `aliases: ${yamlValue(opts.aliases)}`,
-    "---",
-  ].join("\n");
-  const fmWithTags = mergeManagedTags(fm, managedTags("knowledge", null));
-  return [
-    fmWithTags,
-    "",
-    `# ${opts.title}`,
-    "",
-    "## 这个主题解决什么问题",
-    "",
-    opts.scope?.trim() || "边界、适用对象，以及不在本篇展开的问题。",
-    "",
-    KNOWLEDGE_START,
-    opts.managedBody.trim(),
-    KNOWLEDGE_END,
-    "",
-    "## 我的实践与补充",
-    "",
-    "用户经验、偏好和手动记录，自动融合不改写。",
-    "",
-  ].join("\n");
-}
-
-/** 主题范围说明（frontmatter 之外的「这个主题解决什么问题」小节）。 */
-export function extractKnowledgeScope(text: string): string {
-  const m = /## 这个主题解决什么问题\s*\n+([\s\S]*?)(?=\n<!-- kb:knowledge:start|\n## |\s*$)/.exec(text);
-  return (m?.[1] ?? "").trim();
 }
 
 // ---- 00 Inbox 索引 ----
@@ -478,38 +369,4 @@ export function renderInboxIndex(
     rows || "| — | （暂无条目） | — |",
     "",
   ].join("\n");
-}
-
-/** 00 Inbox/知识更新候选.md（docs/23 §6.1；取代旧逐观点晋升候选索引）。 */
-export function renderProposalIndex(
-  entries: Array<{
-    proposalId: string;
-    knowledgeTitle: string | null;
-    state: string;
-    changeSummary: string;
-    createdAt: string;
-    noOp: boolean;
-  }>,
-): string {
-  const rows = [...entries]
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-    .map((e) =>
-      `| ${e.createdAt.slice(0, 10)} | ${e.knowledgeTitle ?? "（新建主题）"} | ${e.noOp ? "无变化" : (e.changeSummary || "—")} | ${e.state} |`,
-    )
-    .join("\n");
-  return [
-    "# 知识更新候选",
-    "",
-    "由本地整理生成；采纳前不会写入 Knowledge。使用命令「查看知识更新候选」或整理面板逐条查看差异与原文依据。",
-    "",
-    "| 生成日期 | 目标主题 | 变化摘要 | 状态 |",
-    "| --- | --- | --- | --- |",
-    rows || "| — | （暂无候选） | — | — |",
-    "",
-  ].join("\n");
-}
-
-/** 索引条目 -> 检索用纯文本（docs/08 §5：标题、kb_id、aliases、范围说明、检索关键词）。 */
-export function indexEntrySearchText(e: KnowledgeIndexEntry): string {
-  return [e.kb_id, e.title, ...e.aliases, e.scope, ...e.keywords].join("\n").toLowerCase();
 }

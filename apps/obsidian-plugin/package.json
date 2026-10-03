@@ -1,5 +1,5 @@
 {
-  "name": "kb-inbox",
+  "name": "golden-rose-inbox",
   "version": "0.3.0",
   "description": "Self-hosted knowledge inbox for Obsidian: incremental sync, verified writes and edit protection.",
   "main": "main.js",
@@ -10,7 +10,7 @@
   },
   "keywords": [
     "obsidian",
-    "kb-inbox"
+    "golden-rose-inbox"
   ],
   "license": "MIT",
   "devDependencies": {

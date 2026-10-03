@@ -132,20 +132,20 @@ export class CommitStore {
 
 // ---- 历史快照（docs/08 §2、§6.1） ----
 
-/** 被引用过的 Digest／Knowledge 历史快照；不按普通缓存清理。 */
+/** 被引用过的 Digest 历史快照；不按普通缓存清理。 */
 export class RevisionStore {
   constructor(private fs: FsLike, private systemFolder: string) {}
 
-  dir(kind: "digests" | "knowledge", id: string): string {
+  dir(kind: "digests", id: string): string {
     return revisionDir(this.systemFolder, kind, id);
   }
 
-  path(kind: "digests" | "knowledge", id: string, revision: number): string {
+  path(kind: "digests", id: string, revision: number): string {
     return `${this.dir(kind, id)}/${revisionFileName(revision)}`;
   }
 
   /** 写入快照（幂等：同版本同内容不重写）。 */
-  async save(kind: "digests" | "knowledge", id: string, revision: number, content: string): Promise<void> {
+  async save(kind: "digests", id: string, revision: number, content: string): Promise<void> {
     const p = this.path(kind, id, revision);
     if (await this.fs.exists(p)) {
       try {
@@ -157,7 +157,7 @@ export class RevisionStore {
     await this.fs.write(p, content);
   }
 
-  async read(kind: "digests" | "knowledge", id: string, revision: number): Promise<string | null> {
+  async read(kind: "digests", id: string, revision: number): Promise<string | null> {
     const p = this.path(kind, id, revision);
     if (!(await this.fs.exists(p))) return null;
     try {
@@ -168,7 +168,7 @@ export class RevisionStore {
   }
 
   /** 已有快照版本号（升序）。 */
-  async revisions(kind: "digests" | "knowledge", id: string): Promise<number[]> {
+  async revisions(kind: "digests", id: string): Promise<number[]> {
     const out: number[] = [];
     for (const entry of await this.fs.list(this.dir(kind, id))) {
       const m = /r(\d{6})\.md$/.exec(entry.split("/").pop() ?? entry);

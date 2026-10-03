@@ -20,7 +20,7 @@ if (!vaultRoot) {
   process.exit(1);
 }
 
-const dataFile = path.join(vaultRoot, ".obsidian", "plugins", "kb-inbox", "data.json");
+const dataFile = path.join(vaultRoot, ".obsidian", "plugins", "golden-rose-inbox", "data.json");
 
 function loadPluginData(): Record<string, unknown> {
   return JSON.parse(fs.readFileSync(dataFile, "utf-8")) as Record<string, unknown>;
