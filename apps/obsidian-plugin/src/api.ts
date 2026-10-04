@@ -146,6 +146,15 @@ export class KbClient {
     });
   }
 
+  /** 改名当前设备：同步到服务端，网页端设备列表随之更新。 */
+  async renameDevice(name: string): Promise<void> {
+    if (!this.deviceId) throw new ApiError("NO_DEVICE", "尚未登录或缺少设备 ID", 400);
+    await this.requestJson(`/v1/devices/${encodeURIComponent(this.deviceId)}`, {
+      method: "PATCH",
+      body: { name },
+    });
+  }
+
   /** 断开当前设备：撤销服务端 Token；本地凭据由调用方清理（docs/05 §4.5 第 7 条）。 */
   async disconnectDevice(): Promise<void> {
     if (!this.deviceId) throw new ApiError("NO_DEVICE", "尚未登录或缺少设备 ID", 400);

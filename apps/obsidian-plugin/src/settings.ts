@@ -111,6 +111,7 @@ export interface SettingsTabHooks {
   onSave: () => Promise<void>;
   onLogin: () => Promise<void>;
   onDisconnect: () => Promise<void>;
+  onRenameDevice: (name: string) => Promise<void>;
   loadCloudProfiles: () => Promise<CloudProfileOption[]>;
 }
 
@@ -141,34 +142,49 @@ export class KbSettingTab extends PluginSettingTab {
         await this.hooks.onSave();
       }));
 
-    const account = new Setting(containerEl)
-      .setName("账号")
-      .setDesc("点击登录后打开系统浏览器：使用统一账号在网页上批准本设备。")
-      .addButton((b) => b.setButtonText("登录账号").setCta().onClick(async () => {
-        await this.hooks.onLogin();
-        this.display();
-      }));
+    // 登录与断开互斥：同时显示两个按钮会让人搞不清当前状态
+    const account = new Setting(containerEl).setName("账号");
     if (this.settings.deviceId) {
-      account.addButton((b) => b.setButtonText("断开设备").setWarning().onClick(async () => {
-        await this.hooks.onDisconnect();
-        this.display();
-      }));
+      account
+        .setDesc("本设备已授权：网页端的设备列表里能看到它，同步自动进行。")
+        .addButton((b) => b.setButtonText("断开设备").setWarning().onClick(async () => {
+          await this.hooks.onDisconnect();
+          this.display();
+        }));
+    } else {
+      account
+        .setDesc("点击登录后打开系统浏览器：使用统一账号在网页上批准本设备。")
+        .addButton((b) => b.setButtonText("登录账号").setCta().onClick(async () => {
+          await this.hooks.onLogin();
+          this.display();
+        }));
     }
 
+    // 设备名在失焦或按回车时提交一次：TextComponent.onChange 绑在 input 上，
+    // 每次按键都会触发，不能拿它打服务端。
     new Setting(containerEl)
       .setName("设备名称")
-      .setDesc("登录时展示给网页确认的名称。")
-      .addText((t) => t.setValue(this.settings.deviceName).onChange(async (v) => {
-        this.settings.deviceName = v || "Obsidian 桌面";
-        await this.hooks.onSave();
-      }));
-
-    const pairInfo = containerEl.createEl("p", {
-      text: this.settings.deviceId
-        ? `已登录：device ${this.settings.deviceId.slice(0, 8)}…（退出网站不影响本设备；点「断开设备」撤销其凭据）`
-        : "尚未登录。",
-    });
-    pairInfo.addClass("kb-muted");
+      .setDesc("登录时展示给网页确认的名称；改名后同步到网页端的设备列表。")
+      .addText((t) => {
+        t.setValue(this.settings.deviceName);
+        const commit = async () => {
+          const next = t.getValue().trim() || "Obsidian 桌面";
+          t.setValue(next);
+          if (next === this.settings.deviceName) return;
+          this.settings.deviceName = next;
+          await this.hooks.onSave();
+          await this.hooks.onRenameDevice(next);
+        };
+        t.inputEl.addEventListener("change", () => void commit());
+        t.inputEl.addEventListener("blur", () => void commit());
+        t.inputEl.addEventListener("keydown", (ev) => {
+          if (ev.key === "Enter") {
+            ev.preventDefault();
+            void commit();
+            t.inputEl.blur();
+          }
+        });
+      });
 
     // ---- 云端提炼配置（模型 Key 由服务器保管，docs/24 §8） ----
     containerEl.createEl("h3", { text: "云端提炼" });

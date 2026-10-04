@@ -50,14 +50,21 @@ class StatusView extends ItemView {
     // lastStatus（onStatus 推送）优先，尚未跑过同步时回退到 data.json 里的
     // 持久化 syncState，避免重启后面板一直显示占位值
     const sync = this.plugin.syncState;
-    const lines: Array<[string, string]> = [
-      ["状态", st?.running ? "同步中…" : (st?.lastError ? `出错：${st.lastError}` : "就绪")],
-      ["待入库", String(st?.pendingCount ?? Object.keys(sync.pending).length)],
-      ["上次同步", st?.lastRunAt
-        ? new Date(st.lastRunAt).toLocaleString()
-        : sync.lastRunAt ? new Date(sync.lastRunAt).toLocaleString() : "—"],
-      ["游标", String(st?.cursor ?? sync.cursor)],
-    ];
+    const lines: Array<[string, string]> = this.plugin.settings.deviceId
+      ? [
+        ["状态", st?.running ? "同步中…" : (st?.lastError ? `出错：${st.lastError}` : "就绪")],
+        ["待入库", String(st?.pendingCount ?? Object.keys(sync.pending).length)],
+        ["上次同步", st?.lastRunAt
+          ? new Date(st.lastRunAt).toLocaleString()
+          : sync.lastRunAt ? new Date(sync.lastRunAt).toLocaleString() : "—"],
+        ["游标", String(st?.cursor ?? sync.cursor)],
+      ]
+      : [
+        ["状态", "未登录：请在设置中点「登录账号」，用统一账号在网页上批准本设备"],
+        ["待入库", "—"],
+        ["上次同步", "—"],
+        ["游标", "—"],
+      ];
     if (st?.epochConflict) {
       lines.push(["设备", "已不是主要写入设备；请在服务器切换后重新同步"]);
     }
@@ -152,6 +159,7 @@ export class KbPlugin extends Plugin {
       onSave: () => this.saveSettings(),
       onLogin: () => this.loginWithBrowser(),
       onDisconnect: () => this.disconnectDevice(),
+      onRenameDevice: (name) => this.renameDevice(name),
       loadCloudProfiles: () => this.loadCloudProfiles(),
     });
     this.addSettingTab(tab);
@@ -324,6 +332,7 @@ export class KbPlugin extends Plugin {
         this.settings.userId = poll.user_id!;
         await this.saveSettings();
         new Notice(`Golden-Rose-Inbox：登录成功，设备 ${poll.device_id!.slice(0, 8)}…`);
+        this.updateStatusBar();
         await this.engine.runOnce("logged-in");
         return;
       }
@@ -351,6 +360,25 @@ export class KbPlugin extends Plugin {
     this.settings.userId = "";
     await this.saveSettings();
     new Notice("Golden-Rose-Inbox：设备已断开，已导入的笔记保留。");
+    this.updateStatusBar();
+  }
+
+  /** 设备名已存本地，再同步到服务端，使网页端设备列表与本机一致。 */
+  private async renameDevice(name: string): Promise<void> {
+    if (!this.settings.deviceId) return; // 未登录：名称已存本地，下次登录时生效
+    const client = this.getClient();
+    if (!client) {
+      new Notice("设备名已保存在本机；登录后才会同步到网页端。");
+      return;
+    }
+    try {
+      await client.renameDevice(name);
+      new Notice(`Golden-Rose-Inbox：设备名已同步为「${name}」。`);
+    } catch (err) {
+      // 本地已存：服务端失败不丢用户输入，如实告知未同步
+      console.log(`[golden-rose-inbox] renameDevice: ${err instanceof Error ? err.message : String(err)}`);
+      new Notice("设备名已保存在本机，但同步到服务器失败；恢复网络后可重新修改。");
+    }
   }
 
   private async restoreSuppressed(): Promise<void> {
@@ -390,7 +418,10 @@ export class KbPlugin extends Plugin {
   private updateStatusBar(): void {
     if (!this.statusBarEl) return;
     const st = this.lastStatus;
-    if (st?.running) {
+    // 未登录时不报「就绪」：没在同步却显示就绪，会让人以为一切正常
+    if (!this.settings.deviceId) {
+      this.statusBarEl.setText("Golden-Rose-Inbox：未登录");
+    } else if (st?.running) {
       this.statusBarEl.setText("Golden-Rose-Inbox：同步中…");
     } else if (st?.epochConflict) {
       this.statusBarEl.setText("Golden-Rose-Inbox：设备已过期");

@@ -291,6 +291,100 @@
         }
       }
     },
+    "/v1/devices/{device_id}": {
+      "patch": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Rename Device",
+        "description": "插件设置里改设备名：同步到服务端，网页端设备列表随之更新。",
+        "operationId": "rename_device_v1_devices__device_id__patch",
+        "parameters": [
+          {
+            "name": "device_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Device Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceRenameInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "devices"
+        ],
+        "summary": "Revoke Device",
+        "description": "撤销设备：服务 Token 随之失效；模型 Key 不受影响。",
+        "operationId": "revoke_device_v1_devices__device_id__delete",
+        "parameters": [
+          {
+            "name": "device_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Device Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Revoke Device V1 Devices  Device Id  Delete"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/devices/{device_id}/disconnect": {
       "post": {
         "tags": [
@@ -1601,51 +1695,6 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/DeviceOut"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/devices/{device_id}": {
-      "delete": {
-        "tags": [
-          "devices"
-        ],
-        "summary": "Revoke Device",
-        "description": "撤销设备：服务 Token 随之失效；模型 Key 不受影响。",
-        "operationId": "revoke_device_v1_devices__device_id__delete",
-        "parameters": [
-          {
-            "name": "device_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Device Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "additionalProperties": true,
-                  "title": "Response Revoke Device V1 Devices  Device Id  Delete"
                 }
               }
             }
@@ -4949,6 +4998,22 @@
           "poll_secret"
         ],
         "title": "DevicePollInput"
+      },
+      "DeviceRenameInput": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Name"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "DeviceRenameInput"
       },
       "DeviceStartInput": {
         "properties": {

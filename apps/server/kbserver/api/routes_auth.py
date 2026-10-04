@@ -318,6 +318,25 @@ def device_poll(body: DevicePollInput, request: Request, db: Session = Depends(g
     }
 
 
+class DeviceRenameInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=120)
+
+
+@router.patch("/v1/devices/{device_id}")
+def rename_device(device_id: str, body: DeviceRenameInput,
+                  principal=Depends(require_device), db: Session = Depends(get_db)):
+    """插件设置里改设备名：同步到服务端，网页端设备列表随之更新。"""
+    if principal.device is None or principal.device.id != device_id:
+        raise ApiError("FORBIDDEN", "只能修改当前设备", status_code=403)
+    name = body.name.strip()
+    if not name:
+        raise ApiError("SCHEMA_INVALID", "设备名不能为空", status_code=422)
+    principal.device.name = name[:120]
+    db.commit()
+    return {"device_id": device_id, "name": principal.device.name}
+
+
 @router.post("/v1/devices/{device_id}/disconnect")
 def disconnect_device(device_id: str, principal=Depends(require_device), db: Session = Depends(get_db)):
     """插件「断开设备」：撤销当前设备 Token，清理由调用方在本地完成。"""

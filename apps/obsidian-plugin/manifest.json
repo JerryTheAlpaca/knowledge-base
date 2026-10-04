@@ -3,7 +3,7 @@
   "name": "Golden-Rose-Inbox",
   "version": "0.3.0",
   "minAppVersion": "1.11.4",
-  "description": "Self-hosted knowledge inbox for Obsidian: bring web clips, articles and videos into your vault with incremental sync, verified writes and edit protection.",
+  "description": "自托管知识收件箱：把网页、文章和视频增量同步进你的 Vault，写入前校验、编辑时保护。",
   "author": "JerryTheAlpaca",
   "isDesktopOnly": true
 }

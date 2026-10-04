@@ -356,6 +356,40 @@ def test_device_flow_full_path(wc, central):
     assert wc.get("/v1/items", headers=auth(tok["token"])).status_code == 401
 
 
+def _authorized_device(wc, central, device_name="我的 Obsidian"):
+    """走完设备授权流程，返回 (token, device_id)。"""
+    _login(wc, central)
+    csrf = wc.cookies.get("kb_csrf")
+    start = wc.post("/v1/auth/device/start", json={"device_name": device_name}).json()
+    wc.post("/v1/auth/device/approve", json={"request_id": start["request_id"]},
+            headers={"X-CSRF-Token": csrf, "Origin": "http://testserver"})
+    tok = wc.post("/v1/auth/device/poll", json={
+        "request_id": start["request_id"], "poll_secret": start["poll_secret"]}).json()
+    return auth(tok["token"]), tok["device_id"]
+
+
+def test_device_rename_syncs_to_server(wc, central):
+    """插件设置里改设备名要同步到服务端，网页端设备列表随之更新。"""
+    headers, device_id = _authorized_device(wc, central)
+
+    renamed = wc.patch(f"/v1/devices/{device_id}", json={"name": "书房台式机"}, headers=headers)
+    assert renamed.status_code == 200
+    assert renamed.json()["name"] == "书房台式机"
+
+    # 改名后 Token 依然有效（改名不是重新授权）
+    assert wc.get("/v1/items", headers=headers).status_code == 200
+
+    # 空白名拒绝，不把设备名写成空串
+    assert wc.patch(f"/v1/devices/{device_id}", json={"name": "   "}, headers=headers).status_code == 422
+
+
+def test_device_rename_rejects_other_device(wc, central):
+    """只能改自己的设备：拿别人的 device_id 应被拒绝。"""
+    headers, _ = _authorized_device(wc, central)
+    other = wc.patch("/v1/devices/not-my-device-id", json={"name": "冒名"}, headers=headers)
+    assert other.status_code == 403
+
+
 def test_device_approve_requires_central_session(wc, central, user_a):
     start = wc.post("/v1/auth/device/start", json={"device_name": "x"})
     request_id = start.json()["request_id"]

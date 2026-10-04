@@ -1,7 +1,7 @@
 {
   "name": "golden-rose-inbox",
   "version": "0.3.0",
-  "description": "Self-hosted knowledge inbox for Obsidian: incremental sync, verified writes and edit protection.",
+  "description": "自托管知识收件箱：把网页、文章和视频增量同步进 Vault，写入前校验、编辑时保护。",
   "main": "main.js",
   "scripts": {
     "typecheck": "tsc --noEmit --skipLibCheck",
