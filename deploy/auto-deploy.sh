@@ -122,6 +122,8 @@ while IFS= read -r path; do
   case "$path" in
     apps/server/*) need_server=1 ;;
     apps/share-renderer/*) need_renderer=1 ;;
+    # 插件源码本身不进镜像，但发布产物 plugin_dist 在 apps/server 下；
+    # 源码改动若没跑 npm run release 就不会改变产物，也就不需要重建
     deploy/docker-compose.yml) need_server=1; need_renderer=1 ;;
   esac
 done <<<"$CHANGED"

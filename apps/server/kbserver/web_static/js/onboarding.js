@@ -5,6 +5,7 @@
 
 import { $, api, esc, toast, showErr, openModalHTML, closeModal } from "./api.js";
 import { openProfileForm } from "./settings.js";
+import { pluginInstallHTML, loadPluginVersion } from "./plugin-download.js";
 
 let polling = null;
 
@@ -41,11 +42,9 @@ function render(ob) {
       "已连接 <b>" + esc(dev.name || "桌面设备") + "</b>，整理完成的笔记会自动写入你的知识库。"));
   } else {
     steps.push(stepHTML(2, "连接 Obsidian", false,
-      '<div class="small">两步即可连接：</div>' +
-      '<ol class="small steps-list">' +
-      "<li>在电脑版 Obsidian 中安装 KB Inbox 插件。</li>" +
-      "<li>在插件设置里登录你的账号。</li></ol>" +
-      '<div class="small" id="obDeviceWait" class="mt-6">等待连接中，连接成功后此步骤会自动完成…</div>'));
+      '<div class="small">下载插件，在电脑版 Obsidian 里启用后用同一账号登录：</div>' +
+      pluginInstallHTML() +
+      '<div class="small mt-8" id="obDeviceWait">等待连接中，连接成功后此步骤会自动完成…</div>'));
   }
 
   // 第三步：可选连接内容平台
@@ -71,6 +70,7 @@ function render(ob) {
     "</div>";
 
   if (!model.completed) loadModelPicker();
+  if (!obsidian.completed) loadPluginVersion();
   if (!obsidian.completed || !model.completed) startPolling();
 }
 

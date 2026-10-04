@@ -4269,6 +4269,29 @@
           }
         }
       }
+    },
+    "/v1/plugin/release": {
+      "get": {
+        "tags": [
+          "plugin-download"
+        ],
+        "summary": "Plugin Release",
+        "operationId": "plugin_release_v1_plugin_release_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Plugin Release V1 Plugin Release Get"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {

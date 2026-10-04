@@ -583,6 +583,13 @@ details.disclosure.slim .disclosure-body { padding: 0 8px 8px; }
 .devrow .devmain { flex: 1; min-width: 0; }
 .devrow .devname { font-weight: 600; }
 .devrow .devmeta { font-size: var(--fs-caption); color: var(--text-2); }
+/* 插件下载入口（docs/26）：设置页与新手指导共用 .pd */
+.pd { margin-top: 12px; }
+.pd-btn { flex: none; }
+.pd-ver { color: var(--text-2); }
+.pd-steps { margin-top: 10px; }
+.pd-steps code { font-size: .95em; color: var(--text); }
+.pd-note { margin-top: 8px; }
 /* 平台区块：小标题（.plat-head）已负责分隔，块内不再叠大间距 */
 .platblock { margin-top: 4px; }
 
