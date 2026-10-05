@@ -788,8 +788,9 @@ def release_finished_originals(db, store: ObjectStore) -> dict:
     """转写已完成的条目不保留音视频原件（docs/13 §6.3 的当前口径）。
 
     ASR 发布时已就地释放；这里兜住两类残留：策略上线前转写完成的历史条目，
-    以及引用已解除但进程被杀、对象还没回收的条目。转写失败或尚未转写的条目
-    保留原件，材料要留着重试。
+    以及引用已解除但进程被杀、对象还没回收的条目。判据看当前来源版本里有没有
+    转写结果——ASR 发布会新起一个来源版本，run 自己记的是上一个版本号。
+    转写失败、未转写或结果已作废的条目保留原件，材料要留着重试。
     """
     stats = {"originals_released": 0, "original_bytes": 0, "originals_awaiting_sync": 0}
     keys: list[str] = []
@@ -799,10 +800,8 @@ def release_finished_originals(db, store: ObjectStore) -> dict:
         item = db.get(Item, asset.item_id)
         if item is None or item.deleted_at is not None:
             continue  # 删除条目走删除流程，不在这里判定
-        if db.query(AsrRun).filter(
-            AsrRun.item_id == item.id, AsrRun.state == "succeeded",
-            AsrRun.source_revision == item.source_revision,
-        ).first() is None:
+        source = _latest_source(db, item)
+        if source is None or not (source.metadata_json or {}).get("asr"):
             continue
         if db.query(AsrRun.id).filter(
             AsrRun.item_id == item.id,

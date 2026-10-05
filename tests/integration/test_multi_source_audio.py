@@ -24,7 +24,7 @@ from tests.conftest import auth
 from kbserver.audio import prepare as audio_prepare
 from kbserver.domain import source_labels
 from kbserver.extractors import audio_sources
-from kbserver.models import AudioAsset, AudioUploadSession, Item, Upload
+from kbserver.models import AudioAsset, AudioUploadSession, Item, SourceRevision, Upload
 from kbserver.security.safe_fetch import ProbeResult
 from kbserver.storage.objects import ObjectStore
 from kbserver.workers import worker
@@ -455,7 +455,7 @@ def test_historical_original_waits_for_client_sync(client, user_a, asr_object_en
     with sf() as db:
         asset = db.query(AudioAsset).filter(AudioAsset.item_id == item_id).one()
         item = db.get(Item, item_id)
-        # 造出旧版本发布的清单：files 里列着这份原件
+        # 旧版本发布的清单：files 里列着这份原件
         manifest = {
             "item_id": item_id, "bundle_revision": 9001, "source_revision": item.source_revision,
             "files": [{"file_id": asset.stored_file_id,
@@ -468,10 +468,21 @@ def test_historical_original_waits_for_client_sync(client, user_a, asr_object_en
             source_revision=item.source_revision, manifest_key=mkey,
             manifest_sha256=sha_m, processing_state="ready",
         ))
-        # 转写已完成（旧代码不会释放原件，所以引用还留着）
+        db.commit()
+
+    # 当前版本还没有转写结果：清理任务不碰原件
+    assert worker.retention_sweep(sf, store)["originals_released"] == 0
+    assert store.object_exists(key)
+
+    with sf() as db:
+        # 造出「转写已完成但原件未释放」的历史状态：当前来源版本带转写结果，
+        # run 记的仍是上一个来源版本号（ASR 发布会新起一版）
         run = db.query(worker.AsrRun).filter(worker.AsrRun.item_id == item_id).one()
         run.state = "succeeded"
-        run.source_revision = item.source_revision
+        source = db.query(SourceRevision).filter(
+            SourceRevision.item_id == item_id,
+            SourceRevision.revision == item.source_revision).one()
+        source.metadata_json = {**source.metadata_json, "asr": {"source": "asr"}}
         db.commit()
 
     stats = worker.retention_sweep(sf, store)
