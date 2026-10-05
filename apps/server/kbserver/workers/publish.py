@@ -17,7 +17,8 @@ from ..storage.objects import ObjectStore
 
 def bundle_files(db: Session, item: Item) -> list[StoredFile]:
     rows = list(db.query(StoredFile).filter(StoredFile.item_id == item.id, StoredFile.user_id == item.user_id))
-    return pipeline.latest_files_per_path(rows)
+    return pipeline.without_original_media(
+        db, pipeline.latest_files_per_path(rows), user_id=item.user_id, item_id=item.id)
 
 
 def auto_enrich_enabled(db: Session, user_id: str) -> bool:

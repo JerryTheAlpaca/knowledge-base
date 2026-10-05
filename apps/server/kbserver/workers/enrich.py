@@ -144,7 +144,8 @@ def _owned_job(db: Session, plan: EnrichPlan) -> Job | None:
 
 def _base_bundle_files(db: Session, item: Item) -> list[StoredFile]:
     """新 bundle 的基础文件 = 全部原始材料与提取产物（含用户上传附件）。
-    只排除旧加工产物（generated/preview），它们由本次 enrich 重新生成。"""
+    只排除旧加工产物（generated/preview），它们由本次 enrich 重新生成；
+    音视频原件也不进清单，改由 /v1/items/{id}/audio-original 流式取（docs/13 §6.3）。"""
     rows = (
         db.query(StoredFile)
         .filter(
@@ -154,7 +155,8 @@ def _base_bundle_files(db: Session, item: Item) -> list[StoredFile]:
         )
         .all()
     )
-    return pipeline.latest_files_per_path(rows)
+    return pipeline.without_original_media(
+        db, pipeline.latest_files_per_path(rows), user_id=item.user_id, item_id=item.id)
 
 
 def _load_segments(db: Session, item: Item) -> tuple[list[dict], list[dict]]:

@@ -190,14 +190,15 @@ def test_uploaded_video_transcribes_and_shows_as_video(client, user_a, video_asr
     doc = client.get(f"/v1/items/{item_id}", headers=auth(user_a["desktop"]["token"])).json()
     assert doc["platform"] == "audio_upload" and doc["media_kind"] == "video"
     assert doc["source_label"] == "上传视频"
-    assert doc["audio_original_retained"] is True
+    # 转写完成即清理原件：视频不再占服务器磁盘，详情如实说明已清理
+    assert doc["audio_original_retained"] is False
+    assert doc["audio_original_released"] is True
     # 文字稿已经发布
     assert doc["workflow"]["steps"][1]["reason_code"] == "PROCESS_DONE"
 
     r = client.get(f"/v1/items/{item_id}/audio-original",
                    headers=auth(user_a["desktop"]["token"]))
-    assert r.status_code == 200 and r.content == data
-    assert "video/mp4" in r.headers["content-type"]
+    assert r.status_code == 404
 
 
 def test_uploaded_video_legacy_input_kind_still_works(client, user_a, video_asr_env):

@@ -1279,9 +1279,9 @@ def _finish_if_complete(session_factory, job_id: str, lease_token: str,
         media_kind = (frozen.get("media_kind") or locator.get("media_kind")
                       or ("video" if platform == "bilibili" else "audio"))
         fields = source_fields(platform, media_kind)
-        # 只有真实留存的上传原件才为 true（docs/13 §6.3）
-        retained = bool(run.input_kind == "object")
-        asr_meta = _asr_meta(run, manifest, silence, failed_ranges, retained=retained)
+        # 上传原件只在这一次转写中被使用：文字稿发布后就不再是加工材料（docs/13 §6.3）
+        had_original = bool(run.input_kind == "object")
+        asr_meta = _asr_meta(run, manifest, silence, failed_ranges)
         meta_updates = {
             "platform": fields["platform"],
             "media_kind": fields["media_kind"],
@@ -1293,7 +1293,8 @@ def _finish_if_complete(session_factory, job_id: str, lease_token: str,
             "published_at": frozen.get("published_at") or locator.get("published_at"),
             "canonical_url": frozen.get("canonical_url") or locator.get("canonical_url"),
             "coverage": "partial_text" if failed_ranges else "full_text",
-            "original_media_retained": retained,
+            # 原件随本次发布一起释放：清单不再声明服务器保留着音视频
+            "original_media_retained": False,
             "source_locator": locator,
             "asr": asr_meta,
             "extractor": {
@@ -1305,7 +1306,7 @@ def _finish_if_complete(session_factory, job_id: str, lease_token: str,
         }
         store = ObjectStore()
         extra_files = _register_asr_files(db, store, item, run, manifest, results, segments,
-                                          retained=retained, subtitle_ref=subtitle_ref)
+                                          had_original=had_original, subtitle_ref=subtitle_ref)
         publish_segments_revision(
             db, store, job, item, ctx_source(db, item, run),
             segments=segments, warnings=warnings, extra_files=extra_files,
@@ -1315,10 +1316,20 @@ def _finish_if_complete(session_factory, job_id: str, lease_token: str,
         run.pause_reason = ""
         run.updated_at = utcnow()
         _emit_state(db, run)
-        run_ref = {"work_dir": run.work_dir}
+        released_keys = (pipeline.release_original_media(
+            db, user_id=item.user_id, item_id=item.id) if had_original else [])
+        run_ref = {"work_dir": run.work_dir, "released_keys": released_keys,
+                   "item_id": item.id}
         db.commit()
     if run_ref:
         _cleanup_by_work_dir(settings, run_ref["work_dir"])
+        if run_ref["released_keys"]:
+            with session_factory() as db:
+                freed = pipeline.reclaim_original_media(
+                    db, ObjectStore(), run_ref["released_keys"])
+            if freed:
+                print(f"[asr] 条目 {run_ref['item_id']} 音视频原件已清理，"
+                      f"回收 {freed / (1024 ** 2):.0f} MiB")
 
 
 def ctx_source(db: Session, item: Item, run: AsrRun) -> SourceRevision:
@@ -1347,8 +1358,7 @@ def _failed_ranges(manifest: dict, results: list[dict]) -> list[list[float]]:
     return ranges
 
 
-def _asr_meta(run: AsrRun, manifest: dict, silence: list, failed_ranges: list,
-              *, retained: bool = False) -> dict:
+def _asr_meta(run: AsrRun, manifest: dict, silence: list, failed_ranges: list) -> dict:
     settings = get_settings()
     locator = manifest.get("source_locator") or {}
     return {
@@ -1365,10 +1375,10 @@ def _asr_meta(run: AsrRun, manifest: dict, silence: list, failed_ranges: list,
         "processed_audio_seconds": round(float(run.processed_seconds or 0.0), 1),
         "chunk_count": run.chunk_count,
         "pcm_manifest_sha256": (run.manifest_json or {}).get("manifest_sha256"),
-        # 获取方式按真实来源赋值；audio_retained 与真实存储状态一致
+        # 获取方式按真实来源赋值；原件随转写完成释放，两种来源都不长期保留
         "acquisition": locator.get("acquisition") or (
             ACQ_UPLOADED if run.input_kind == "object" else "player_audio_stream"),
-        "audio_retained": retained,
+        "audio_retained": False,
         "input_fingerprint": run.input_fingerprint or None,
         "timestamp_kind": "estimated",
         "silence_ranges": silence,
@@ -1377,7 +1387,7 @@ def _asr_meta(run: AsrRun, manifest: dict, silence: list, failed_ranges: list,
 
 
 def _register_asr_files(db, store, item, run, manifest, results, segments,
-                        *, retained: bool = False,
+                        *, had_original: bool = False,
                         subtitle_ref: list[dict] | None = None) -> list:
     """原始模型输出与执行清单进 Bundle；上传原件（几 GB 的录音或视频）不进自动投递文件列表。"""
     raw_doc = {
@@ -1393,8 +1403,8 @@ def _register_asr_files(db, store, item, run, manifest, results, segments,
         "input_kind": run.input_kind,
         "input_fingerprint": run.input_fingerprint or None,
         "pcm_manifest": manifest,
-        "note": ("上传原件在服务器保留，可在条目详情下载；本次转写使用其本地副本。"
-                 if retained else
+        "note": ("本次转写使用用户上传的音视频原件；原件已随转写完成从服务器清理。"
+                 if had_original else
                  "音频为临时输入，未长期保留；无法离线重新听原音频。"),
     }
     files = []
@@ -1421,13 +1431,13 @@ def _register_asr_files(db, store, item, run, manifest, results, segments,
             relative_path="asr/subtitle_ref.json", role="source_material",
             mime="application/json",
         ))
-    if retained:
-        # 只投递一个原件引用说明，不把 GB 级音频放进 Bundle（docs/13 §6.3）
+    if had_original:
+        # 曾有上传原件：如实说明它已随转写清理，不留指向死链的下载入口
         ref_doc = {
             "schema": "audio-original-ref-v1",
-            "retained": True,
-            "download": f"/v1/items/{item.id}/audio-original",
-            "note": "原件保留在服务器；插件默认不自动下载大文件。",
+            "retained": False,
+            "note": "音视频原件只用于本次转写，转写完成后已从服务器清理；"
+                    "Vault 内保留文字稿、片段与模型输出。需要原件请在转写完成前自行下载留存。",
         }
         files.append(pipeline.register_file(
             db, store, user_id=item.user_id, item_id=item.id,

@@ -72,8 +72,10 @@ class ItemOut(BaseModel):
     analysis_source_revision: int | None
     analysis_bundle_revision: int | None
     analysis_created_at: str | None
-    # 音频原件（上传录音）保留状态与下载入口；远程临时音频为 False
+    # 音视频原件的实时状态：转写完成后即释放，冻结的采集元数据不能代表现在
     audio_original_retained: bool
+    # 曾经有原件且已按策略清理（详情据此说明为什么没有媒体文件）
+    audio_original_released: bool
     audio_original_download: str | None
     # 当前来源版本已归档的正文图片数（0 = 未提取图片，可点「提取图片」重新提取）
     images_archived: int
@@ -129,6 +131,15 @@ def _analysis_bundle(db: Session, item: Item) -> BundleRevision | None:
     )
 
 
+def _original_media_state(db: Session | None, item: Item) -> tuple[bool, bool]:
+    """原件实时状态 (是否还在服务器, 是否已清理)。没有上传原件的条目两个都 False。"""
+    if db is None:
+        return (False, False)
+    states = [s for (s,) in db.query(AudioAsset.retention_state).filter(
+        AudioAsset.user_id == item.user_id, AudioAsset.item_id == item.id).all()]
+    return ("retained" in states, "released" in states)
+
+
 def _item_out(item: Item, source: SourceRevision, db: Session | None = None,
               analysis_bundle: BundleRevision | None = None) -> ItemOut:
     from ..domain.source_labels import resolve_platform, source_fields
@@ -142,7 +153,7 @@ def _item_out(item: Item, source: SourceRevision, db: Session | None = None,
     # 不把渠道当平台名显示（docs/13 §5.2）
     platform = resolve_platform(meta.get("platform"), meta.get("original_url"))
     fields = source_fields(platform, meta.get("media_kind"))
-    audio_retained = bool(meta.get("original_media_retained")) and fields["source_type"] == "audio_upload"
+    audio_retained, audio_released = _original_media_state(db, item)
     return ItemOut(
         item_id=item.id,
         pipeline_state=item.pipeline_state,
@@ -172,6 +183,7 @@ def _item_out(item: Item, source: SourceRevision, db: Session | None = None,
         analysis_bundle_revision=analysis_bundle.revision if analysis_bundle else None,
         analysis_created_at=analysis_bundle.created_at.isoformat() if analysis_bundle else None,
         audio_original_retained=audio_retained,
+        audio_original_released=audio_released,
         audio_original_download=(f"/v1/items/{item.id}/audio-original" if audio_retained else None),
         images_archived=int(meta.get("images_archived") or 0),
     )

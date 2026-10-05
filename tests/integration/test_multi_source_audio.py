@@ -354,18 +354,24 @@ def test_uploaded_audio_transcribes_via_object_input(client, user_a, asr_object_
     doc = client.get(f"/v1/items/{item_id}", headers=auth(user_a["desktop"]["token"])).json()
     assert doc["source_type"] == "audio_upload" and doc["source_label"] == "上传录音"
     assert doc["platform"] == "audio_upload" and doc["media_kind"] == "audio"
-    assert doc["audio_original_retained"] is True
-    assert doc["audio_original_download"] == f"/v1/items/{item_id}/audio-original"
+    # 转写完成后原件即释放：详情不再有下载入口，如实说明已被清理（docs/13 §6.3）
+    assert doc["audio_original_retained"] is False
+    assert doc["audio_original_released"] is True
+    assert doc["audio_original_download"] is None
 
     manifest = client.get(
         f"/v1/items/{item_id}/bundles/{doc['bundle_revision']}/manifest",
         headers=auth(user_a["desktop"]["token"])).json()
     src = manifest["source"]
     assert src["source_type"] == "audio_upload"
-    assert src["original_media_retained"] is True
+    assert src["original_media_retained"] is False
     paths = [f["relative_path"] for f in manifest["files"]]
-    assert "asr/original_audio.json" in paths  # 只投递原件引用，不投递大文件
-    assert not any(p.startswith("uploads/会议录音") for p in paths)
+    assert "asr/original_audio.json" in paths  # 只留一份「原件已清理」说明
+    assert not any(p.startswith("uploads/") for p in paths)  # 大文件不进自动投递清单
+
+    # 物理对象已回收，磁盘不再被几 GB 的录音/视频占住
+    store = ObjectStore()
+    assert not store.object_exists(store.storage_key(up["sha256"]))
 
 
 def test_uploaded_audio_original_download_and_isolation(client, user_a, user_b, asr_object_env):
@@ -397,42 +403,115 @@ def test_uploaded_audio_original_download_and_isolation(client, user_a, user_b, 
     assert r.status_code == 404
 
 
-def test_original_audio_survives_retention_sweep(client, user_a, asr_object_env, monkeypatch):
-    """转写成功后原件仍受引用保护，清理任务不删除；删除条目后才释放。"""
+def test_original_audio_released_after_transcription(client, user_a, asr_object_env):
+    """转写完成即释放原件：完成前仍可下载，完成后对象回收、下载入口如实失效。"""
     from kbserver.db import get_session_factory
 
-    up = _upload_audio(client, user_a["phone"]["token"], "audio-ret-0001", b"E" * 3072)
+    data = b"E" * 3072
+    up = _upload_audio(client, user_a["phone"]["token"], "audio-ret-0001", data)
     r = client.post("/v1/captures", json={
         "client_capture_id": "audio-ret-0001-1111-2222-3333-444444444444",
         "input_kind": "file", "processing_intent": "transcribe_audio",
         "primary_audio_upload_id": up["upload_id"],
     }, headers={**auth(user_a["phone"]["token"]), "Idempotency-Key": "audio-ret-0001"})
     item_id = r.json()["item_id"]
-    _drain(get_session_factory(), gate=AlwaysAllowGate())
+    sf = get_session_factory()
+    store = ObjectStore()
+    key = store.storage_key(up["sha256"])
+
+    # 转写还没跑：原件是唯一的材料，必须在
+    r = client.get(f"/v1/items/{item_id}/audio-original", headers=auth(user_a["desktop"]["token"]))
+    assert r.status_code == 200 and r.content == data
+
+    _drain(sf, gate=AlwaysAllowGate())
+    with sf() as db:
+        assert db.query(AudioAsset).filter(
+            AudioAsset.item_id == item_id).one().retention_state == "released"
+    assert not store.object_exists(key)
+    r = client.get(f"/v1/items/{item_id}/audio-original", headers=auth(user_a["desktop"]["token"]))
+    assert r.status_code == 404
+    # 已释放的条目不会被清理任务重复处理
+    assert worker.retention_sweep(sf, store)["originals_released"] == 0
+
+
+def test_historical_original_waits_for_client_sync(client, user_a, asr_object_env):
+    """历史条目的清单若还列着原件，客户端没取走前不释放，否则插件永久缺一个文件。"""
+    from kbserver.db import get_session_factory
+    from kbserver.domain import pipeline
+    from kbserver.models import BundleRevision
+
+    data = b"F" * 2048
+    up = _upload_audio(client, user_a["phone"]["token"], "audio-legacy-0001", data)
+    r = client.post("/v1/captures", json={
+        "client_capture_id": "audio-legacy-0001-1111-2222-3333-444444444444",
+        "input_kind": "file", "processing_intent": "transcribe_audio",
+        "primary_audio_upload_id": up["upload_id"],
+    }, headers={**auth(user_a["phone"]["token"]), "Idempotency-Key": "audio-legacy-0001"})
+    item_id = r.json()["item_id"]
+    sf = get_session_factory()
+    store = ObjectStore()
+    key = store.storage_key(up["sha256"])
+
+    with sf() as db:
+        asset = db.query(AudioAsset).filter(AudioAsset.item_id == item_id).one()
+        item = db.get(Item, item_id)
+        # 造出旧版本发布的清单：files 里列着这份原件
+        manifest = {
+            "item_id": item_id, "bundle_revision": 9001, "source_revision": item.source_revision,
+            "files": [{"file_id": asset.stored_file_id,
+                       "relative_path": f"uploads/{up['upload_id']}/会议录音.m4a",
+                       "role": "original_submission", "bytes": len(data), "sha256": up["sha256"]}],
+        }
+        sha_m, mkey, _ = store.put_bytes(pipeline.canonical_json(manifest))
+        db.add(BundleRevision(
+            item_id=item_id, user_id=item.user_id, revision=9001,
+            source_revision=item.source_revision, manifest_key=mkey,
+            manifest_sha256=sha_m, processing_state="ready",
+        ))
+        # 转写已完成（旧代码不会释放原件，所以引用还留着）
+        run = db.query(worker.AsrRun).filter(worker.AsrRun.item_id == item_id).one()
+        run.state = "succeeded"
+        run.source_revision = item.source_revision
+        db.commit()
+
+    stats = worker.retention_sweep(sf, store)
+    assert stats["originals_awaiting_sync"] == 1
+    assert store.object_exists(key)
+
+    with sf() as db:
+        # 用户已在网页下载过那个版本：等同插件已取走，可以释放
+        db.get(Item, item_id).original_download_bundle = 9001
+        db.commit()
+    stats = worker.retention_sweep(sf, store)
+    assert stats["originals_released"] == 1
+    assert not store.object_exists(key)
+
+
+def test_shared_content_object_survives_other_user_reference(client, user_a, user_b,
+                                                            asr_object_env):
+    """同内容两用户上传：先完成转写的一方释放后，另一方仍引用的对象不能被删。"""
+    from kbserver.db import get_session_factory
+
+    data = b"G" * 1024
+    up_a = _upload_audio(client, user_a["phone"]["token"], "audio-share-a-0001", data)
+    up_b = _upload_audio(client, user_b["phone"]["token"], "audio-share-b-0001", data)
+    assert up_a["sha256"] == up_b["sha256"]
+    r = client.post("/v1/captures", json={
+        "client_capture_id": "audio-share-a-0001-1111-2222-3333-444444444444",
+        "input_kind": "file", "processing_intent": "transcribe_audio",
+        "primary_audio_upload_id": up_a["upload_id"],
+    }, headers={**auth(user_a["phone"]["token"]), "Idempotency-Key": "audio-share-a-0001"})
+    item_id = r.json()["item_id"]
 
     sf = get_session_factory()
     store = ObjectStore()
+    key = store.storage_key(up_a["sha256"])
+    _drain(sf, gate=AlwaysAllowGate())
+    # A 的原件引用已释放，但 B 的上传仍引用同一个内容寻址对象
     with sf() as db:
-        upload = db.get(Upload, up["upload_id"])
-        key = upload.storage_key
-        assert store.object_exists(key)
-    # 把 Bundle 全部设为过期并清理：原件对象必须仍在
-    with sf() as db:
-        from kbserver.models import BundleRevision, utcnow
-        for b in db.query(BundleRevision).all():
-            b.expires_at = utcnow()
-        db.commit()
-    stats = worker.retention_sweep(sf, store)
-    assert stats["expired_bundles"] >= 1
-    assert store.object_exists(key)  # 原件仍被 AudioAsset 引用
-
-    # 删除条目 → 释放引用；再次清理后对象可回收
-    client.delete(f"/v1/items/{item_id}", headers=auth(user_a["desktop"]["token"]))
-    with sf() as db:
-        asset = db.query(AudioAsset).filter(AudioAsset.item_id == item_id).one()
-        assert asset.retention_state == "released"
-    worker.retention_sweep(sf, store)
-    assert not store.object_exists(key)
+        assert db.query(AudioAsset).filter(
+            AudioAsset.item_id == item_id).one().retention_state == "released"
+    assert store.object_exists(key)
 
 
 def test_same_content_two_users_object_not_deleted(client, user_a, user_b, asr_object_env):

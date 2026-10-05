@@ -123,10 +123,21 @@ def create_audio_upload(body: AudioUploadCreate,
             status_code=413,
         )
     # 磁盘：原件预留 + 本次 PCM 约 1.1GiB + 结果与余量（docs/13 §7.2）
+    # 其他仍在写入的会话已经声明了总字节，先扣掉，避免几条大文件同时承诺同一份空间
     store = ObjectStore()
+    reserved = sum(
+        max(total - offset, 0) for (total, offset) in db.query(
+            AudioUploadSession.total_bytes, AudioUploadSession.offset).filter(
+            AudioUploadSession.state == "receiving").all()
+    )
     usage = shutil.disk_usage(str(store.tmp_dir))
-    if usage.free < body.total_bytes + DISK_RESERVE_BYTES:
-        raise ApiError("INSUFFICIENT_STORAGE", "服务器磁盘空间不足，暂时无法接收这个文件", status_code=507)
+    if usage.free < body.total_bytes + reserved + DISK_RESERVE_BYTES:
+        raise ApiError(
+            "INSUFFICIENT_STORAGE",
+            f"服务器磁盘剩余空间不足（还需约 {(body.total_bytes + reserved + DISK_RESERVE_BYTES) // (1024 ** 2)} MiB），"
+            "暂时无法接收这个文件；可先删除不再需要的条目材料",
+            status_code=507,
+        )
 
     staging = store.new_staging_path()
     store.staging_file(staging).touch()
@@ -179,6 +190,13 @@ async def put_audio_chunk(session_id: str, request: Request,
         )
 
     store = ObjectStore()
+    # 水位复查：会话建立后盘可能被别的东西写满。剩余字节 + 转写余量放不下就停，
+    # 会话保持可续传，不把盘顶满（顶满会连带容器和数据库一起出问题）
+    remaining = max(sess.total_bytes - sess.offset, 0)
+    if shutil.disk_usage(str(store.tmp_dir)).free < remaining + DISK_RESERVE_BYTES:
+        raise ApiError("INSUFFICIENT_STORAGE",
+                       "服务器磁盘剩余空间不足，稍后可从断点继续上传", status_code=507)
+
     # 恢复：截去上次崩溃留下的未提交尾部，再追加本块
     store.truncate_staging(sess.staging_path, sess.offset)
 
@@ -298,7 +316,12 @@ def download_audio_original(item_id: str, principal=Depends(require_scope("items
         .first()
     )
     if asset is None:
-        raise ApiError("NOT_FOUND", "该条目没有保留的上传原件", status_code=404)
+        released = db.query(AudioAsset.id).filter(
+            AudioAsset.user_id == user.id, AudioAsset.item_id == item.id).first()
+        if released is not None:
+            raise ApiError("NOT_FOUND", "音视频原件已在转写完成后清理，服务器只保留文字稿",
+                           status_code=404)
+        raise ApiError("NOT_FOUND", "该条目没有上传原件", status_code=404)
     up = repo.get_upload(db, user.id, asset.upload_id)
     if up is None or up.state != "completed":
         raise ApiError("NOT_FOUND", "原件引用已失效", status_code=404)
