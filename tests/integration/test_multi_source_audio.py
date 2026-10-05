@@ -434,8 +434,14 @@ def test_original_audio_released_after_transcription(client, user_a, asr_object_
     assert worker.retention_sweep(sf, store)["originals_released"] == 0
 
 
-def test_historical_original_waits_for_client_sync(client, user_a, asr_object_env):
-    """历史条目的清单若还列着原件，客户端没取走前不释放，否则插件永久缺一个文件。"""
+def test_historical_original_waits_only_for_newest_revision(client, user_a, asr_object_env):
+    """历史条目：只有客户端还会去取的最新一版列着原件时才等待。
+
+    旧版本的清单插件不会再下载（每个条目按 max 版本合并待办），把过期旧清单也算成
+    「未完成下载」会让几 GB 的原件永远释放不掉。
+    """
+    import json
+
     from kbserver.db import get_session_factory
     from kbserver.domain import pipeline
     from kbserver.models import BundleRevision
@@ -455,43 +461,50 @@ def test_historical_original_waits_for_client_sync(client, user_a, asr_object_en
     with sf() as db:
         asset = db.query(AudioAsset).filter(AudioAsset.item_id == item_id).one()
         item = db.get(Item, item_id)
-        # 旧版本发布的清单：files 里列着这份原件
-        manifest = {
-            "item_id": item_id, "bundle_revision": 9001, "source_revision": item.source_revision,
-            "files": [{"file_id": asset.stored_file_id,
-                       "relative_path": f"uploads/{up['upload_id']}/会议录音.m4a",
-                       "role": "original_submission", "bytes": len(data), "sha256": up["sha256"]}],
-        }
+        # 旧代码会把原件写进当时最新一版的清单
+        bundle = db.query(BundleRevision).filter(
+            BundleRevision.item_id == item_id,
+            BundleRevision.revision == item.bundle_revision).one()
+        manifest = json.loads(store.read_object(bundle.manifest_key))
+        manifest["files"].append({
+            "file_id": asset.stored_file_id,
+            "relative_path": f"uploads/{up['upload_id']}/会议录音.m4a",
+            "role": "original_submission", "bytes": len(data), "sha256": up["sha256"],
+        })
         sha_m, mkey, _ = store.put_bytes(pipeline.canonical_json(manifest))
-        db.add(BundleRevision(
-            item_id=item_id, user_id=item.user_id, revision=9001,
-            source_revision=item.source_revision, manifest_key=mkey,
-            manifest_sha256=sha_m, processing_state="ready",
-        ))
+        bundle.manifest_key = mkey
+        bundle.manifest_sha256 = sha_m
+        newest = bundle.revision
         db.commit()
 
-    # 当前版本还没有转写结果：清理任务不碰原件
-    assert worker.retention_sweep(sf, store)["originals_released"] == 0
+    # 还没转写结果：既没得等，也不许删（材料要留着重试）
+    stats = worker.retention_sweep(sf, store)
+    assert (stats["originals_released"], stats["originals_awaiting_sync"]) == (0, 0)
     assert store.object_exists(key)
 
     with sf() as db:
-        # 造出「转写已完成但原件未释放」的历史状态：当前来源版本带转写结果，
-        # run 记的仍是上一个来源版本号（ASR 发布会新起一版）
-        run = db.query(worker.AsrRun).filter(worker.AsrRun.item_id == item_id).one()
-        run.state = "succeeded"
+        # 转写已完成：当前来源版本带着转写结果，run 记的仍是上一版号
+        db.query(worker.AsrRun).filter(
+            worker.AsrRun.item_id == item_id).update({"state": "succeeded"})
         source = db.query(SourceRevision).filter(
             SourceRevision.item_id == item_id,
             SourceRevision.revision == item.source_revision).one()
         source.metadata_json = {**source.metadata_json, "asr": {"source": "asr"}}
         db.commit()
 
-    stats = worker.retention_sweep(sf, store)
-    assert stats["originals_awaiting_sync"] == 1
+    # 最新一版列着原件又还没被取走：等，不能把文字稿的投递弄缺一块
+    assert worker.retention_sweep(sf, store)["originals_awaiting_sync"] == 1
     assert store.object_exists(key)
 
+    # 之后发布了不列原件的新版：旧版清单不再被下载，此时无需回执就能释放
     with sf() as db:
-        # 用户已在网页下载过那个版本：等同插件已取走，可以释放
-        db.get(Item, item_id).original_download_bundle = 9001
+        sha_n, nkey, _ = store.put_bytes(pipeline.canonical_json(
+            {"item_id": item_id, "bundle_revision": newest + 1, "files": []}))
+        db.add(BundleRevision(
+            item_id=item_id, user_id=asset.user_id, revision=newest + 1,
+            source_revision=asset.source_revision, manifest_key=nkey,
+            manifest_sha256=sha_n, processing_state="ready",
+        ))
         db.commit()
     stats = worker.retention_sweep(sf, store)
     assert stats["originals_released"] == 1

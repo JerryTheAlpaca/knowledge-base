@@ -757,31 +757,32 @@ def cleanup_audio_upload_sessions(db: Session, store: ObjectStore) -> int:
 
 def _media_listed_unreceived(db: Session, store: ObjectStore, asset: AudioAsset,
                              item: Item) -> bool:
-    """仍有存续清单把这份原件列为待下载，而客户端还没取走那个版本。
+    """客户端还会去取的那一版清单列着这份原件，而那一版还没被取走。
 
-    历史条目的清单里可能还写着原件（旧版本会把它写进 files）；引用先解除会让
-    插件按清单下载时永远缺一个文件，所以已回执/已在网页下载过的才放行。
+    插件每个条目只取最新一版（`pending` 按 max 版本合并），旧清单不会再被下载，
+    所以只看最新存续版本：把早已过期的旧清单也算成「未完成下载」，历史原件就
+    永远释放不掉（生产实测 8 条卡住，含 5 条最大的视频）。
     """
     if not asset.stored_file_id:
         return False
-    for bundle in db.query(BundleRevision).filter(
+    bundle = db.query(BundleRevision).filter(
         BundleRevision.user_id == item.user_id, BundleRevision.item_id == item.id
-    ).all():
-        try:
-            manifest = json.loads(store.read_object(bundle.manifest_key))
-        except Exception:  # noqa: BLE001 —— 清单已缺失，按不可下载处理
-            continue
-        if not any(f.get("file_id") == asset.stored_file_id
-                   for f in manifest.get("files", [])):
-            continue
-        receipt = db.query(Receipt).filter(
-            Receipt.user_id == bundle.user_id,
-            Receipt.item_id == bundle.item_id,
-            Receipt.bundle_revision == bundle.revision,
-        ).first()
-        if receipt is None and bundle.revision > (item.original_download_bundle or 0):
-            return True
-    return False
+    ).order_by(BundleRevision.revision.desc()).first()
+    if bundle is None:
+        return False
+    try:
+        manifest = json.loads(store.read_object(bundle.manifest_key))
+    except Exception:  # noqa: BLE001 —— 最新清单已不可读，没有可下载的东西
+        return False
+    if not any(f.get("file_id") == asset.stored_file_id
+               for f in manifest.get("files", [])):
+        return False
+    receipt = db.query(Receipt).filter(
+        Receipt.user_id == bundle.user_id,
+        Receipt.item_id == bundle.item_id,
+        Receipt.bundle_revision == bundle.revision,
+    ).first()
+    return receipt is None and bundle.revision > (item.original_download_bundle or 0)
 
 
 def release_finished_originals(db, store: ObjectStore) -> dict:
