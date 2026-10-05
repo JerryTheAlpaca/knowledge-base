@@ -215,10 +215,13 @@ def without_original_media(db: Session, files: list[StoredFile], *,
 
 
 def _media_object_referenced(db: Session, storage_key: str) -> bool:
-    """物理对象是否仍被任何一行的引用持有（内容寻址可被多用户共享）。"""
+    """物理对象是否仍被任何一行的引用持有（内容寻址可被多用户、多条目共享）。"""
     from ..models import ShareArtifact
 
     if db.query(StoredFile.id).filter(StoredFile.storage_key == storage_key).first():
+        return True
+    if db.query(BundleRevision.id).filter(
+        BundleRevision.manifest_key == storage_key).first():
         return True
     if db.query(Upload.id).filter(Upload.storage_key == storage_key,
                                   Upload.state != "expired").first():

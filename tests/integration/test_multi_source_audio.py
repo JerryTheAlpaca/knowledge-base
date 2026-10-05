@@ -434,11 +434,11 @@ def test_original_audio_released_after_transcription(client, user_a, asr_object_
     assert worker.retention_sweep(sf, store)["originals_released"] == 0
 
 
-def test_historical_original_waits_only_for_newest_revision(client, user_a, asr_object_env):
-    """历史条目：只有客户端还会去取的最新一版列着原件时才等待。
+def test_historical_original_prunes_unfetched_manifest(client, user_a, asr_object_env):
+    """历史条目：那一版清单从没被取走过时，先摘掉原件条目再释放，插件不会下到缺文件的清单。
 
-    旧版本的清单插件不会再下载（每个条目按 max 版本合并待办），把过期旧清单也算成
-    「未完成下载」会让几 GB 的原件永远释放不掉。
+    插件每个条目只取最新一版（待办按 max 版本合并）；旧代码把几 GB 原件写进了清单，
+    不摘掉就只能永远占着服务器磁盘。
     """
     import json
 
@@ -466,6 +466,7 @@ def test_historical_original_waits_only_for_newest_revision(client, user_a, asr_
             BundleRevision.item_id == item_id,
             BundleRevision.revision == item.bundle_revision).one()
         manifest = json.loads(store.read_object(bundle.manifest_key))
+        kept_ids = [f["file_id"] for f in manifest["files"]]
         manifest["files"].append({
             "file_id": asset.stored_file_id,
             "relative_path": f"uploads/{up['upload_id']}/会议录音.m4a",
@@ -477,9 +478,8 @@ def test_historical_original_waits_only_for_newest_revision(client, user_a, asr_
         newest = bundle.revision
         db.commit()
 
-    # 还没转写结果：既没得等，也不许删（材料要留着重试）
-    stats = worker.retention_sweep(sf, store)
-    assert (stats["originals_released"], stats["originals_awaiting_sync"]) == (0, 0)
+    # 还没有转写结果：清理任务不碰原件，材料要留着重试
+    assert worker.retention_sweep(sf, store)["originals_released"] == 0
     assert store.object_exists(key)
 
     with sf() as db:
@@ -492,23 +492,27 @@ def test_historical_original_waits_only_for_newest_revision(client, user_a, asr_
         source.metadata_json = {**source.metadata_json, "asr": {"source": "asr"}}
         db.commit()
 
-    # 最新一版列着原件又还没被取走：等，不能把文字稿的投递弄缺一块
-    assert worker.retention_sweep(sf, store)["originals_awaiting_sync"] == 1
-    assert store.object_exists(key)
-
-    # 之后发布了不列原件的新版：旧版清单不再被下载，此时无需回执就能释放
-    with sf() as db:
-        sha_n, nkey, _ = store.put_bytes(pipeline.canonical_json(
-            {"item_id": item_id, "bundle_revision": newest + 1, "files": []}))
-        db.add(BundleRevision(
-            item_id=item_id, user_id=asset.user_id, revision=newest + 1,
-            source_revision=asset.source_revision, manifest_key=nkey,
-            manifest_sha256=sha_n, processing_state="ready",
-        ))
-        db.commit()
+    # 那一版从没被任何设备取走过：先把它清单里的原件条目摘掉，再释放原件本身
     stats = worker.retention_sweep(sf, store)
-    assert stats["originals_released"] == 1
+    assert (stats["originals_released"], stats["originals_manifests_pruned"]) == (1, 1)
     assert not store.object_exists(key)
+
+    with sf() as db:
+        bundle = db.query(BundleRevision).filter(
+            BundleRevision.item_id == item_id,
+            BundleRevision.revision == newest).one()
+        pruned = json.loads(store.read_object(bundle.manifest_key))
+        # 文字稿等其余文件照旧列着，只是不再承诺那个已释放的原件
+        assert [f["file_id"] for f in pruned["files"]] == kept_ids
+        assert bundle.manifest_sha256 == hashlib.sha256(
+            store.read_object(bundle.manifest_key)).hexdigest()
+        assert store.object_exists(bundle.manifest_key)
+    # 旧那份清单没人引用了，随之回收
+    assert not store.object_exists(mkey)
+
+    r = client.get(f"/v1/items/{item_id}/bundles/{newest}/manifest",
+                   headers=auth(user_a["desktop"]["token"]))
+    assert r.status_code == 200 and r.json()["files"] == pruned["files"]
 
 
 def test_shared_content_object_survives_other_user_reference(client, user_a, user_b,
