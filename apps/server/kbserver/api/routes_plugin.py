@@ -1,9 +1,8 @@
 """Obsidian 插件下载（docs/26）。
 
-- GET /downloads/golden-rose-inbox.zip：把 plugin_dist/ 下的三个文件打成 zip。
-  供设置页与新手指导的「下载插件」入口使用，公开可取（不需登录）：
-  拿到 zip 的人本来也要用自己的账号在插件里登录才有数据。
-- GET /v1/plugin/release：版本号与文件大小，供前端显示当前版本。
+GET /downloads/golden-rose-inbox.zip：把 plugin_dist/ 下的三个文件打成 zip。
+供设置页与新手指导的「下载插件」入口使用，公开可取（不需登录）：
+拿到 zip 的人本来也要用自己的账号在插件里登录才有数据。
 
 产物是纯文本文件、随服务端代码一起入库（构建脚本见
 apps/obsidian-plugin/scripts/sync-dist.mjs）：api 镜像的 build context 只有
@@ -27,7 +26,7 @@ PLUGIN_ID = "golden-rose-inbox"
 # Obsidian 只认这三个：入口、清单、样式。少一个插件都加载不起来。
 PLUGIN_FILES = ("manifest.json", "main.js", "styles.css")
 
-# 未压缩的 zip 约为主.js + 清单 + 样式；deflate 后通常只剩三分之一不到
+# 产物按 mtime 判缓存；只缓存读到的 parts，zip 每次现打（几十 KB，代价可忽略）
 _CACHE: dict[str, object] = {}
 
 
@@ -53,20 +52,6 @@ def _manifest_info(parts: dict[str, bytes]) -> dict:
         raise ApiError("PLUGIN_DIST_BROKEN",
                        "插件清单无法解析，请联系站点管理员。",
                        status_code=500) from exc
-
-
-@router.get("/v1/plugin/release")
-def plugin_release() -> dict:
-    parts = _read_dist()
-    manifest = _manifest_info(parts)
-    return {
-        "plugin_id": PLUGIN_ID,
-        "version": manifest.get("version", ""),
-        "name": manifest.get("name", ""),
-        "min_app_version": manifest.get("minAppVersion", ""),
-        "size_bytes": sum(len(v) for v in parts.values()),
-        "download_url": f"/downloads/{PLUGIN_ID}.zip",
-    }
 
 
 @router.get(f"/downloads/{PLUGIN_ID}.zip", include_in_schema=False)

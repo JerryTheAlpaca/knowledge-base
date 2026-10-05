@@ -4269,29 +4269,6 @@
           }
         }
       }
-    },
-    "/v1/plugin/release": {
-      "get": {
-        "tags": [
-          "plugin-download"
-        ],
-        "summary": "Plugin Release",
-        "operationId": "plugin_release_v1_plugin_release_get",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "type": "object",
-                  "title": "Response Plugin Release V1 Plugin Release Get"
-                }
-              }
-            }
-          }
-        }
-      }
     }
   },
   "components": {
@@ -5342,6 +5319,10 @@
             "type": "boolean",
             "title": "Audio Original Retained"
           },
+          "audio_original_released": {
+            "type": "boolean",
+            "title": "Audio Original Released"
+          },
           "audio_original_download": {
             "anyOf": [
               {
@@ -5401,6 +5382,7 @@
           "analysis_bundle_revision",
           "analysis_created_at",
           "audio_original_retained",
+          "audio_original_released",
           "audio_original_download",
           "images_archived"
         ],

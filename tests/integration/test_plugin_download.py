@@ -23,22 +23,13 @@ def pc(engine):
         yield c
 
 
-def test_release_reports_version(pc):
-    r = pc.get("/v1/plugin/release")
-    assert r.status_code == 200
-    info = r.json()
-    assert info["plugin_id"] == PLUGIN_ID
-    assert info["version"]  # 版本号取自 manifest.json
-    assert info["download_url"] == f"/downloads/{PLUGIN_ID}.zip"
-
-
 def test_zip_is_observable_without_login(pc):
     """未登录也要能下：安装发生在登录之前，登录是插件里的下一步。"""
-    assert pc.get("/v1/plugin/release").status_code == 200
     r = pc.get(f"/downloads/{PLUGIN_ID}.zip")
     assert r.status_code == 200
     assert r.headers["content-type"] == "application/zip"
-    assert PLUGIN_ID in r.headers["content-disposition"]
+    # 文件名带版本号：用户存的 zip 能对上自己装的是哪一版
+    assert f"{PLUGIN_ID}-" in r.headers["content-disposition"]
 
 
 def test_zip_layout_matches_obsidian_expectation(pc):

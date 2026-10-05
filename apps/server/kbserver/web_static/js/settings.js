@@ -5,7 +5,7 @@
 // 用户名、管理员入口与退出登录在右上角账号菜单（docs/17 §4.1）。
 
 import { $, api, esc, toast, showErr, confirmModal, promptModal, openModalHTML, closeModal, fmtTime, dismissToast } from "./api.js";
-import { pluginInstallHTML, loadPluginVersion } from "./plugin-download.js";
+import { pluginInstallHTML } from "./plugin-download.js";
 
 async function loadDevices() {
   const host = $("deviceStatus");
@@ -22,7 +22,6 @@ async function loadDevices() {
       install.innerHTML = pluginInstallHTML();
       install.hidden = false;
       help.hidden = true;   // 三步安装说明已经覆盖这句
-      loadPluginVersion();
     } else {
       const dev = sum.active_device || {};
       host.innerHTML = '<span class="st-ok status-pill">已连接</span>' +

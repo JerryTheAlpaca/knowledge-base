@@ -5,7 +5,7 @@
 
 import { $, api, esc, toast, showErr, openModalHTML, closeModal } from "./api.js";
 import { openProfileForm } from "./settings.js";
-import { pluginInstallHTML, loadPluginVersion } from "./plugin-download.js";
+import { pluginInstallHTML } from "./plugin-download.js";
 
 let polling = null;
 
@@ -70,7 +70,6 @@ function render(ob) {
     "</div>";
 
   if (!model.completed) loadModelPicker();
-  if (!obsidian.completed) loadPluginVersion();
   if (!obsidian.completed || !model.completed) startPolling();
 }
 

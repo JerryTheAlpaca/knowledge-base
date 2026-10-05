@@ -586,7 +586,6 @@ details.disclosure.slim .disclosure-body { padding: 0 8px 8px; }
 /* 插件下载入口（docs/26）：设置页与新手指导共用 .pd */
 .pd { margin-top: 12px; }
 .pd-btn { flex: none; }
-.pd-ver { color: var(--text-2); }
 .pd-steps { margin-top: 10px; }
 .pd-steps code { font-size: .95em; color: var(--text); }
 .pd-note { margin-top: 8px; }
