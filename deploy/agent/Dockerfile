@@ -29,7 +29,12 @@ COPY cordis.patch.yml.tmpl dsh-drop ./
 RUN chmod 755 /srv/agent/dsh-drop \
     && useradd --uid 9000 --create-home --shell /usr/sbin/nologin agentd \
     && mkdir -p /srv/agent-state /srv/agent-homes \
-    && chown -R agentd:agentd /srv/agent-state /srv/agent-homes
+    && chown root:root /srv/agent-state /srv/agent-homes \
+    && chmod 755 /srv/agent-state /srv/agent-homes
+# 这两个目录**不能**chown 给 agentd：服务以 root 起（要给每个用户 setpriv 降权），
+# 但 cap_drop ALL 把 DAC_OVERRIDE 一起拿掉了 —— root 写不进别人属主的 755 目录，
+# 结果就是 SQLite「unable to open database file」崩溃重启（2026-10-06 线上实测）。
+# 每用户家的属主由 orchestrator/homes.py 在创建时按 uid 逐个 chown。
 
 # 编排服务要能给每个用户降权起子进程，必须 root + 精确的 capability 子集；
 # 这是相对 share_runner 那套（SYS_ADMIN + 自定义 seccomp）**刻意不同**的一处：
