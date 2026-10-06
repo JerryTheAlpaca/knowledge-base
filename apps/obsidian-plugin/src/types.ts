@@ -250,8 +250,6 @@ export interface KbSettings {
   autoSync: boolean;
   deviceId: string;
   userId: string;
-  /** 云端提炼使用的线上配置（默认值来自服务端 settings.default_profile_id）。 */
-  cloudProfileId: string;
   /** 消费的内容文档格式版本（docs/24 §1）。 */
   contentFormatVersion: string;
   /** 布局版本：1/2 为带 item_id 后缀的旧文件名，3 起为可读文件名 + 文档索引。 */

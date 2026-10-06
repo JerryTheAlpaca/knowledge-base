@@ -160,7 +160,6 @@ export class KbPlugin extends Plugin {
       onLogin: () => this.loginWithBrowser(),
       onDisconnect: () => this.disconnectDevice(),
       onRenameDevice: (name) => this.renameDevice(name),
-      loadCloudProfiles: () => this.loadCloudProfiles(),
     });
     this.addSettingTab(tab);
 
@@ -225,19 +224,6 @@ export class KbPlugin extends Plugin {
   private async refreshToken(): Promise<boolean> {
     this.tokenCache = await this.secrets.getToken(this.settings.tokenRef);
     return this.tokenCache !== null;
-  }
-
-  private async loadCloudProfiles() {
-    const client = this.getClient();
-    if (!client) throw new Error("尚未登录，无法读取线上配置。");
-    return (await client.listProfiles()).map((p) => ({
-      id: p.id,
-      kind: p.kind,
-      model: p.model,
-      endpoint: p.endpoint,
-      version: p.version,
-      configured: p.configured,
-    }));
   }
 
   // ---- 本地迁移（docs/23 §8.3） ----

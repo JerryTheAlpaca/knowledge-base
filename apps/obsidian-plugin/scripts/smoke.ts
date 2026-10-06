@@ -82,7 +82,6 @@ const DEFAULT_SETTINGS: KbSettings = {
   autoSync: true,
   deviceId: "",
   userId: "",
-  cloudProfileId: "",
   contentFormatVersion: CONTENT_FORMAT_VERSION,
   layoutVersion: LAYOUT_VERSION,
 };

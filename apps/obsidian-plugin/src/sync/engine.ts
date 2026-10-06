@@ -645,7 +645,7 @@ export class SyncEngine {
       await fs.write(conflictPath, [
         `# 待合并：${manifest.source.title ?? manifest.item_id}（Digest，bundle r${manifest.bundle_revision}）`,
         "",
-        "检测到你在云端提炼区有编辑。新版本结果如下，请手动合并；本插件不会覆盖你的修改。",
+        "检测到你在 Digest 的插件托管区有编辑。新版本结果如下，请手动合并；本插件不会覆盖你的修改。",
         "",
         CLOUD_DIGEST_START,
         cloudMd ?? "",

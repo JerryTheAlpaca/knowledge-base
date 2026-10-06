@@ -33,7 +33,6 @@ export const DEFAULT_SETTINGS: KbSettings = {
   autoSync: true,
   deviceId: "",
   userId: "",
-  cloudProfileId: "",
   contentFormatVersion: CONTENT_FORMAT_VERSION,
   layoutVersion: LAYOUT_VERSION,
 };
@@ -107,22 +106,11 @@ export class SecretBridge {
   }
 }
 
-/** 线上配置摘要（设置面板展示用；不含 Key）。 */
-export interface CloudProfileOption {
-  id: string;
-  kind: string;
-  model: string;
-  endpoint: string;
-  version: number;
-  configured: boolean;
-}
-
 export interface SettingsTabHooks {
   onSave: () => Promise<void>;
   onLogin: () => Promise<void>;
   onDisconnect: () => Promise<void>;
   onRenameDevice: (name: string) => Promise<void>;
-  loadCloudProfiles: () => Promise<CloudProfileOption[]>;
 }
 
 export class KbSettingTab extends PluginSettingTab {
@@ -137,8 +125,6 @@ export class KbSettingTab extends PluginSettingTab {
 
   display(): void {
     const { containerEl } = this;
-    // 每次打开设置重新拉一次线上配置（本页所有消费方共享同一次请求）
-    this.cloudProfilesLoad = null;
     containerEl.empty();
     containerEl.createEl("h2", { text: "Golden-Rose-Inbox 设置" });
 
@@ -189,15 +175,6 @@ export class KbSettingTab extends PluginSettingTab {
         });
       });
 
-    // ---- 云端提炼配置（模型 Key 由服务器保管，docs/24 §8） ----
-    containerEl.createEl("h3", { text: "云端提炼" });
-    const cloudHost = containerEl.createEl("div");
-    cloudHost.createEl("p", {
-      text: "云端提炼在服务器完成：服务器保存 Key，用于关机时的单篇提炼。",
-    }).addClass("kb-muted");
-    const cloudSelectHost = cloudHost.createEl("div");
-    void this.renderCloudProfiles(cloudSelectHost);
-
     // ---- 同步 ----
     containerEl.createEl("h3", { text: "同步" });
     new Setting(containerEl).setName("自动同步").setDesc("启动后自动拉取增量（默认开启；手动同步随时可用）。")
@@ -225,52 +202,5 @@ export class KbSettingTab extends PluginSettingTab {
     folders.createEl("p", {
       text: `附件按来源版本保存在 ${this.settings.sourcesFolder}/_assets/<item_id>/source-000001/ 下。`,
     }).addClass("kb-muted");
-  }
-
-  private _cloudProfiles: CloudProfileOption[] = [];
-  /** 本页共享的配置列表加载：一次 display 只发一次请求。 */
-  private cloudProfilesLoad: Promise<CloudProfileOption[]> | null = null;
-
-  private loadCloudProfilesOnce(): Promise<CloudProfileOption[]> {
-    if (!this.cloudProfilesLoad) {
-      this.cloudProfilesLoad = this.hooks.loadCloudProfiles().then((profiles) => {
-        this._cloudProfiles = profiles;
-        return profiles;
-      }).catch((err) => {
-        this.cloudProfilesLoad = null; // 失败后允许下次重试
-        throw err;
-      });
-    }
-    return this.cloudProfilesLoad;
-  }
-
-  private async renderCloudProfiles(host: HTMLElement): Promise<void> {
-    host.empty();
-    let profiles: CloudProfileOption[];
-    try {
-      profiles = await this.loadCloudProfilesOnce();
-    } catch (err) {
-      host.createEl("p", {
-        text: `无法读取线上配置：${err instanceof Error ? err.message : String(err)}`,
-      }).addClass("kb-muted");
-      return;
-    }
-    const llm = profiles.filter((p) => p.kind === "llm");
-    new Setting(host)
-      .setName("云端提炼配置")
-      .setDesc("由服务器 /v1/settings.default_profile_id 决定；此处可单独覆盖。")
-      .addDropdown((d) => {
-        d.addOption("", "（跟随服务器默认）");
-        for (const p of llm) d.addOption(p.id, `${p.model}（v${p.version}${p.configured ? "" : "，无 Key"}）`);
-        d.setValue(this.settings.cloudProfileId);
-        d.onChange(async (v) => {
-          this.settings.cloudProfileId = v;
-          await this.hooks.onSave();
-        });
-      });
-    if (!llm.length) {
-      host.createEl("p", { text: "服务器上还没有 llm 配置；可在网页收件箱的「模型与账号」中创建。" })
-        .addClass("kb-muted");
-    }
   }
 }

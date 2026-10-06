@@ -1,6 +1,9 @@
 /**
  * 服务端 API 客户端（docs/02 §10.1；docs/24 §8）：Bearer 服务 Token。
  * 使用 Obsidian requestUrl（Electron 环境下 fetch 会被 CORS 拦截）。
+ *
+ * 插件只做同步：拉事件、下载 Bundle、落盘、发回执。内容由服务端组装成
+ * content.json，本机不调模型、不涉及任何模型凭据。
  */
 
 import { requestUrl } from "obsidian";
@@ -24,20 +27,6 @@ export class ManifestVerifyError extends Error {
     super(msg);
     this.name = "ManifestVerifyError";
   }
-}
-
-/** 线上配置摘要（GET /v1/provider-profiles；不含 Key）。 */
-export interface CloudProfile {
-  id: string;
-  kind: string;
-  adapter: string;
-  endpoint: string;
-  model: string;
-  capabilities: Record<string, unknown>;
-  version: number;
-  configured: boolean;
-  credential_version: number | null;
-  created_at: string;
 }
 
 function baseUrlOf(serverUrl: string): string {
@@ -161,18 +150,6 @@ export class KbClient {
     await this.requestJson(`/v1/devices/${encodeURIComponent(this.deviceId)}/disconnect`, {
       method: "POST",
     });
-  }
-
-  // ---- 模型配置（云端提炼在服务器完成，Key 不下发到本机） ----
-
-  /** 线上配置列表：不含 Key。 */
-  async listProfiles(): Promise<CloudProfile[]> {
-    return this.requestJson("/v1/provider-profiles");
-  }
-
-  /** 服务器默认模型配置 ID（云端提炼默认值）。 */
-  async getSettings(): Promise<{ default_profile_id: string | null }> {
-    return this.requestJson("/v1/settings");
   }
 
   constructor(readonly serverUrl: string, readonly token: string, readonly deviceId: string = "") {}
