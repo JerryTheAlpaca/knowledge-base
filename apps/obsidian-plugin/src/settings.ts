@@ -2,7 +2,8 @@
  * 设置、秘密存储与设置面板
  * （docs/02 §13.3；docs/24 §8）。
  *
- * 本插件只做同步：服务器地址、账号、同步开关、Vault 目录。
+ * 本插件只做同步：账号、同步开关、Vault 目录。服务地址固定为
+ * DEFAULT_SERVER_URL，设置面板不提供修改入口。
  * 服务 Token 允许沿用旧的 data.json 降级（历史行为，会明确提示）。
  */
 
@@ -10,8 +11,17 @@ import { App, Notice, PluginSettingTab, Setting } from "obsidian";
 import type { KbSettings } from "./types";
 import { CONTENT_FORMAT_VERSION, LAYOUT_VERSION } from "./types";
 
+/**
+ * 本系统唯一的服务地址。设置面板不再提供修改入口：地址固定，避免用户改错导致
+ * 同步静默失败或把数据发到别处。
+ *
+ * 仍保留 `data.json` 里的 `serverUrl` 作为内部覆盖（仅本地验收用，如 M3 无头驱动
+ * 指向 127.0.0.1），但界面上不暴露、不写入默认值以外的路径。
+ */
+export const DEFAULT_SERVER_URL = "https://kb.jerrythealpaca.cn";
+
 export const DEFAULT_SETTINGS: KbSettings = {
-  serverUrl: "",
+  serverUrl: DEFAULT_SERVER_URL,
   tokenRef: "kb-service-token",
   deviceName: "Obsidian 桌面",
   inboxFolder: "00 Inbox",
@@ -23,7 +33,6 @@ export const DEFAULT_SETTINGS: KbSettings = {
   autoSync: true,
   deviceId: "",
   userId: "",
-  cloudProfileId: "",
   contentFormatVersion: CONTENT_FORMAT_VERSION,
   layoutVersion: LAYOUT_VERSION,
 };
@@ -97,22 +106,11 @@ export class SecretBridge {
   }
 }
 
-/** 线上配置摘要（设置面板展示用；不含 Key）。 */
-export interface CloudProfileOption {
-  id: string;
-  kind: string;
-  model: string;
-  endpoint: string;
-  version: number;
-  configured: boolean;
-}
-
 export interface SettingsTabHooks {
   onSave: () => Promise<void>;
   onLogin: () => Promise<void>;
   onDisconnect: () => Promise<void>;
   onRenameDevice: (name: string) => Promise<void>;
-  loadCloudProfiles: () => Promise<CloudProfileOption[]>;
 }
 
 export class KbSettingTab extends PluginSettingTab {
@@ -127,21 +125,12 @@ export class KbSettingTab extends PluginSettingTab {
 
   display(): void {
     const { containerEl } = this;
-    // 每次打开设置重新拉一次线上配置（本页所有消费方共享同一次请求）
-    this.cloudProfilesLoad = null;
     containerEl.empty();
     containerEl.createEl("h2", { text: "Golden-Rose-Inbox 设置" });
 
-    // ---- 账号与服务器 ----
-    containerEl.createEl("h3", { text: "账号与服务器" });
-    new Setting(containerEl)
-      .setName("服务器地址")
-      .setDesc("例如 https://kb.example.com")
-      .addText((t) => t.setValue(this.settings.serverUrl).onChange(async (v) => {
-        this.settings.serverUrl = v.trim();
-        await this.hooks.onSave();
-      }));
-
+    // ---- 账号与设备 ----
+    // 服务器地址固定，不提供修改入口（见 DEFAULT_SERVER_URL）
+    containerEl.createEl("h3", { text: "账号与设备" });
     // 登录与断开互斥：同时显示两个按钮会让人搞不清当前状态
     const account = new Setting(containerEl).setName("账号");
     if (this.settings.deviceId) {
@@ -186,15 +175,6 @@ export class KbSettingTab extends PluginSettingTab {
         });
       });
 
-    // ---- 云端提炼配置（模型 Key 由服务器保管，docs/24 §8） ----
-    containerEl.createEl("h3", { text: "云端提炼" });
-    const cloudHost = containerEl.createEl("div");
-    cloudHost.createEl("p", {
-      text: "云端提炼在服务器完成：服务器保存 Key，用于关机时的单篇提炼。",
-    }).addClass("kb-muted");
-    const cloudSelectHost = cloudHost.createEl("div");
-    void this.renderCloudProfiles(cloudSelectHost);
-
     // ---- 同步 ----
     containerEl.createEl("h3", { text: "同步" });
     new Setting(containerEl).setName("自动同步").setDesc("启动后自动拉取增量（默认开启；手动同步随时可用）。")
@@ -222,52 +202,5 @@ export class KbSettingTab extends PluginSettingTab {
     folders.createEl("p", {
       text: `附件按来源版本保存在 ${this.settings.sourcesFolder}/_assets/<item_id>/source-000001/ 下。`,
     }).addClass("kb-muted");
-  }
-
-  private _cloudProfiles: CloudProfileOption[] = [];
-  /** 本页共享的配置列表加载：一次 display 只发一次请求。 */
-  private cloudProfilesLoad: Promise<CloudProfileOption[]> | null = null;
-
-  private loadCloudProfilesOnce(): Promise<CloudProfileOption[]> {
-    if (!this.cloudProfilesLoad) {
-      this.cloudProfilesLoad = this.hooks.loadCloudProfiles().then((profiles) => {
-        this._cloudProfiles = profiles;
-        return profiles;
-      }).catch((err) => {
-        this.cloudProfilesLoad = null; // 失败后允许下次重试
-        throw err;
-      });
-    }
-    return this.cloudProfilesLoad;
-  }
-
-  private async renderCloudProfiles(host: HTMLElement): Promise<void> {
-    host.empty();
-    let profiles: CloudProfileOption[];
-    try {
-      profiles = await this.loadCloudProfilesOnce();
-    } catch (err) {
-      host.createEl("p", {
-        text: `无法读取线上配置：${err instanceof Error ? err.message : String(err)}`,
-      }).addClass("kb-muted");
-      return;
-    }
-    const llm = profiles.filter((p) => p.kind === "llm");
-    new Setting(host)
-      .setName("云端提炼配置")
-      .setDesc("由服务器 /v1/settings.default_profile_id 决定；此处可单独覆盖。")
-      .addDropdown((d) => {
-        d.addOption("", "（跟随服务器默认）");
-        for (const p of llm) d.addOption(p.id, `${p.model}（v${p.version}${p.configured ? "" : "，无 Key"}）`);
-        d.setValue(this.settings.cloudProfileId);
-        d.onChange(async (v) => {
-          this.settings.cloudProfileId = v;
-          await this.hooks.onSave();
-        });
-      });
-    if (!llm.length) {
-      host.createEl("p", { text: "服务器上还没有 llm 配置；可在网页收件箱的「模型与账号」中创建。" })
-        .addClass("kb-muted");
-    }
   }
 }

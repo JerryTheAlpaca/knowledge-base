@@ -9,7 +9,7 @@
 
 import { ItemView, Notice, Plugin, WorkspaceLeaf } from "obsidian";
 import { KbClient } from "./api";
-import { KbSettingTab, SecretBridge, DEFAULT_SETTINGS } from "./settings";
+import { KbSettingTab, SecretBridge, DEFAULT_SETTINGS, DEFAULT_SERVER_URL } from "./settings";
 import { SyncEngine, type SyncState } from "./sync/engine";
 import { VaultFs } from "./vault/vaultfs";
 import { CommitStore, Suppression } from "./vault/records";
@@ -160,7 +160,6 @@ export class KbPlugin extends Plugin {
       onLogin: () => this.loginWithBrowser(),
       onDisconnect: () => this.disconnectDevice(),
       onRenameDevice: (name) => this.renameDevice(name),
-      loadCloudProfiles: () => this.loadCloudProfiles(),
     });
     this.addSettingTab(tab);
 
@@ -225,19 +224,6 @@ export class KbPlugin extends Plugin {
   private async refreshToken(): Promise<boolean> {
     this.tokenCache = await this.secrets.getToken(this.settings.tokenRef);
     return this.tokenCache !== null;
-  }
-
-  private async loadCloudProfiles() {
-    const client = this.getClient();
-    if (!client) throw new Error("尚未登录，无法读取线上配置。");
-    return (await client.listProfiles()).map((p) => ({
-      id: p.id,
-      kind: p.kind,
-      model: p.model,
-      endpoint: p.endpoint,
-      version: p.version,
-      configured: p.configured,
-    }));
   }
 
   // ---- 本地迁移（docs/23 §8.3） ----
@@ -310,7 +296,7 @@ export class KbPlugin extends Plugin {
 
   private async loginWithBrowser(): Promise<void> {
     if (!this.settings.serverUrl) {
-      new Notice("请先填写服务器地址。");
+      new Notice("服务地址异常，请重新安装插件。");
       return;
     }
     try {
@@ -437,6 +423,11 @@ export class KbPlugin extends Plugin {
   private async loadSettings(): Promise<void> {
     const data = ((await this.loadData()) ?? {}) as PluginData;
     this.settings = { ...DEFAULT_SETTINGS, ...data };
+    // 服务地址固定为 DEFAULT_SERVER_URL；data.json 里的旧值只在非空时沿用
+    // （本地验收会指向 127.0.0.1），空串不能把默认地址覆盖掉。
+    if (!this.settings.serverUrl?.trim()) {
+      this.settings.serverUrl = DEFAULT_SERVER_URL;
+    }
     this.syncState = data.syncState ?? { cursor: 0, pending: {}, lastRunAt: null };
   }
 

@@ -6,7 +6,9 @@
   "scripts": {
     "typecheck": "tsc --noEmit --skipLibCheck",
     "dev": "node esbuild.config.mjs",
-    "build": "tsc --noEmit --skipLibCheck && node esbuild.config.mjs production"
+    "build": "tsc --noEmit --skipLibCheck && node esbuild.config.mjs production",
+    "release": "npm run build && npm run dist",
+    "dist": "node scripts/sync-dist.mjs"
   },
   "keywords": [
     "obsidian",

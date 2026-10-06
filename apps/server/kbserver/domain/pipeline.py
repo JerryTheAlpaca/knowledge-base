@@ -190,6 +190,88 @@ def ensure_upload_file(db: Session, upload: Upload, *, user_id: str, item_id: st
     return f
 
 
+def original_media_file_ids(db: Session, *, user_id: str, item_id: str) -> set[str]:
+    """本条目里由 AudioAsset 持有的音视频原件登记 file_id（docs/13 §6.3）。
+
+    几 GB 的录音/视频不进 Bundle 清单：插件按清单下载全部文件，服务端按整对象
+    读字节，二者都会被大文件打穿。原件只通过 /v1/items/{id}/audio-original 流式取。
+    """
+    return {
+        fid for (fid,) in db.query(AudioAsset.stored_file_id).filter(
+            AudioAsset.user_id == user_id,
+            AudioAsset.item_id == item_id,
+            AudioAsset.stored_file_id.isnot(None),
+        ).all() if fid
+    }
+
+
+def without_original_media(db: Session, files: list[StoredFile], *,
+                           user_id: str, item_id: str) -> list[StoredFile]:
+    """从 Bundle 文件列表中剔除音视频原件登记，其余上传附件照常投递。"""
+    drop = original_media_file_ids(db, user_id=user_id, item_id=item_id)
+    if not drop:
+        return list(files)
+    return [f for f in files if f.file_id not in drop]
+
+
+def _media_object_referenced(db: Session, storage_key: str) -> bool:
+    """物理对象是否仍被任何一行的引用持有（内容寻址可被多用户、多条目共享）。"""
+    from ..models import ShareArtifact
+
+    if db.query(StoredFile.id).filter(StoredFile.storage_key == storage_key).first():
+        return True
+    if db.query(BundleRevision.id).filter(
+        BundleRevision.manifest_key == storage_key).first():
+        return True
+    if db.query(Upload.id).filter(Upload.storage_key == storage_key,
+                                  Upload.state != "expired").first():
+        return True
+    return bool(db.query(ShareArtifact.id).filter(
+        ShareArtifact.storage_key == storage_key).first())
+
+
+def release_original_media(db: Session, *, user_id: str, item_id: str) -> list[str]:
+    """解除本条目音视频原件的引用，返回可能已无人引用的对象 key。
+
+    文字稿、片段与模型输出是各自的对象，释放原件不影响已发布的加工结果。
+    调用方把返回的 key 在引用变更提交之后再交给 reclaim_original_media：
+    提交失败时原件仍在，不会出现「转写没保存而材料已被删掉」。
+    """
+    assets = db.query(AudioAsset).filter(
+        AudioAsset.user_id == user_id, AudioAsset.item_id == item_id,
+        AudioAsset.retention_state == "retained",
+    ).all()
+    keys: list[str] = []
+    for asset in assets:
+        asset.retention_state = "released"
+        upload = db.get(Upload, asset.upload_id)
+        if upload is not None:
+            upload.state = "expired"
+            keys.append(upload.storage_key)
+        if asset.stored_file_id:
+            db.query(StoredFile).filter(
+                StoredFile.user_id == user_id,
+                StoredFile.file_id == asset.stored_file_id,
+            ).delete(synchronize_session=False)
+    return keys
+
+
+def reclaim_original_media(db: Session, store: ObjectStore, keys: list[str]) -> int:
+    """回收已解除引用的原件对象，返回实际回收的字节数。
+
+    同一份内容可能被其他用户的上传或仍在保留期内的登记持有，逐 key 复查后才删。
+    """
+    reclaimed = 0
+    for key in dict.fromkeys(keys):
+        if _media_object_referenced(db, key):
+            continue
+        path = store.object_path(key)
+        size = path.stat().st_size if path.exists() else 0
+        if store.delete_object(key):
+            reclaimed += size
+    return reclaimed
+
+
 def latest_files_per_path(rows: list[StoredFile]) -> list[StoredFile]:
     """同 relative_path 多版本（内容寻址 file_id）时只保留最新登记。"""
     latest: dict[str, StoredFile] = {}
@@ -481,7 +563,7 @@ def create_capture(db: Session, store: ObjectStore, *, user_id: str, payload: di
     primary_upload = uploads.get(primary_audio_id) if primary_audio_id else None
     if primary_upload is not None:
         audio_file = ensure_upload_file(db, primary_upload, user_id=user_id, item_id=item.id)
-        files.append(audio_file)
+        # 大体积音视频不进清单：插件按清单整文件下载，几 GB 会打穿 Vault 与服务端内存
         db.add(AudioAsset(
             user_id=user_id, item_id=item.id, source_revision=1,
             upload_id=primary_upload.id, stored_file_id=audio_file.file_id,

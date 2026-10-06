@@ -583,6 +583,17 @@ details.disclosure.slim .disclosure-body { padding: 0 8px 8px; }
 .devrow .devmain { flex: 1; min-width: 0; }
 .devrow .devname { font-weight: 600; }
 .devrow .devmeta { font-size: var(--fs-caption); color: var(--text-2); }
+/* 插件下载入口（docs/26）：设置页与新手指导共用 .pd */
+.pd { margin-top: 12px; }
+/* .btn 是 inline-flex：直接放在块容器里会坐在文字基线上，下方留一段
+   降部空隙，整块看起来比按钮本身高出一截。套一层 .row（flex）消掉它，
+   按钮与同卡片下方「更新登录态」等默认档按钮同为 44px。 */
+.pd-row { display: flex; }
+.pd-btn { flex: none; }
+.pd-btn svg { flex: none; }
+.pd-steps { margin-top: 10px; }
+.pd-steps code { font-size: .95em; color: var(--text); }
+.pd-note { margin-top: 8px; }
 /* 平台区块：小标题（.plat-head）已负责分隔，块内不再叠大间距 */
 .platblock { margin-top: 4px; }
 

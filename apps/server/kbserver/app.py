@@ -11,8 +11,9 @@ from fastapi.responses import JSONResponse
 from .api import (mcp_server, routes_admin, routes_asr, routes_audio_uploads, routes_auth,
                   routes_bilibili, routes_captures, routes_devices, routes_health,
                   routes_items, routes_llm_proxy, routes_onboarding, routes_agent_tokens,
-                  routes_agent_relay, routes_platform_sessions, routes_profiles,
-                  routes_share_public, routes_shares, routes_sync, routes_uploads, routes_web)
+                  routes_agent_relay, routes_platform_sessions, routes_plugin,
+                  routes_profiles, routes_share_public, routes_shares, routes_sync,
+                  routes_uploads, routes_web)
 from .api.deps import CSRF_COOKIE
 from .config import get_settings
 from .domain.errors import ApiError, status_for
@@ -141,6 +142,7 @@ def create_app() -> FastAPI:
     app.include_router(routes_llm_proxy.router)
     app.include_router(routes_agent_tokens.router)
     app.include_router(routes_agent_relay.router)
+    app.include_router(routes_plugin.router)
     app.include_router(routes_web.router)
 
     # Web 前端模块（docs/17 §11 ES modules）：/webstatic/js/app.js 等；

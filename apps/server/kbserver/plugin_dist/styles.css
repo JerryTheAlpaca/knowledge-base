@@ -1,0 +1,10 @@
+/**
+ * KB Inbox 插件样式（审查 C-31：视图内不再直接写内联 style，
+ * 统一在这里维护；颜色沿用 Obsidian 的 body 变量以适配明暗主题）。
+ */
+
+/* 触控目标统一 44px 最小高度（用户约定 44x44 CSS px） */
+.kb-btn-wide {
+  min-height: 44px;
+  min-width: 120px;
+}

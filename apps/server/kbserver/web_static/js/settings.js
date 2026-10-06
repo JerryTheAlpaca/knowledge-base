@@ -5,6 +5,7 @@
 // 用户名、管理员入口与退出登录在右上角账号菜单（docs/17 §4.1）。
 
 import { $, api, esc, toast, showErr, confirmModal, promptModal, openModalHTML, closeModal, fmtTime, dismissToast } from "./api.js";
+import { pluginInstallHTML } from "./plugin-download.js";
 
 async function loadDevices() {
   const host = $("deviceStatus");
@@ -12,14 +13,23 @@ async function loadDevices() {
   try {
     const sum = await api("/v1/devices/summary");
     const devices = (await api("/v1/devices")).filter((d) => d.kind === "desktop" && !d.revoked);
+    // 未连接时才给下载入口：已连上的人不需要被提示去装插件
+    const install = $("deviceInstall");
+    const help = $("deviceHelp");
     if (!sum.connected) {
       host.innerHTML = '<span class="st-warn status-pill">未连接</span>' +
-        '<span class="small ml-8">在 Obsidian 中安装 KB Inbox 插件并登录后自动连接。</span>';
+        '<span class="small ml-8">在 Obsidian 中安装插件并用同一账号登录后自动连接。</span>';
+      install.innerHTML = pluginInstallHTML();
+      install.hidden = false;
+      help.hidden = true;   // 三步安装说明已经覆盖这句
     } else {
       const dev = sum.active_device || {};
       host.innerHTML = '<span class="st-ok status-pill">已连接</span>' +
         '<span class="small ml-8">当前主要写入设备：<b>' + esc(dev.name || "桌面设备") + "</b>" +
         (dev.last_seen_at ? "，最近连接 " + fmtTime(dev.last_seen_at) : "") + "。</span>";
+      install.hidden = true;
+      install.innerHTML = "";
+      help.hidden = false;
     }
     list.innerHTML = devices.map((d) =>
       '<div class="devrow"><div class="devmain"><div class="devname">' + esc(d.name) +

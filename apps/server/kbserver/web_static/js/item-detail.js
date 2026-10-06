@@ -418,12 +418,18 @@ function renderMoreMenu(it) {
   if (it.audio_original_retained && it.audio_original_download) {
     items.push({ code: "download-audio",
                  label: it.media_kind === "video" ? "下载上传的视频原件" : "下载上传的录音原件" });
+  } else if (it.audio_original_released) {
+    // 转写完成后原件即从服务器清理，如实说明为什么这里没有媒体文件
+    items.push({ code: "original-cleaned", disabled: true,
+                 label: it.media_kind === "video"
+                   ? "视频原件已在转写完成后清理" : "录音原件已在转写完成后清理" });
   }
   items.push({ code: "share-page", label: "用这篇生成分享页" });
   items.push({ code: "view-records", label: "查看处理记录" });
   const menu = $("moreMenu");
   menu.innerHTML = items.map((x) =>
-    '<button class="menu-item" data-more="' + esc(x.code) + '">' + esc(x.label) + "</button>").join("") +
+    '<button class="menu-item" data-more="' + esc(x.code) + '"' +
+    (x.disabled ? " disabled" : "") + ">" + esc(x.label) + "</button>").join("") +
     '<div class="soft-hr"></div>' +
     '<button class="menu-item danger" data-more="delete">删除服务器材料</button>';
 }

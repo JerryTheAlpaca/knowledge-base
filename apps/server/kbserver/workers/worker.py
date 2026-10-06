@@ -761,6 +761,101 @@ def cleanup_audio_upload_sessions(db: Session, store: ObjectStore) -> int:
     return len(expired)
 
 
+def _unreceived_bundle_listing_media(db: Session, store: ObjectStore, asset: AudioAsset,
+                                     item: Item) -> BundleRevision | None:
+    """客户端还会去取的那一版清单（最新存续版本）列着这份原件，且那一版还没被取走。
+
+    插件每个条目只取最新一版（`pending` 按 max 版本合并），旧清单不会再被下载，所以只看
+    最新存续版本；已经回执过或在网页下载过原文的那版客户端早拿到了，不用动。
+    """
+    if not asset.stored_file_id:
+        return None
+    bundle = db.query(BundleRevision).filter(
+        BundleRevision.user_id == item.user_id, BundleRevision.item_id == item.id
+    ).order_by(BundleRevision.revision.desc()).first()
+    if bundle is None:
+        return None
+    try:
+        manifest = json.loads(store.read_object(bundle.manifest_key))
+    except Exception:  # noqa: BLE001 —— 最新清单已不可读，没有可下载的东西
+        return None
+    if not any(f.get("file_id") == asset.stored_file_id
+               for f in manifest.get("files", [])):
+        return None
+    receipt = db.query(Receipt).filter(
+        Receipt.user_id == bundle.user_id,
+        Receipt.item_id == bundle.item_id,
+        Receipt.bundle_revision == bundle.revision,
+    ).first()
+    if receipt is not None or bundle.revision <= (item.original_download_bundle or 0):
+        return None
+    return bundle
+
+
+def _prune_media_entry(db, store: ObjectStore, bundle: BundleRevision, file_id: str) -> bool:
+    """从还没被任何设备取走的清单里摘掉原件条目，返回是否改动过。
+
+    原件即将释放，条目留着会让插件下载缺一块而反复失败。这一版没人取走过，版本号与摘要
+    一起更新就自洽；正卡在下载中途的客户端下一轮会重新拉清单，自然跳过这个文件。
+    """
+    old_key = bundle.manifest_key
+    try:
+        manifest = json.loads(store.read_object(old_key))
+    except Exception:  # noqa: BLE001 —— 读不到就保持原样，由文件缺失兜底
+        return False
+    files = manifest.get("files", [])
+    kept = [f for f in files if f.get("file_id") != file_id]
+    if len(kept) == len(files):
+        return False
+    manifest["files"] = kept
+    sha, key, _ = store.put_bytes(pipeline.canonical_json(manifest))
+    bundle.manifest_key = key
+    bundle.manifest_sha256 = sha
+    db.flush()
+    pipeline.reclaim_original_media(db, store, [old_key])
+    return True
+
+
+def release_finished_originals(db, store: ObjectStore) -> dict:
+    """转写已完成的条目不保留音视频原件（docs/13 §6.3 的当前口径）。
+
+    ASR 发布时已就地释放；这里兜住两类残留：策略上线前转写完成的历史条目，
+    以及引用已解除但进程被杀、对象还没回收的条目。判据看当前来源版本里有没有
+    转写结果——ASR 发布会新起一个来源版本，run 自己记的是上一个版本号。
+    转写失败、未转写或结果已作废的条目保留原件，材料要留着重试。
+    """
+    stats = {"originals_released": 0, "original_bytes": 0, "originals_manifests_pruned": 0}
+    keys: list[str] = []
+    for asset in db.query(AudioAsset).filter(
+        AudioAsset.retention_state == "retained"
+    ).all():
+        item = db.get(Item, asset.item_id)
+        if item is None or item.deleted_at is not None:
+            continue  # 删除条目走删除流程，不在这里判定
+        source = _latest_source(db, item)
+        if source is None or not (source.metadata_json or {}).get("asr"):
+            continue
+        if db.query(AsrRun.id).filter(
+            AsrRun.item_id == item.id,
+            AsrRun.state.in_(("queued", "preparing", "transcribing", "paused")),
+        ).first() is not None:
+            continue  # 还有在跑的转写要用这份输入
+        pending = _unreceived_bundle_listing_media(db, store, asset, item)
+        if pending is not None and _prune_media_entry(
+            db, store, pending, asset.stored_file_id or ""
+        ):
+            stats["originals_manifests_pruned"] += 1
+        keys += pipeline.release_original_media(db, user_id=asset.user_id, item_id=item.id)
+        stats["originals_released"] += 1
+    # released 行的对象可能因中断仍在盘上：内容寻址按摘要定位后再复查引用
+    keys += [store.storage_key(sha) for (sha,) in
+             db.query(AudioAsset.sha256).filter(AudioAsset.retention_state == "released").all()]
+    db.commit()
+    stats["original_bytes"] = pipeline.reclaim_original_media(db, store, keys)
+    db.commit()
+    return stats
+
+
 def retention_sweep(session_factory, store: ObjectStore) -> dict[str, int]:
     """保留期清理（docs/02 §14.3）：到期 Bundle、孤儿文件、过期事件与幂等摘要。
 
@@ -773,6 +868,8 @@ def retention_sweep(session_factory, store: ObjectStore) -> dict[str, int]:
              "idempotency": 0, "device_auth": 0, "audio_sessions": 0, "asr_work_dirs": 0,
              "agent_tasks": 0, "agent_events": 0, "agent_sessions": 0}
     with session_factory() as db:
+        # 转写完成的条目不再持有音视频原件（先解除引用，孤儿清单随后不受保护）
+        stats.update(release_finished_originals(db, store))
         # 未引用上传（24h 过期，docs/02 §14.3）与音频上传会话（docs/13 §6.2）
         stats["expired_uploads"] = cleanup_expired_uploads(db, store)
         stats["audio_sessions"] = cleanup_audio_upload_sessions(db, store)

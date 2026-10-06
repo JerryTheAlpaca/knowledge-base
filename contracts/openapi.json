@@ -5996,6 +5996,10 @@
             "type": "boolean",
             "title": "Audio Original Retained"
           },
+          "audio_original_released": {
+            "type": "boolean",
+            "title": "Audio Original Released"
+          },
           "audio_original_download": {
             "anyOf": [
               {
@@ -6055,6 +6059,7 @@
           "analysis_bundle_revision",
           "analysis_created_at",
           "audio_original_retained",
+          "audio_original_released",
           "audio_original_download",
           "images_archived"
         ],

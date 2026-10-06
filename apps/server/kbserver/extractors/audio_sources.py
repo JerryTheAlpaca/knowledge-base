@@ -240,7 +240,9 @@ def _upload_object_input(db: Session, item: Item, payload: dict,
         if uid:
             upload = db.query(Upload).filter(Upload.user_id == item.user_id, Upload.id == uid).one_or_none()
     if upload is None:
-        raise AudioSourceError("audio_source_unsupported", "条目没有可用的上传原件。")
+        raise AudioSourceError("audio_source_unsupported",
+                               "没有可用的上传原件：原件在转写完成后会从服务器清理，"
+                               "重新转写请重新上传音视频。")
     if upload.state != "completed":
         raise AudioSourceError("audio_source_unsupported", "上传文件尚未完成，无法转写。")
 

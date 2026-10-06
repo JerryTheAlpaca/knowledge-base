@@ -126,6 +126,8 @@ while IFS= read -r path; do
     # agent 镜像里那 267MB 的 dsh 运行时只在 deploy/agent/* 真的变了才重建；
     # 按 COPY 顺序，requirements.txt 没变时 pip 层直接命中缓存，改代码几乎不花时间
     deploy/agent/*) need_agent=1 ;;
+    # 插件源码本身不进镜像，但发布产物 plugin_dist 在 apps/server 下；
+    # 源码改动若没跑 npm run release 就不会改变产物，也就不需要重建
     deploy/docker-compose.yml) need_server=1; need_renderer=1 ;;
   esac
 done <<<"$CHANGED"

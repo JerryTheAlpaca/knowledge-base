@@ -65,8 +65,13 @@
 - `src/vault/records.ts`：`RevisionStore` 的 kind 收窄为 `digests`。
 - `src/settings.ts`（562 → 约 230 行）：设置面板移除整个「模型设置」本地模型区与全部
   「线上 Key 绑定」；移除整个「整理知识库」分区（启用本地整理、自动准备整理候选、
-  整理设备、打开整理面板）；「模型设置」中的「云端提炼」下拉保留（Key 由服务器托管，
-  与本地整理无关）；`SecretBridge` 只管服务 Token。
+  整理设备、打开整理面板）；`SecretBridge` 只管服务 Token。
+
+  2026-10-06 追加：设置面板里最后一处模型相关项「云端提炼」下拉也已移除（连同
+  `CloudProfile`/`CloudProfileOption` 类型、`KbClient.listProfiles`/`getSettings`、
+  `SettingsTabHooks.loadCloudProfiles`、`KbSettings.cloudProfileId`）。该下拉原本只是选
+  「云端用哪个模型配置」，Key 始终在服务器、不下发到本机；模型配置改在网页收件箱的
+  「模型与账号」里管理。此后插件**完全不涉及任何模型凭据或模型配置**。
 - `src/api.ts`：删掉 `localBindingStatus`、`bindLocalKey`、`unbindLocalKey` 与
   `getReading()`；`deviceStart` 不再申请 `profiles:bind-local` scope。
 - `src/sync/engine.ts`：`EngineDeps` 去掉 `onDigestWritten`；`docs.ensure()` 不再登记

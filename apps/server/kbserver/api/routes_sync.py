@@ -1,9 +1,8 @@
 """增量事件、Bundle 清单/文件下载与投递回执（docs/02 §6.3、§10.1、§10.3、§13.1）。"""
 from __future__ import annotations
 
-import hashlib
-
 from fastapi import APIRouter, Depends, Request, Response
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -106,12 +105,12 @@ def get_file(
     if f is None:
         raise ApiError("NOT_FOUND", "文件不存在", status_code=404)
     store = ObjectStore()
-    if not store.object_exists(f.storage_key):
+    # 按文件流响应，不整对象读字节：历史清单里可能还挂着几 GB 的媒体文件，
+    # 读进内存会把 2GiB 的容器直接打爆。摘要由客户端按清单校验。
+    path = store.object_path(f.storage_key)
+    if not path.exists():
         raise ApiError("NOT_FOUND", "文件对象缺失", status_code=404)
-    data = store.read_object(f.storage_key)
-    if hashlib.sha256(data).hexdigest() != f.sha256:
-        raise ApiError("NOT_FOUND", "文件校验失败", status_code=500)
-    return Response(content=data, media_type=f.mime, headers={"ETag": f'"{f.sha256}"'})
+    return FileResponse(path, media_type=f.mime, headers={"ETag": f'"{f.sha256}"'})
 
 
 # ---- 回执 ----
