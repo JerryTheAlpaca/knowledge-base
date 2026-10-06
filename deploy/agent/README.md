@@ -5,17 +5,23 @@
 
 ## 启用步骤
 
-1. **导出一份 master_key 派生的中继密钥**（只在 api/worker 容器里能跑，因为它读 master_key）：
+1. **导出一份 master_key 派生的中继密钥**（只在 api 容器里能跑，因为它读 master_key）：
 
    ```sh
    sudo docker compose -f deploy/docker-compose.yml run --rm api \
-     python -m kbserver.cli agent-relay-key \
-     --write-to deploy/secrets/agent_relay_key
+     python -m kbserver.cli agent-relay-key | sudo tee deploy/secrets/agent_relay_key >/dev/null
+   sudo chown root:root deploy/secrets/agent_relay_key
    sudo chmod 600 deploy/secrets/agent_relay_key
    ```
 
    写进去的是 `purpose_key(master_key, "agent-relay-v1")` 那 32 字节，**不是 master_key**：
    它能签/验服务间中继凭据，解不开任何模型凭据信封。
+
+   属主必须是 **root**：agent 容器里的进程是 root，但 `cap_drop: ALL` 连 `DAC_OVERRIDE`
+   一起拿掉了，所以它读不了属主为普通用户（uid 1000）的 0600 文件
+   （2026-10-06 第一次启用就是这个 PermissionError）。api/worker 那边不受影响，
+   它们以文件属主同一个 uid 跑。另外 secret 是**容器创建时**拷进去的，改完属主要
+   `up -d --force-recreate agent` 才生效。
 
 2. **开 profile 与开关**（服务器上的 `deploy/.env`，compose 就读这个目录下的文件）：
 

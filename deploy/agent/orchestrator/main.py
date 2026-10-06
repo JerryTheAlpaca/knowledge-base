@@ -165,10 +165,16 @@ app = None  # uvicorn 入口：`python -m orchestrator.main` 会把它建出来
 
 def run() -> None:
     global app
+    import os
+
     import uvicorn
 
     app, _manager = create_app()
-    uvicorn.run(app, host="127.0.0.1", port=int(__import__("os").environ.get("AGENT_PORT", "8100")))
+    # 绑 0.0.0.0 不等于暴露：这个容器只在 internal 网络上（没有网关与 NAT），
+    # 也没有发布任何宿主端口。绑 127.0.0.1 反而让同网的 api 连不到它
+    # —— 2026-10-06 线上第一次启用就是这么起不来又看不出来的。
+    uvicorn.run(app, host=os.environ.get("AGENT_BIND", "0.0.0.0"),
+                port=int(os.environ.get("AGENT_PORT", "8100")))
 
 
 if __name__ == "__main__":

@@ -49,5 +49,6 @@ ENV PYTHONUNBUFFERED=1 \
 
 EXPOSE 8100
 
-# 只监听内部网络：宿主机与公网都不该直接碰到这个端口
+# 容器内绑 0.0.0.0 是必须的（同网络的 api 要连得进来）；不暴露靠的是 compose 的
+# internal 网络 + 不发布宿主端口，边界实测见 deploy/agent/README.md
 CMD ["python", "-c", "from orchestrator.main import run; run()"]
