@@ -39,6 +39,10 @@ services:
       # 未配 SHARE_PUBLIC_BASE_URL 时公开链接如实显示「未配置分享站点」，
       # 私有预览与下载单文件 HTML 不受影响
       SHARE_ENABLED: "true"
+      # Agent 接入（docs/27）：用变量而不是写死 "true"，是为了第一次启用时能在服务器上
+      # 立刻关掉再排查，不必为此推一次提交；不开时 /mcp 与对话中继根本不挂载。
+      AGENT_ENABLED: "${AGENT_ENABLED:-false}"
+      AGENT_BASE_URL: "${AGENT_BASE_URL:-http://agent:8100}"
     # 默认网络之外再加一条 agent_internal：agent 容器只能通过它访问 api，
     # api 也只听这一条网内的调用（8000 仍然只绑回环，公网路径不变）
     networks:

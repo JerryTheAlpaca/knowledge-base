@@ -17,15 +17,17 @@
    写进去的是 `purpose_key(master_key, "agent-relay-v1")` 那 32 字节，**不是 master_key**：
    它能签/验服务间中继凭据，解不开任何模型凭据信封。
 
-2. **开 profile 与开关**（服务器上的 `deploy/.env`）：
+2. **开 profile 与开关**（服务器上的 `deploy/.env`，compose 就读这个目录下的文件）：
 
    ```sh
    COMPOSE_PROFILES=share,agent
+   AGENT_ENABLED=true
    ```
 
-   api 服务的环境里加 `AGENT_ENABLED: "true"` 与 `AGENT_BASE_URL: http://agent:8100`。
-   `AGENT_ENABLED` 与 `SHARE_ENABLED` 是分开的：agent 容器挂了只关对话入口，
-   不影响 HTML 分享。
+   `AGENT_BASE_URL` 默认就是 `http://agent:8100`（api 在容器网内找到编排服务），
+   搬 B 机时才需要改成公网域名。`AGENT_ENABLED` 与 `SHARE_ENABLED` 是分开的：
+   agent 容器挂了只关对话入口，不影响 HTML 分享。要临时关掉对话把
+   `AGENT_ENABLED=false` 再 `up -d api`，profile 可以留着不动。
 
 3. **构建并起容器**：
 
