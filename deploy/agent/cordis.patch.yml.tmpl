@@ -1,0 +1,106 @@
+# 知识库 agent 的 dsh 锁定层（Phase 0b 在本机实测通过）
+#
+# ⚠️ patch 条目会**替换目标的整个配置块，不自动合并**：下面每个写了 config 的条目
+#    都把想保留的设置全部重述了一遍。漏一项不是「保持原值」，是那项直接没了。
+# ⚠️ 未匹配的 patch 条目只会 warn 后跳过（`dsh doctor` / 启动日志里能看到），
+#    所以插件改名会让某个「已经禁掉」的东西悄悄回来。部署验收必须核对一次
+#    模型可见的工具清单，不能只读这份文件就宣布锁住了。
+#
+# 实测结论（Windows x64，runtime-bin 0.1.5rc1，profile sdk + 本补丁）：
+# - 模型可见工具清单收敛到只剩 MCP 工具那一个；
+# - @deepseek-ai/dsh-subprocess-local **不能禁**：pwsh-sandbox 等它的 subprocess 服务、
+#   permission-presets 等 shell 服务，禁了整个 plugin tree 起不来；
+# - read-only + approval never 不匹配任何内置 preset（内置 read-only 配的是 ask），
+#   必须整块重述 presets 并显式指定 defaultPreset，否则启动直接失败。
+
+# MCP 客户端不是全局 `mcp.servers` 映射：每台服务器是一条独立插件，靠根级 insert 加进来
+- insert:
+    - id: mcp-kb
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        # 只渲染本站点这一个条目：那个进程里根本没有别站的连接
+        serverName: kb
+        transport: streamable-http
+        url: {{KB_MCP_URL}}
+        headers:
+          # Token 由编排服务在起进程时写进子进程环境；Key、Cookie、原文都不在这里
+          Authorization: !!js '`Bearer ${process.env.KB_MCP_TOKEN}`'
+        toolCallTimeoutMs: 60000
+        # 凭据被撤销时连接失败要**拒绝插件激活**：宁可整个会话起不来，
+        # 也不能让 agent 在「连不上自己的库」的情况下继续凭猜测回答
+        failOnStartupError: true
+        reconnect:
+          enabled: true
+          initialDelayMs: 500
+          maxDelayMs: 30000
+          maxAttempts: 10
+
+# ---- 能落到文件系统、起进程、出网、开子 agent 的工具全部禁掉 ----
+- id: tool-bash
+  disabled: true
+- id: tool-pwsh
+  disabled: true
+- id: tool-fs
+  disabled: true
+- id: tool-fs-search
+  disabled: true
+- id: tool-web
+  disabled: true
+- id: web
+  disabled: true
+- id: web-search-deepseek
+  disabled: true
+- id: web-fetch-http
+  disabled: true
+- id: tool-subagent
+  disabled: true
+- id: tool-subagent-fork
+  disabled: true
+- id: tool-subagent-control
+  disabled: true
+- id: tool-subagent-list-agents
+  disabled: true
+- id: tool-workflow
+  disabled: true
+- id: tool-skill
+  disabled: true
+- id: tool-jobs
+  disabled: true
+- id: tool-goal
+  disabled: true
+- id: tool-ralph
+  disabled: true
+- id: tool-todo
+  disabled: true
+- id: plan-mode
+  disabled: true
+
+# 遥测默认往 DeepSeek 的对象上报：用户原文与工具结果不该出境到这里
+- id: session-telemetry-otel
+  disabled: true
+
+# 沙箱围栏：只读，工作区就是为该用户单独建的空目录
+- id: sandbox-policy
+  config:
+    mode: read-only
+    workspaceRoot: !!js process.cwd()
+
+# 容器里没有人能回答提问，approval 只能是 never；配合上面的工具禁用，
+# 本来就只剩下 MCP 工具可调用
+- id: approval
+  config:
+    policy: never
+
+- id: permission
+  config:
+    defaultPreset: read-only
+    presets:
+      read-only:
+        sandbox: read-only
+        approval: never
+      workspace-write:
+        sandbox: workspace-write
+        approval: never
+      danger-full-access:
+        sandbox: danger-full-access
+        approval: never

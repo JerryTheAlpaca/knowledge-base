@@ -884,3 +884,70 @@ details[open] > summary .proc-chev { transform: rotate(-135deg); margin: 2px 2px
   .proc-steps li.now .proc-mark { animation: none; }
   .proc-chev, .q-dot, .proc-mark { transition: none; }
 }
+
+/* ============ agent 自由对话面板（js/agent.js；docs/27） ============ */
+/* 面板的结构和 class 全部复用上面分享舞台那一套（stage-* / smartbox / t-card / proc-*），
+   这里只补三件面板特有的：遮罩层本身、定宽的会话切换条与它的下拉列表、过程行里的工具文本。
+   颜色一律取 tokens.css 的 rose 令牌，不新增任何变量。 */
+#agentView { position: fixed; inset: 0; z-index: 36; display: flex; flex-direction: column;
+             padding: calc(var(--topbar-h) + env(safe-area-inset-top)) 20px
+                      calc(16px + env(safe-area-inset-bottom));
+             animation: stage-in .1s var(--ease) backwards; }
+#agentView[hidden] { display: none; }
+/* 面板盖住首页那副采集框和抽屉拉手：两个输入框叠着会打架（同分享舞台） */
+body.agent-open .dock, body.agent-open .drawer { display: none; }
+/* 对话输入框左端没有文件钮，胶囊态不用为它让出那 52px（同 #stageBox） */
+#agentBox { --cap-left: 14px; }
+#agentHint { margin: 0; padding: 0 4px; }
+#agentHint:empty { display: none; }
+
+/* —— 会话切换条：定宽 + 省略号。切到哪一段、名字多长都不推动旁边的按钮
+   （走查硬要求：交互过程中不许横向跳动；顶栏多一个按钮是一次性的布局变化，另说） —— */
+.agent-switchwrap { flex: none; }
+.agent-switchbtn { width: 200px; justify-content: flex-start; }
+.agent-switch-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 下拉是绝对定位的浮层，开合都不占顶栏那一条的位置 */
+.agent-sessions { width: min(400px, calc(100vw - 40px)); min-width: 0; padding: 8px; }
+.agent-sess-head { display: flex; align-items: center; gap: 8px; padding: 0 2px 8px;
+                   margin-bottom: 4px; border-bottom: 1px solid var(--border); }
+ul.agent-sess-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px;
+                     max-height: 46vh; overflow-y: auto; overscroll-behavior: contain; }
+.agent-sess-empty { padding: 8px 6px; font-size: var(--fs-small); }
+.agent-sess { display: flex; align-items: center; gap: 4px; border-radius: var(--radius-ctl); }
+.agent-sess[data-now] { background: var(--accent-soft); }
+/* 标题与时间分两行：横向只有一格会伸缩，行尾两个动作钮就被钉死在右边 */
+.agent-sess-open { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start;
+                   gap: 2px; min-height: 44px; padding: 7px 8px; border: none; background: transparent;
+                   text-align: left; border-radius: var(--radius-ctl); }
+.agent-sess-open:hover { background: var(--surface-2); border: none; }
+.agent-sess-title { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+                    font-size: var(--fs-body); }
+.agent-sess-meta { font-size: var(--fs-caption); color: var(--text-2); }
+.agent-sess-acts { flex: none; display: flex; align-items: center; gap: 2px; }
+button.agent-sess-act { width: 32px; min-width: 32px; height: 32px; min-height: 0; padding: 0; }
+
+/* —— 过程行：只写真发出来的事件，长文本就地换行，不撑破卡片 —— */
+.agent-proc-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.agent-tool { color: var(--text-2); }
+.agent-toolname { color: var(--text); margin-left: 7px; }
+.agent-tooltext { color: var(--text-2); font-size: var(--fs-caption); margin-left: 9px; }
+
+/* —— 面板内的说明与错误：错误借语义色，排队和离线都只是普通一行 —— */
+.stage-status .agent-note { font-size: var(--fs-small); color: var(--text-2); line-height: 1.5; }
+.t-msg.agent-err { border-color: var(--bad); background: var(--bad-soft); }
+
+/* —— 第一次使用的提示：把「读得多」和「Key 在中转站会出境」说在前面 —— */
+.agent-first-p { margin: 0 0 10px; font-size: var(--fs-small); line-height: 1.65; color: var(--text-2); }
+.agent-first-p:last-of-type { margin-bottom: 0; }
+
+@media (max-width: 720px) {
+  #agentView { padding-left: 16px; padding-right: 16px; }
+  .agent-switchbtn { width: 132px; }
+  /* 窄屏上切换条靠近屏幕中间，下拉按 right:0 绝对定位会往左溢出屏幕：
+     改成贴着可视区两侧，标题就不再被切掉一半 */
+  .agent-sessions { position: fixed; left: 16px; right: 16px; width: auto;
+                    top: calc(var(--topbar-h) + 56px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  #agentView { animation: none; }
+}

@@ -228,28 +228,41 @@ def list_items(
     principal=Depends(require_scope("items:read")),
     db: Session = Depends(get_db),
 ) -> ItemList:
-    """条目列表（docs/17 §10.5）：
+    # 夹在 1..200 之后再把分页参数回填进响应：响应里那两个数字是「本次实际怎么给的」，
+    # 原样回显客户端要的值会让旧客户端的分页信息与实际不符
+    effective_limit = max(1, min(limit, 200))
+    effective_offset = max(0, offset)
+    outs, total = _list_items_impl(db, principal.user.id, state=state, view=view, search=search,
+                                   source_type=source_type, limit=effective_limit,
+                                   offset=effective_offset)
+    return ItemList(items=outs, total=total, limit=effective_limit, offset=effective_offset)
+
+
+def _list_items_impl(db: Session, user_id: str, *, state: str | None = None,
+                     view: str | None = None, search: str | None = None,
+                     source_type: str | None = None, limit: int = 50,
+                     offset: int = 0) -> tuple[list[ItemOut], int]:
+    """条目列表的实现体（docs/17 §10.5）：HTTP 路由与 MCP 工具共用同一份语义。
 
     - 无 view/search：稳定分页，行为与旧客户端一致。
     - view=attention|working|published：首页三分组；SQL 先按候选状态收敛，
       Python 按推导后的 overall_state 精筛（发布只认当前 Bundle 回执）。
     - search：服务端全收件箱搜索（标题/URL/来源标签/用户备注），不只搜已加载页。
     """
-    user = principal.user
     limit = max(1, min(limit, 200))
     offset = max(0, offset)
     filtered_mode = bool(view or search or source_type)
 
     if not filtered_mode:
-        items, total = repo.list_items(db, user.id, state=state, limit=limit, offset=offset)
+        items, total = repo.list_items(db, user_id, state=state, limit=limit, offset=offset)
     else:
         # 过滤模式：拉取候选集（个人收件箱规模一次 200 条足够），Python 精筛后手动分页
         candidate_states = workflow_view.VIEW_CANDIDATE_STATES.get(view or "")
         if candidate_states is not None:
             # view 优先于旧 state 参数：候选集合覆盖它
-            items, _ = _list_items_by_states(db, user.id, candidate_states, limit=200)
+            items, _ = _list_items_by_states(db, user_id, candidate_states, limit=200)
         else:
-            items, _ = repo.list_items(db, user.id, state=state, limit=200, offset=0)
+            items, _ = repo.list_items(db, user_id, state=state, limit=200, offset=0)
 
     ids = [it.id for it in items]
     src_map: dict[tuple[str, int], SourceRevision] = {}
@@ -259,10 +272,10 @@ def list_items(
             SourceRevision.item_id.in_(ids), SourceRevision.revision.in_(revs)
         ).all():
             src_map[(r.item_id, r.revision)] = r
-    bundle_map = _analysis_bundles_map(db, user.id, ids)
+    bundle_map = _analysis_bundles_map(db, user_id, ids)
 
-    wf_inputs = workflow_view.collect_workflow_inputs(db, user.id, items)
-    wf_map = workflow_view.build_workflow_map(db, user.id, items, wf_inputs)
+    wf_inputs = workflow_view.collect_workflow_inputs(db, user_id, items)
+    wf_map = workflow_view.build_workflow_map(db, user_id, items, wf_inputs)
 
     outs = []
     for it in items:
@@ -294,7 +307,7 @@ def list_items(
     if filtered_mode:
         total = len(outs)
         outs = outs[offset:offset + limit]
-    return ItemList(items=outs, total=total, limit=limit, offset=offset)
+    return outs, total
 
 
 def _list_items_by_states(db: Session, user_id: str, states: tuple[str, ...],

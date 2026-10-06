@@ -9,7 +9,16 @@ kb.jerrythealpaca.cn {
 	# 音频上传走串行分块（docs/13 §6.2），单块 16MiB：Caddy 默认不限制请求体大小，
 	# 也没有请求读超时，因此无需额外放宽；不要在反代层设置低于单块的 max_size，
 	# 也不要把空闲超时设得比一次块上传更短（应用侧只做单块与少量头部余量）。
-	reverse_proxy 127.0.0.1:8000
+	reverse_proxy 127.0.0.1:8000 {
+		# agent 对话与 LLM 代理都走 SSE：逐块立刻下发，否则 Caddy 会攒缓冲区，
+		# 用户看到的是「半天不动然后一次性吐完」
+		flush_interval -1
+		# 上游读超时要和 api 侧的 read=600s 同量级，不然一轮长回答会被反代先掐断
+		transport http {
+			read_timeout 620s
+			write_timeout 620s
+		}
+	}
 }
 
 # 分享站点（docs/20 §9.4、§9.5、验收 A17/A32）：

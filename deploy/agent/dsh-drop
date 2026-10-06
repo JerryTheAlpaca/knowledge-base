@@ -1,0 +1,17 @@
+#!/bin/sh
+# 把 dsh 运行时降到「这个用户自己的 uid」上跑，而不是跟着容器一起以 root 跑。
+#
+# 走 SDK 公开的 `dsh_bin` 参数，不改 SDK 内部的 Popen：上游明写这是开发者预览版，
+# 越少碰它的内部实现，升级时越不容易被静默改掉行为。
+#
+# AGENT_DROP_UID 由编排服务在启动子进程时写进环境。不是 root 时（本地开发）直接放行，
+# 免得在 macOS/Windows 上调链路还要先伪造一套权限。
+set -eu
+
+TARGET="${AGENT_DROP_UID:-}"
+if [ "$(id -u)" != "0" ] || [ -z "$TARGET" ]; then
+  exec "$@"
+fi
+
+# 运行时是 SDK 自带的单文件 Node 可执行文件，容器里不装 Node 也不装 npm
+exec setpriv --reuid="$TARGET" --regid="$TARGET" --clear-groups "$@"

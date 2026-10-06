@@ -387,12 +387,21 @@ def test_storage_key_index_comes_from_migrations(tmp_path):
         migration_cols = {row[1] for row in conn.execute("PRAGMA table_info(content_migrations)")}
         migration_ddl = conn.execute(
             "SELECT sql FROM sqlite_master WHERE name='content_migrations'").fetchone()[0]
+        task_cols = {row[1] for row in conn.execute("PRAGMA table_info(agent_tasks)")}
+        task_ddl = conn.execute("SELECT sql FROM sqlite_master WHERE name='agent_tasks'").fetchone()[0]
+        event_ddl = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name='agent_events'").fetchone()[0]
     finally:
         conn.close()
     assert "ix_share_artifacts_storage_key" in names
-    assert version == ("b5e9d3f7c2a8",)
+    assert version == ("f6b2d8c4a1e9",)
     # v3 迁移基础设施同样由 alembic 建出来（docs/24 §7）：任务固定输入 + 转换台账
     assert "input_json" in job_cols
     assert "content_migrations" in migration_tables
     assert {"input_sha256", "converter_version", "new_bundle_revision", "status"} <= migration_cols
+    # Agent 接入的四张表也只由迁移建出来（docs/27）：漏一个文件就是线上缺表
+    assert {"agent_tasks", "agent_budgets", "agent_sessions", "agent_events"} <= migration_tables
+    assert {"job_id", "idempotency_key", "lease_token", "lease_until", "state"} <= task_cols
+    assert "uq_agent_event_seq" in event_ddl, "(session_id, seq) 的唯一约束是幂等回传的前提"
+    assert "uq_agent_task_idem" in task_ddl, "同一幂等键回到同一个任务句柄要靠这条唯一约束"
     assert "uq_content_migration_input" in migration_ddl

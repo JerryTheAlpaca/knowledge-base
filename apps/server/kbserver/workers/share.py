@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session
 from ..config import Settings, get_settings
 from ..db import make_engine, make_session_factory
 from ..domain import content_v3, provider_ops, share_prompts, sharing
+from ..domain.provider_select import pick_profile
 from ..domain.share_conversations import (
     merge_brief,
     prefix_hash,
@@ -192,25 +193,6 @@ def _assets_of(db: Session, item: Item) -> list[dict]:
          "storage_key": f.storage_key}
         for i, f in enumerate(rows, start=1)
     ]
-
-
-def pick_profile(db: Session, user_id: str, profile_id: str | None):
-    """按用户现有云端提炼配置选模型：显式指定优先，其次默认配置，再否则最近一份。"""
-    rows = list(db.query(ProviderProfile, Credential).join(
-        Credential, Credential.profile_id == ProviderProfile.id
-    ).filter(
-        ProviderProfile.user_id == user_id,
-        ProviderProfile.kind == "llm",
-        ProviderProfile.adapter == "openai-compatible",
-        Credential.revoked_at.is_(None),
-    ).all())
-    if profile_id:
-        return next(((p, c) for p, c in rows if p.id == profile_id), None)
-    if not rows:
-        return None
-    user = db.get(User, user_id)
-    default_id = ((user.settings_json or {}).get("default_profile_id")) if user else None
-    return next(((p, c) for p, c in rows if p.id == default_id), None) or max(rows, key=lambda pc: pc[1].created_at)
 
 
 def runtime_manifest(settings: Settings) -> dict:

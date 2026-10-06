@@ -8,6 +8,7 @@
 import { $, api, esc, fmtShort, showErr, toast, isModalOpen, dismissToast, sanitizeFilename } from "./api.js";
 import { setListPollPaused, refreshItems, onRowsRendered } from "./item-list.js";
 import { currentDetailId, closeDetail, openDetail } from "./item-detail.js";
+import { openAgentPanel } from "./agent.js";
 
 const SELECTED_KEY = "kb.share.selected.v1";
 let selected = new Set(loadSelected());
@@ -1295,8 +1296,12 @@ function exitOverlay() {
 export function initShares(navigator) {
   if (navigator) go = navigator;
   installSelection();
+  // 顶栏两个按钮换了归属：三条横线那侧现在开的是自由对话面板（js/agent.js），
+  // 以前的 HTML 分享作品列表挪到紧挨着的「我的分享作品」上，状态机一行不改
   const nav = $("sharesBtn");
-  if (nav) nav.addEventListener("click", openConvList);
+  if (nav) nav.addEventListener("click", openAgentPanel);
+  const works = $("worksBtn");
+  if (works) works.addEventListener("click", openConvList);
   const closeStage = $("stageClose");
   if (closeStage) closeStage.addEventListener("click", exitOverlay);
   const closeConv = $("sharesClose");

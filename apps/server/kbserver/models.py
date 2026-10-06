@@ -752,3 +752,116 @@ class ShareMessage(Base):
     protocol_metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
     reply_to_round_id: Mapped[str | None] = mapped_column(String(36), nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+
+
+# ---- Agent 接入：MCP 工具、LLM 代理与对话镜像（docs/27）----
+#
+# 这四张表都不借用 jobs / share_* ：
+# - jobs 的 item_id 非空、uq_job 含 (item, source_revision, stage, recipe)，
+#   agent 发起的任务不一定绑着一篇材料（docs/20 §2.1 为 ShareRun 做过同样判断）；
+# - share_conversations / share_messages 按 (work_id, purpose) 组织、正文在
+#   ObjectStore、且绑着 HTML 分享那台状态机；agent 会话没有「作品」概念。
+# 站点维度（site）是结构性的：这三张表都带 site，值只从 A 机签发的中继凭据取。
+
+
+class AgentTask(Base, TimestampMixin):
+    """MCP `kb_submit_job` 的可轮询任务句柄：租约字段照抄 ShareRun。
+
+    Worker 的 agent 分支领取它、驱动它，执行体是 it 关联的那条既有 jobs 行
+    （`reprocess_item` / `optimize_text` 都是把已有流水线跑一遍，不重造加工逻辑）。
+    """
+
+    __tablename__ = "agent_tasks"
+    __table_args__ = (
+        Index("ix_agent_tasks_state_not_before", "state", "not_before"),
+        Index("ix_agent_tasks_user_site", "user_id", "site", "created_at"),
+        # 同一个 key 重复提交回到同一个任务句柄（NULL 不参与唯一约束，
+        # 所以没给 key 的提交不会被彼此撞掉）
+        UniqueConstraint("user_id", "site", "idempotency_key", name="uq_agent_task_idem"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    site: Mapped[str] = mapped_column(String(16), default="kb")
+    kind: Mapped[str] = mapped_column(String(40))  # reprocess_item|optimize_text
+    item_id: Mapped[str | None] = mapped_column(ForeignKey("items.id"), nullable=True, index=True)
+    job_id: Mapped[str | None] = mapped_column(ForeignKey("jobs.id"), nullable=True, index=True)
+    params_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    idempotency_key: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
+    state: Mapped[str] = mapped_column(String(24), default="queued")
+    # queued|running|retry_wait|succeeded|failed|cancelled|unknown_outcome
+    result_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    last_error: Mapped[str] = mapped_column(Text, default="")
+    attempt: Mapped[int] = mapped_column(Integer, default=0)
+    not_before: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    lease_token: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
+    lease_until: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True, default=None)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
+
+
+class AgentBudget(Base, TimestampMixin):
+    """LLM 代理的按用户按日预算：预算不串用是正确性要求，不是优化项。
+
+    入口先查（超限 429 且不转发，不产生供应商费用），出口用 normalize_usage
+    归一后累加。归属三元组 (user_id, profile_id, period) 全部来自会话 token 载荷，
+    永不来自请求体。
+    """
+
+    __tablename__ = "agent_budgets"
+    __table_args__ = (UniqueConstraint("user_id", "profile_id", "period", name="uq_agent_budget"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    profile_id: Mapped[str] = mapped_column(ForeignKey("provider_profiles.id"), index=True)
+    period: Mapped[str] = mapped_column(String(10))  # YYYY-MM-DD（UTC）
+    input_tokens_used: Mapped[int] = mapped_column(Integer, default=0)
+    output_tokens_used: Mapped[int] = mapped_column(Integer, default=0)
+    requests_used: Mapped[int] = mapped_column(Integer, default=0)
+    # 超限时刻：签名 token 无法主动撤销，靠 TTL + 这个标记 + 「停用 agent」三重收口
+    exhausted_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True, default=None)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
+
+
+class AgentSession(Base, TimestampMixin):
+    """agent 会话在 A 机的镜像：编排容器里的 $DSH_HOME 可以丢，这里不能。"""
+
+    __tablename__ = "agent_sessions"
+    __table_args__ = (
+        UniqueConstraint("site", "session_id", name="uq_agent_session_site"),
+        Index("ix_agent_sessions_user_site", "user_id", "site", "updated_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    site: Mapped[str] = mapped_column(String(16), default="kb")
+    session_id: Mapped[str] = mapped_column(String(64))  # 编排服务分配的会话 ID
+    title: Mapped[str] = mapped_column(String(200), default="")
+    # 已确认收到的最大事件序号：比编排服务落后时前端显示「同步中」而不是假数据
+    last_seq: Mapped[int] = mapped_column(Integer, default=0)
+    state: Mapped[str] = mapped_column(String(20), default="open")  # open|closed
+    closed_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True, default=None)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
+
+
+class AgentEvent(Base):
+    """一条用户可见事件：(session_id, seq) 唯一，重传按同一键幂等覆盖。
+
+    seq 由编排服务单调分配，A 机只按 (session_id, seq) upsert。流式 delta 在
+    编排侧就合并成一条 assistant_message，不把每一帧存下来（体积会炸）。
+    """
+
+    __tablename__ = "agent_events"
+    __table_args__ = (
+        UniqueConstraint("session_id", "seq", name="uq_agent_event_seq"),
+        Index("ix_agent_events_user_site", "user_id", "site", "session_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    site: Mapped[str] = mapped_column(String(16), default="kb")
+    session_id: Mapped[str] = mapped_column(String(64), index=True)
+    seq: Mapped[int] = mapped_column(Integer)
+    kind: Mapped[str] = mapped_column(String(40))
+    # user_message|assistant_message|tool_call|tool_result|status|error|turn_end
+    payload_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)

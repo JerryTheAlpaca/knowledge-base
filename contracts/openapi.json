@@ -827,7 +827,6 @@
           "items"
         ],
         "summary": "List Items",
-        "description": "条目列表（docs/17 §10.5）：\n\n- 无 view/search：稳定分页，行为与旧客户端一致。\n- view=attention|working|published：首页三分组；SQL 先按候选状态收敛，\n  Python 按推导后的 overall_state 精筛（发布只认当前 Bundle 回执）。\n- search：服务端全收件箱搜索（标题/URL/来源标签/用户备注），不只搜已加载页。",
         "operationId": "list_items_v1_items_get",
         "parameters": [
           {
@@ -4269,6 +4268,607 @@
           }
         }
       }
+    },
+    "/v1/llm/chat/completions": {
+      "post": {
+        "tags": [
+          "llm-proxy"
+        ],
+        "summary": "Chat Completions",
+        "operationId": "chat_completions_v1_llm_chat_completions_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agent-tokens": {
+      "get": {
+        "tags": [
+          "agent"
+        ],
+        "summary": "List Agent Tokens",
+        "operationId": "list_agent_tokens_v1_agent_tokens_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/AgentTokenOut"
+                  },
+                  "type": "array",
+                  "title": "Response List Agent Tokens V1 Agent Tokens Get"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "agent"
+        ],
+        "summary": "Create Agent Token",
+        "description": "签发一枚 Agent Token；明文只在这里返回一次。",
+        "operationId": "create_agent_token_v1_agent_tokens_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentTokenCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Create Agent Token V1 Agent Tokens Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agent-tokens/{token_id}/revoke": {
+      "post": {
+        "tags": [
+          "agent"
+        ],
+        "summary": "Revoke Agent Token",
+        "description": "一键停用：下一个请求即 401（`token_valid` 读 revoked_at，没有正缓存可等）。\n\n设备行只服务这一类 Token，最后一枚停用后把设备一起标掉，免得设备列表里\n留一堆空壳。",
+        "operationId": "revoke_agent_token_v1_agent_tokens__token_id__revoke_post",
+        "parameters": [
+          {
+            "name": "token_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Token Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Revoke Agent Token V1 Agent Tokens  Token Id  Revoke Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agent/sessions": {
+      "get": {
+        "tags": [
+          "agent"
+        ],
+        "summary": "List Sessions",
+        "description": "会话列表优先问容器；容器不可达时退回 A 机镜像并如实标注 degraded。\n\n退回的是**已落库的真实历史**，不是猜测：前端据此显示「同步中/离线」，\n不会看到一条编造的会话。",
+        "operationId": "list_sessions_v1_agent_sessions_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response List Sessions V1 Agent Sessions Get"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "agent"
+        ],
+        "summary": "Create Session",
+        "description": "新建会话：标题可由用户给，其余状态一律由容器分配（不采信客户端的 site/user）。",
+        "operationId": "create_session_v1_agent_sessions_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object",
+                "title": "Body"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Create Session V1 Agent Sessions Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agent/sessions/{session_id}/messages": {
+      "post": {
+        "tags": [
+          "agent"
+        ],
+        "summary": "Send Message",
+        "description": "发一轮消息：立即返回 turn_id，过程与结果走 /events 的 SSE。",
+        "operationId": "send_message_v1_agent_sessions__session_id__messages_post",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Send Message V1 Agent Sessions  Session Id  Messages Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agent/sessions/{session_id}/events": {
+      "get": {
+        "tags": [
+          "agent"
+        ],
+        "summary": "Session Events",
+        "description": "SSE 原样转发（同源，因此前端不引入 CORS；服务端到服务端也不引入）。\n\n`after=<seq>` 由前端带上，断线重连按序号续传，容器侧从事件表追，不靠内存队列。",
+        "operationId": "session_events_v1_agent_sessions__session_id__events_get",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 0,
+              "title": "After"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agent/sessions/{session_id}/history": {
+      "get": {
+        "tags": [
+          "agent"
+        ],
+        "summary": "Session History",
+        "description": "历史从 A 机镜像读：刷新页面、容器重启都不影响用户看到自己的对话。",
+        "operationId": "session_history_v1_agent_sessions__session_id__history_get",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          },
+          {
+            "name": "after_seq",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 0,
+              "title": "After Seq"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 200,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Session History V1 Agent Sessions  Session Id  History Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agent/sessions/{session_id}": {
+      "put": {
+        "tags": [
+          "agent"
+        ],
+        "summary": "Rename Session",
+        "operationId": "rename_session_v1_agent_sessions__session_id__put",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Rename Session V1 Agent Sessions  Session Id  Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "agent"
+        ],
+        "summary": "Close Session",
+        "description": "关闭会话：容器侧结束子进程，但**不删 $DSH_HOME**（历史可续），A 机镜像只标 closed。\n\n镜像不删：用户以后回来还要能看到这段对话；真正的清理走保留期清扫。",
+        "operationId": "close_session_v1_agent_sessions__session_id__delete",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Close Session V1 Agent Sessions  Session Id  Delete"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agent/internal/llm-token": {
+      "post": {
+        "tags": [
+          "agent"
+        ],
+        "summary": "Issue Llm Token For Session",
+        "description": "给编排容器签一枚该用户的 LLM 代理会话 token（每个 dsh 进程一枚）。\n\nprofile 由 A 机用**和网页对话同一条规则**（`domain/provider_select.pick_profile`）\n选定，容器不参与选择、也拿不到 Key —— 否则同一个人在两处会用上不同配置。\ntoken 里只有归属，没有 Key 也没有原文。",
+        "operationId": "issue_llm_token_for_session_v1_agent_internal_llm_token_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object",
+                "title": "Body"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Issue Llm Token For Session V1 Agent Internal Llm Token Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agent/internal/sessions": {
+      "post": {
+        "tags": [
+          "agent"
+        ],
+        "summary": "Upsert Sessions",
+        "description": "容器声明「这个用户开了这个会话」；归属仍按 (site, session_id, user_id) 核对。",
+        "operationId": "upsert_sessions_v1_agent_internal_sessions_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object",
+                "title": "Body"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Upsert Sessions V1 Agent Internal Sessions Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agent/internal/events": {
+      "post": {
+        "tags": [
+          "agent"
+        ],
+        "summary": "Ingest Events",
+        "description": "批量回传：按 (session_id, seq) upsert，重复投递不产生第二条。\n\nseq 由编排服务单调分配，A 机不自己编号；这样断连重发、容器重启都是幂等的。\n只接受用户可见事件；流式 delta 已在容器侧合并成整条 assistant_message。",
+        "operationId": "ingest_events_v1_agent_internal_events_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object",
+                "title": "Body"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Ingest Events V1 Agent Internal Events Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -4328,6 +4928,83 @@
           "secret"
         ],
         "title": "AdminLlmCredentialIn"
+      },
+      "AgentTokenCreate": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Name"
+          },
+          "scopes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Scopes"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "AgentTokenCreate"
+      },
+      "AgentTokenOut": {
+        "properties": {
+          "token_id": {
+            "type": "string",
+            "title": "Token Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "scopes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Scopes"
+          },
+          "created_at": {
+            "type": "string",
+            "title": "Created At"
+          },
+          "expires_at": {
+            "type": "string",
+            "title": "Expires At"
+          },
+          "revoked": {
+            "type": "boolean",
+            "title": "Revoked"
+          },
+          "last_seen_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Seen At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "token_id",
+          "name",
+          "scopes",
+          "created_at",
+          "expires_at",
+          "revoked",
+          "last_seen_at"
+        ],
+        "title": "AgentTokenOut"
       },
       "AnswerBody": {
         "properties": {

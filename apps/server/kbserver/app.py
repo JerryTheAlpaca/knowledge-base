@@ -1,14 +1,18 @@
 """FastAPI 应用装配。"""
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+
+from starlette.routing import Match
+
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from .api import (routes_admin, routes_asr, routes_audio_uploads, routes_auth,
+from .api import (mcp_server, routes_admin, routes_asr, routes_audio_uploads, routes_auth,
                   routes_bilibili, routes_captures, routes_devices, routes_health,
-                  routes_items, routes_onboarding, routes_platform_sessions,
-                  routes_profiles, routes_share_public, routes_shares, routes_sync, routes_uploads,
-                  routes_web)
+                  routes_items, routes_llm_proxy, routes_onboarding, routes_agent_tokens,
+                  routes_agent_relay, routes_platform_sessions, routes_profiles,
+                  routes_share_public, routes_shares, routes_sync, routes_uploads, routes_web)
 from .api.deps import CSRF_COOKIE
 from .config import get_settings
 from .domain.errors import ApiError, status_for
@@ -17,12 +21,53 @@ from .security import central_auth
 from .security.tokens import new_service_token
 
 
+class ExactPathAsgi:
+    """把不带尾斜杠的规范路径直接交给子应用。
+
+    Starlette 的 Mount 把 `/mcp` 判成 partial match 并 307 到 `/mcp/`。用静态
+    Bearer 头的客户端（dsh 的 mcp-client）按文档配的正是 `/mcp`：多一跳重定向
+    没有收益，而代理链上任何一环在跳转时丢掉 Authorization 头，表现就是一个很难查
+    的 401。`/mcp/...` 这类带子路径的请求继续走 Mount。
+    """
+
+    def __init__(self, path: str, app) -> None:
+        self.path = path
+        self.app = app
+
+    def matches(self, scope: dict) -> tuple[Match, dict]:
+        if (scope.get("path") or "").rstrip("/") == self.path:
+            return Match.FULL, {}
+        return Match.NONE, {}
+
+    async def handle(self, scope, receive, send) -> None:
+        await self.app(dict(scope, path="/", root_path=""), receive, send)
+
+    async def __call__(self, scope, receive, send) -> None:  # Starlette 遍历路由表用
+        await self.handle(scope, receive, send)
+
+
 def create_app() -> FastAPI:
+    settings = get_settings()
+    # MCP server 只在启用 Agent 接入时装配：会话管理器要跟着应用生命周期走，
+    # 关闭时既不起管理器也不挂载 /mcp（docs/27 §Phase 0a）
+    mcp_manager, mcp_asgi = mcp_server.build_mcp_asgi() if settings.agent_enabled else (None, None)
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        # StreamableHTTP 的 task group 必须由宿主应用的 lifespan 起：挂载子应用时
+        # Starlette 不会代跑它的 lifespan，起了不了就等于 /mcp 每个请求都报错。
+        if mcp_manager is None:
+            yield
+            return
+        async with mcp_manager.run():
+            yield
+
     app = FastAPI(
         title="Knowledge Inbox Server",
         version="0.2.0",
         docs_url="/docs",
         openapi_url="/openapi.json",
+        lifespan=lifespan,
     )
 
     @app.exception_handler(ApiError)
@@ -93,6 +138,9 @@ def create_app() -> FastAPI:
     app.include_router(routes_admin.router)
     app.include_router(routes_shares.router)
     app.include_router(routes_share_public.router)
+    app.include_router(routes_llm_proxy.router)
+    app.include_router(routes_agent_tokens.router)
+    app.include_router(routes_agent_relay.router)
     app.include_router(routes_web.router)
 
     # Web 前端模块（docs/17 §11 ES modules）：/webstatic/js/app.js 等；
@@ -116,6 +164,12 @@ def create_app() -> FastAPI:
             return resp
 
     app.mount("/webstatic", RevalidateStaticFiles(directory=WEB_STATIC_DIR), name="webstatic")
+    if mcp_asgi is not None:
+        # 路由在前、挂载在后：/mcp 交给 MCP SDK 自己的 ASGI 应用，
+        # 认证由它的 token_verifier 中间件负责（不走 current_principal，
+        # 也不接受浏览器 Cookie）
+        app.router.routes.append(ExactPathAsgi("/mcp", mcp_asgi))
+        app.mount("/mcp", mcp_asgi, name="mcp")
     return app
 
 

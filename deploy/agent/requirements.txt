@@ -1,0 +1,10 @@
+# agent 编排容器的依赖：与 A 机同栈，只多一个 dsh SDK
+fastapi
+uvicorn[standard]
+httpx
+
+# dsh 制品：SDK 会装上同版本的 runtime-bin（manylinux_2_28_x86_64，实测解包 267 MiB，
+# 其中 261.88 MiB 是那一个自带 Node 的单文件可执行程序 —— 容器里因此不装 Node、不装 npm）。
+# 精确锁版本：上游 README 明写「开发者预览，未来会出现破坏兼容性的变更」。
+# 升级是一次显式动作：改这一行 + 重跑锁定实测 + 更新 docs/27 的实测数字。
+deepseek-harness-sdk==0.1.5rc1

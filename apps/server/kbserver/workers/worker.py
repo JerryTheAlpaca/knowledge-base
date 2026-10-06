@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session
 
 from ..config import get_settings
 from ..db import make_engine, make_session_factory
+from ..domain import agent_tasks as agent_stage
 from ..domain import pipeline, platform_sessions
 from ..domain.platforms import guess_platform
 from ..domain.source_labels import UPLOAD_PLATFORM
@@ -38,6 +39,9 @@ from ..extractors import wechat_channels as channels
 from ..extractors import xiaohongshu as xhs
 from ..extractors import zhihu as zhihu_mod
 from ..models import (
+    AgentEvent,
+    AgentSession,
+    AgentTask,
     AsrRun,
     AudioAsset,
     AudioUploadSession,
@@ -717,7 +721,9 @@ def recover_expired_leases(session_factory) -> int:
             job.lease_token = None
             job.lease_until = None
         db.commit()
-        return len(rows)
+        # agent 任务句柄走同一套恢复：卡 in running 的句柄不会自己回来（docs/27）
+    recovered_tasks = agent_stage.recover_expired_agent_leases(session_factory)
+    return len(rows) + recovered_tasks
 
 
 def cleanup_expired_uploads(db: Session, store: ObjectStore) -> int:
@@ -764,7 +770,8 @@ def retention_sweep(session_factory, store: ObjectStore) -> dict[str, int]:
     settings = get_settings()
     now = utcnow()
     stats = {"expired_uploads": 0, "expired_bundles": 0, "orphan_files": 0, "events": 0,
-             "idempotency": 0, "device_auth": 0, "audio_sessions": 0, "asr_work_dirs": 0}
+             "idempotency": 0, "device_auth": 0, "audio_sessions": 0, "asr_work_dirs": 0,
+             "agent_tasks": 0, "agent_events": 0, "agent_sessions": 0}
     with session_factory() as db:
         # 未引用上传（24h 过期，docs/02 §14.3）与音频上传会话（docs/13 §6.2）
         stats["expired_uploads"] = cleanup_expired_uploads(db, store)
@@ -855,6 +862,19 @@ def retention_sweep(session_factory, store: ObjectStore) -> dict[str, int]:
         stats["device_auth"] = db.query(DeviceAuthRequest).filter(
             DeviceAuthRequest.expires_at < now - timedelta(days=1)
         ).delete(synchronize_session=False)
+        # Agent 任务句柄：终态之后只保留一段时间供 kb_get_job 复查，随后清掉
+        stats["agent_tasks"] = db.query(AgentTask).filter(
+            AgentTask.state.in_(("succeeded", "failed", "cancelled", "unknown_outcome")),
+            AgentTask.updated_at < now - timedelta(days=settings.event_retention_days),
+        ).delete(synchronize_session=False)
+        # agent 会话镜像按 docs/27 的 730 天保留；会话已关闭且事件清空后删会话行
+        agent_cutoff = now - timedelta(days=settings.agent_event_retention_days)
+        stats["agent_events"] = db.query(AgentEvent).filter(
+            AgentEvent.created_at < agent_cutoff
+        ).delete(synchronize_session=False)
+        stats["agent_sessions"] = db.query(AgentSession).filter(
+            AgentSession.state == "closed", AgentSession.closed_at < agent_cutoff
+        ).delete(synchronize_session=False)
         # ASR 工作目录（PCM 与临时输入）：发布、终态失败都就地清理，这里兜住
         # 清理前进程被杀、以及取消后不再重跑的条目。活动与可恢复的 run 保持
         # 引用，不按 TTL 删进度（docs/13 §8）。
@@ -908,7 +928,13 @@ def run_once(session_factory, gate: idle_mod.AsrGate | None = None) -> bool:
                 print(f"[asr-perf] gate_hold reason={reason} normal_busy={int(normal_busy)}")
                 _note_asr_gate_reason(session_factory, reason)  # 审查 C-26：原因变化时暴露到状态
     if job is None:
-        return False
+        # 普通任务与 ASR 都没有时才轮到 agent 任务句柄：它不执行模型调用，
+        # 只把底层 Job 的进展投影成可轮询状态，几条查询而已，不会挤占加工队列
+        task = agent_stage.claim_agent_task(session_factory)
+        if task is None:
+            return False
+        agent_stage.execute_agent_task(session_factory, task.id, task.lease_token)
+        return True
     job_id = job.id
     lease_token = job.lease_token
     if job.stage == "enrich":

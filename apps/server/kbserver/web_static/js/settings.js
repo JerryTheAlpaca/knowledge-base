@@ -55,6 +55,70 @@ async function revokeDevice(deviceId) {
   } catch (e) { showErr(e); }
 }
 
+// ---------- Agent 接入：MCP 用的长期凭据（docs/27 §4）----------
+
+let agentTokens = [];
+
+async function loadAgentTokens() {
+  const host = $("agentTokenStatus"), list = $("agentTokenList");
+  if (!host || !list || $("secAgent").hidden) return;   // 未启用时不去问接口
+  try {
+    agentTokens = await api("/v1/agent-tokens");
+  } catch (e) {
+    host.textContent = "接入凭据列表加载失败。";
+    list.innerHTML = "";
+    return;
+  }
+  const live = agentTokens.filter((t) => !t.revoked);
+  host.innerHTML = live.length
+    ? '<span class="st-ok status-pill">' + live.length + " 枚在用</span>" +
+      '<span class="small ml-8">撤销后对方的下一次请求就直接失效，不等它自然到期。</span>'
+    : '<span class="small">还没有接入凭据。新建一枚，才能在你的电脑上用 dsh、Qoder 或 Claude Code 连这里。</span>';
+  list.innerHTML = live.map((t) =>
+    '<div class="devrow"><div class="devmain"><div class="devname">' + esc(t.name) +
+    '</div><div class="devmeta">' + esc((t.scopes || []).join("、")) +
+    "・" + (t.last_seen_at ? "最近使用 " + fmtTime(t.last_seen_at) : "还没用过") +
+    "・到期 " + fmtTime(t.expires_at) + "</div></div>" +
+    '<button class="small danger" data-agent-revoke="' + esc(t.token_id) + '">停用</button></div>').join("");
+}
+
+async function createAgentToken() {
+  const name = await promptModal({
+    title: "新建接入凭据",
+    body: "给这台客户端起个名字，以后在列表里认它。名字只是标签，不代表权限。",
+    placeholder: "例如：我笔记本上的 dsh",
+    confirmLabel: "签发",
+  });
+  if (!name) return;
+  try {
+    const created = await api("/v1/agent-tokens", {
+      method: "POST", body: { name: String(name).slice(0, 120) },
+    });
+    // 明文只在这一次拿到：填进输入框让用户自己复制，界面不把它画成可回看的列表项
+    $("agentTokenValue").value = created.token;
+    $("agentMcpUrl").textContent = location.origin + "/mcp";
+    $("agentTokenReveal").hidden = false;
+    await loadAgentTokens();
+    toast("已签发", { type: "ok" });
+  } catch (e) { showErr(e); }
+}
+
+async function revokeAgentToken(tokenId) {
+  const row = agentTokens.find((t) => t.token_id === tokenId);
+  const ok = await confirmModal({
+    title: "停用接入凭据",
+    body: "停用「" + ((row && row.name) || "这枚") + "」后，那台客户端下一次请求就会失败。" +
+      "不影响你 Obsidian 插件的同步通道，也不影响 HTML 分享。",
+    confirmLabel: "停用", danger: true,
+  });
+  if (!ok) return;
+  try {
+    await api("/v1/agent-tokens/" + encodeURIComponent(tokenId) + "/revoke", { method: "POST" });
+    toast("已停用", { type: "ok" });
+    loadAgentTokens();
+  } catch (e) { showErr(e); }
+}
+
 // ---------- 模型配置（统一配置池 + 整理/优化分档选择） ----------
 
 let loadedProfiles = [];
@@ -116,6 +180,7 @@ async function loadSettingsData() {
     renderAutoEnrich(settings);
     renderAiParagraphing(settings);
     loadDevices();
+    loadAgentTokens();
     // 其他平台登录态：单个失败不影响其余区块
     const plats = await Promise.all(PLAT_SHOWN.map((p) =>
       api("/v1/platform-sessions/" + p.platform).catch(() => null)));
@@ -444,6 +509,22 @@ export function initSettings() {
     if (act === "save") platSave(platform, label);
     else if (act === "check") platCheck(platform, label);
     else if (act === "revoke") platRevoke(platform, label);
+  });
+  $("agentTokenNew").addEventListener("click", createAgentToken);
+  $("agentTokenDone").addEventListener("click", () => {
+    // 明文留在已渲染的输入框里没有意义：收好就清掉，别让它跟着页面留在历史里
+    $("agentTokenValue").value = "";
+    $("agentTokenReveal").hidden = true;
+  });
+  $("agentTokenCopy").addEventListener("click", async () => {
+    const value = $("agentTokenValue").value;
+    if (!value) return;
+    try { await navigator.clipboard.writeText(value); toast("已复制", { type: "ok" }); }
+    catch (e) { $("agentTokenValue").select(); toast("复制失败，已帮你选中，按 Ctrl+C", { type: "warn" }); }
+  });
+  $("agentTokenList").addEventListener("click", (e) => {
+    const rev = e.target.closest("[data-agent-revoke]");
+    if (rev) revokeAgentToken(rev.dataset.agentRevoke);
   });
   $("deviceList").addEventListener("click", (e) => {
     const act = e.target.closest("[data-device-activate]");

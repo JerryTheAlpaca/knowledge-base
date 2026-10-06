@@ -65,25 +65,36 @@ def create_capture(
     principal=Depends(require_scope("captures:create")),
     db: Session = Depends(get_db),
 ) -> CaptureAccepted:
-    user = principal.user
-    if not idempotency_key:
-        raise ApiError("SCHEMA_INVALID", "缺少 Idempotency-Key 请求头", status_code=422)
-
     payload = body.model_dump(mode="json")
+    result = create_capture_impl(db, user_id=principal.user.id, payload=payload,
+                                 idempotency_key=idempotency_key)
+    return CaptureAccepted(**result)
+
+
+def create_capture_impl(db: Session, *, user_id: str, payload: dict,
+                        idempotency_key: str | None) -> dict:
+    """采集落库的实现体：HTTP 路由与 MCP 工具（投递笔记/草稿）共用同一条幂等路径。
+
+    返回可直接构造 `CaptureAccepted` 的字典。幂等键缺失一律拒绝：模型重试、
+    网络抖动和用户手抖都会走这里，没有幂等键就是重复建条目。
+    """
+    if not idempotency_key:
+        raise ApiError("SCHEMA_INVALID", "缺少 Idempotency-Key", status_code=422)
+
     request_hash = pipeline.sha256_hex(pipeline.canonical_json(payload))
 
-    existing = repo.idempotency_lookup(db, user.id, "POST /v1/captures", idempotency_key)
+    existing = repo.idempotency_lookup(db, user_id, "POST /v1/captures", idempotency_key)
     if existing:
         if existing.request_hash != request_hash:
             raise ApiError("IDEMPOTENCY_CONFLICT", "同一幂等键对应不同请求内容", status_code=409)
-        return CaptureAccepted(**existing.response_json)
+        return dict(existing.response_json)
 
     uploads_index = {}
     wanted = list(payload.get("upload_ids") or [])
     if payload.get("primary_audio_upload_id"):
         wanted.append(payload["primary_audio_upload_id"])
     for uid in dict.fromkeys(wanted):
-        up = repo.get_upload(db, user.id, uid)
+        up = repo.get_upload(db, user_id, uid)
         if up is None or up.state != "completed":
             raise ApiError("SCHEMA_INVALID", f"upload_id 不存在或未完成：{uid}")
         if up.expires_at and up.expires_at <= utcnow():
@@ -95,7 +106,7 @@ def create_capture(
 
     existing_capture = (
         db.query(CaptureModel)
-        .filter(CaptureModel.user_id == user.id, CaptureModel.client_capture_id == payload["client_capture_id"])
+        .filter(CaptureModel.user_id == user_id, CaptureModel.client_capture_id == payload["client_capture_id"])
         .one_or_none()
     )
     if existing_capture is not None:
@@ -103,30 +114,23 @@ def create_capture(
         item = db.query(Item).filter(Item.capture_id == existing_capture.id).one_or_none()
         if item is None:
             raise ApiError("NOT_FOUND", "该 capture 对应的条目不存在", status_code=404)
+        result = {
+            "capture_id": existing_capture.id,
+            "item_id": item.id,
+            "durable": True,
+            "pipeline_state": item.pipeline_state,
+            "received_at": existing_capture.received_at.isoformat(),
+        }
         repo.idempotency_save(
-            db, user.id, "POST /v1/captures", idempotency_key, request_hash,
-            {
-                "capture_id": existing_capture.id,
-                "item_id": item.id,
-                "durable": True,
-                "pipeline_state": item.pipeline_state,
-                "received_at": existing_capture.received_at.isoformat(),
-            },
-            202,
+            db, user_id, "POST /v1/captures", idempotency_key, request_hash, result, 202,
             ttl_days=repo_settings_ttl(),
         )
-        return CaptureAccepted(
-            capture_id=existing_capture.id,
-            item_id=item.id,
-            durable=True,
-            pipeline_state=item.pipeline_state,
-            received_at=existing_capture.received_at,
-        )
+        return result
 
     pipeline.validate_capture_payload(payload, uploads_index)
 
     store = ObjectStore()
-    capture, item = pipeline.create_capture(db, store, user_id=user.id, payload=payload, uploads=uploads_index)
+    capture, item = pipeline.create_capture(db, store, user_id=user_id, payload=payload, uploads=uploads_index)
 
     result = {
         "capture_id": capture.id,
@@ -136,10 +140,10 @@ def create_capture(
         "received_at": capture.received_at.isoformat(),
     }
     repo.idempotency_save(
-        db, user.id, "POST /v1/captures", idempotency_key, request_hash, result, 202,
+        db, user_id, "POST /v1/captures", idempotency_key, request_hash, result, 202,
         ttl_days=repo_settings_ttl(),
     )
-    return CaptureAccepted(**result)
+    return result
 
 
 def repo_settings_ttl() -> int:

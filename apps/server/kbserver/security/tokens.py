@@ -43,6 +43,17 @@ WEB_SCOPES = [
     "shares:write",
 ]
 
+# ---- Agent Token（docs/27 §agent token 生命周期）----
+#
+# 单独一类，不复用设备 Token 语义：撤销设备 Token 会连带掐掉 Obsidian 同步回执通道，
+# 而 agent Token 只服务 MCP 与对话入口，一键停用不能影响同步。
+# 权限按 MCP 工具面切：mcp:read 只读，mcp:write 才能往收件箱投东西。
+MCP_READ_SCOPE = "mcp:read"
+MCP_WRITE_SCOPE = "mcp:write"
+AGENT_SCOPES = [MCP_READ_SCOPE, MCP_WRITE_SCOPE]
+# Device.kind 的新取值：与 phone|desktop|web 并列，设备列表与同步链路都不会误认它是同步端
+AGENT_DEVICE_KIND = "agent"
+
 
 def hash_token(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
@@ -61,7 +72,8 @@ def constant_time_eq(a: str, b: str) -> bool:
     return hmac.compare_digest(a.encode(), b.encode())
 
 
-def issue_token(user_id: str, device_id: str, scopes: list[str]) -> tuple[str, Token]:
+def issue_token(user_id: str, device_id: str, scopes: list[str],
+                ttl_days: int | None = None) -> tuple[str, Token]:
     settings = get_settings()
     raw = new_service_token()
     token = Token(
@@ -69,9 +81,14 @@ def issue_token(user_id: str, device_id: str, scopes: list[str]) -> tuple[str, T
         device_id=device_id,
         token_hash=hash_token(raw),
         scopes_json=scopes,
-        expires_at=utcnow() + timedelta(days=settings.token_ttl_days),
+        expires_at=utcnow() + timedelta(days=settings.token_ttl_days if ttl_days is None else ttl_days),
     )
     return raw, token
+
+
+def issue_agent_token(user_id: str, device_id: str, scopes: list[str]) -> tuple[str, Token]:
+    """Agent Token 走同一张 tokens 表与同一条校验路径，只有有效期不同（docs/27）。"""
+    return issue_token(user_id, device_id, scopes, ttl_days=get_settings().agent_token_ttl_days)
 
 
 def issue_pairing_code(user_id: str, device_kind: str, scopes: list[str]) -> tuple[str, PairingCode]:

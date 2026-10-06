@@ -118,10 +118,14 @@ fi
 CHANGED=$(git diff --name-only "$LOCAL" "$REMOTE" 2>/dev/null || echo "")
 need_server=0
 need_renderer=0
+need_agent=0
 while IFS= read -r path; do
   case "$path" in
     apps/server/*) need_server=1 ;;
     apps/share-renderer/*) need_renderer=1 ;;
+    # agent 镜像里那 267MB 的 dsh 运行时只在 deploy/agent/* 真的变了才重建；
+    # 按 COPY 顺序，requirements.txt 没变时 pip 层直接命中缓存，改代码几乎不花时间
+    deploy/agent/*) need_agent=1 ;;
     deploy/docker-compose.yml) need_server=1; need_renderer=1 ;;
   esac
 done <<<"$CHANGED"
@@ -140,10 +144,11 @@ git pull --ff-only origin main \
 #（层按内容共享，重建几乎不额外占空间），apps/share-renderer 产出 share_runner
 #（底座 Playwright 镜像 3.4GB）。docs/tests/scripts/contracts 不进镜像。
 # 此前每轮 push 都无脑 build 全部四个服务，是 containerd 快照 13 天新增 435 个的直接来源。
-if [ "$need_server" = 1 ] || [ "$need_renderer" = 1 ]; then
+if [ "$need_server" = 1 ] || [ "$need_renderer" = 1 ] || [ "$need_agent" = 1 ]; then
   SERVICES=()
   [ "$need_server" = 1 ] && SERVICES+=(api worker share_worker)
   [ "$need_renderer" = 1 ] && SERVICES+=(share_runner)
+  [ "$need_agent" = 1 ] && SERVICES+=(agent)
   USE=$(disk_pct)
   if [ "${USE:-0}" -ge "$DISK_FAIL_PCT" ]; then
     echo "[$(date '+%F %T')] ERROR: disk at ${USE}% (>= ${DISK_FAIL_PCT}%), skipping build; 先人工回收再推"

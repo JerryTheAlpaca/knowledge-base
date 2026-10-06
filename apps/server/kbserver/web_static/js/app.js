@@ -11,6 +11,7 @@ import { initDetail, openDetail, closeDetail, currentDetailId } from "./item-det
 import { initOnboarding, maybeShowOnboarding, reopenOnboarding } from "./onboarding.js";
 import { initSettings, showSettings, hideSettings } from "./settings.js";
 import { initShares, openSharesView, hideSharesView, isSharesOpen } from "./shares.js";
+import { initAgent, openAgentView, hideAgentView, isAgentOpen } from "./agent.js";
 import { attachBloomTouch } from "./touch-bloom.js";
 
 let meInfo = null;
@@ -32,10 +33,16 @@ function showApp(me) {
   $("whoChip").textContent = name;
   $("menuUserName").textContent = name;
   $("menuAdmin").hidden = !me.is_admin;
-  // 分享创作未启用时不露出入口（选择模式与作品列表都只在启用后出现）
+  // 两个入口各自一个开关：agent 容器挂了不该把分享作品的入口一起关掉
+  const agentBtn = $("sharesBtn");
+  if (agentBtn) agentBtn.hidden = !me.agent_enabled;
+  // 设置页里的「Agent 接入」跟着同一个开关走：没启用时不露出入口，
+  // 否则点进去只得到一句「还没有启用」
+  const agentCard = $("secAgent");
+  if (agentCard) agentCard.hidden = !me.agent_enabled;
   const sharesOn = !!me.shares_enabled;
-  const sharesBtn = $("sharesBtn");
-  if (sharesBtn) sharesBtn.hidden = !sharesOn;
+  const worksBtn = $("worksBtn");
+  if (worksBtn) worksBtn.hidden = !sharesOn;
   const selectBtn = $("selectToggle");
   if (selectBtn) selectBtn.hidden = !sharesOn;
 }
@@ -48,17 +55,28 @@ function route() {
   closeModal(null);  // 换视图时关闭遗留弹窗（确认/记录/补充）
   const params = new URLSearchParams(location.search);
   const onShares = params.get("view") === "shares";
+  const onAgent = params.get("view") === "agent";
   const onSettings = params.get("view") === "settings";
-  // 列表被详情/设置/分享舞台盖住时停掉它的轮询（审查 C-06）：抽屉展开时列表可见，继续轮询
-  setListPollPaused(onSettings || !!params.get("item") || onShares);
+  // 列表被详情/设置/分享舞台/对话面板盖住时停掉它的轮询（审查 C-06）：抽屉展开时列表可见，继续轮询
+  setListPollPaused(onSettings || !!params.get("item") || onShares || onAgent);
   if (onShares) {
     // 分享舞台直接搭在首页之上：homeView 留着，金蔷薇在强遮罩后面当背景
+    if (isAgentOpen()) hideAgentView();   // 两层遮罩共用一个位置，换进来先把另一层收掉
     hideSettings();
     $("homeView").hidden = false;
     openSharesView(params.get("share") || null, params.get("new") === "1");
     return;
   }
+  if (onAgent) {
+    // 自由对话面板同属一层：底下还是首页那朵蔷薇
+    if (isSharesOpen()) hideSharesView();
+    hideSettings();
+    $("homeView").hidden = false;
+    openAgentView(params.get("session") || null);
+    return;
+  }
   if (isSharesOpen()) hideSharesView();
+  if (isAgentOpen()) hideAgentView();
   const wasOnSettings = !$("settingsView").hidden;
   if (onSettings) {
     $("homeView").hidden = true;
@@ -114,7 +132,8 @@ function closeMenus() {
 function goHome() {
   const drawerWasOpen = isDrawerOpen();
   const atHome = location.pathname === "/inbox" && !location.search &&
-    $("settingsView").hidden && $("detailView").hidden && !drawerWasOpen && !isSharesOpen();
+    $("settingsView").hidden && $("detailView").hidden && !drawerWasOpen &&
+    !isSharesOpen() && !isAgentOpen();
   settingsFromDrawer = false;
   if (atHome) return;
   // 先收抽屉再揭开舞台：遮罩还盖着的时候收，列表不会在返回首页那一瞬闪一下
@@ -185,8 +204,8 @@ function wireTopbar() {
       e.kbEscTaken = true;   // 一次按键只收一层：菜单收掉，底下的舞台/抽屉别跟着收
     }
     if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
-      // 舞台上那副输入框也是首页结构的一部分，别把对话当成采集提交出去
-      if (!$("appView").hidden && !$("homeView").hidden && !isSharesOpen()) submitCapture();
+      // 舞台上和对话面板里那两副输入框都是首页结构的一部分，别把对话当成采集提交出去
+      if (!$("appView").hidden && !$("homeView").hidden && !isSharesOpen() && !isAgentOpen()) submitCapture();
     }
   });
 }
@@ -215,6 +234,7 @@ window.addEventListener("popstate", route);
   initOnboarding();
   initSettings();
   initShares(navigate);
+  initAgent(navigate);
   attachBloomTouch(document.querySelector("svg.rose"));   // 点花冠冒金粉，与说明页首屏同一套手感
   window.__kbRefreshItems = refreshItems;
   try {

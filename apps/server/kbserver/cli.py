@@ -513,6 +513,26 @@ def cmd_reconcile(args) -> None:
         print(f"完成：{changed} 条已落定。")
 
 
+def cmd_agent_relay_key(args) -> None:
+    """导出 `purpose_key(master_key, "agent-relay-v1")` 这 32 字节给 agent 容器。
+
+    容器要能自己签「回传事件」的凭据，但又绝不能拿到 master_key（拿到就能解所有人的
+    模型凭据）。所以部署时导出的是**派生后的用途密钥**：它能签/验中继凭据，
+    解不开任何凭据信封。写进 deploy/secrets/agent_relay_key，只有 agent 容器挂载。
+    """
+    from .security.agent_relay import encode_key, relay_signing_key
+
+    settings = get_settings()
+    text = encode_key(relay_signing_key(settings.load_master_key()))
+    if args.write_to:
+        path = Path(args.write_to)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="ascii")
+        print(f"已写入 {path}（0600 由部署侧的 secrets 管理保证）")
+        return
+    print(text)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="kbserver", description="Knowledge Inbox 管理命令")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -570,6 +590,11 @@ def main() -> None:
     p.add_argument("--min-age-hours", type=float, default=1.0,
                    help="只列出创建时间早于该小时数的操作（默认 1）")
     p.set_defaults(func=cmd_reconcile)
+
+    p = sub.add_parser("agent-relay-key", help="导出 agent 容器的中继密钥（派生值，不是 master_key）")
+    p.add_argument("--write-to", default=None,
+                   help="直接写进这个文件（部署用），不传就打到标准输出")
+    p.set_defaults(func=cmd_agent_relay_key)
 
     args = parser.parse_args()
     args._now = utcnow()

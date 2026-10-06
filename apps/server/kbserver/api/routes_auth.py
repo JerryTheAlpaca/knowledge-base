@@ -95,6 +95,8 @@ def auth_me(request: Request, principal=Depends(current_principal), db: Session 
         "auth_login_url": settings.auth_login_url or None,
         # 未启用的功能不在界面上露出入口：否则点到底只得到一句「还没有启用」
         "shares_enabled": settings.share_enabled,
+        # Agent 对话与 HTML 分享各自一个开关：agent 容器挂了不该连分享入口一起关掉
+        "agent_enabled": settings.agent_enabled,
     }
 
 

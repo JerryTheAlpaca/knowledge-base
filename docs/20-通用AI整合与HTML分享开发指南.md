@@ -173,6 +173,14 @@ AI 判断信息已经足够时，给出简短复述和拟采用的表达方向�
 
 等待回答或确认时持久化对话并释放 Worker 租约、浏览器和计算槽位，不后台轮询调用模型，也不因用户久未回复而自动采纳默认项。再次进入直接恢复原问题和已填回答。用户提出补充说明可以更新当前理解，不必重新创建作品。
 
+**本节口径同样适用于后来的 agent 自由对话面板**（docs/27 §9）：过程块里只能出现
+运行时真实发出的事件——工具调用、工具返回、阶段状态、错误与回合收尾——
+不允许出现伪造的「思考流」、进度百分比或预计剩余时间。编排服务把 dsh 的内部记账类
+事件（`step/start`、`request/context` 等）直接挡在界面外，只放行
+`user_message / assistant_message / tool_call / tool_result / status / error / turn_end`
+这七类，模型侧的隐藏推理不进事件表也不进 SSE。内存准入不通过时同样按这条口径说话：
+「服务器忙，已排队」，而不是转圈或报错。
+
 ### 3.6 预览与继续修改
 
 - 新版本做出来时成品卡片自动展开预览，卡片上是“展开／收起预览”“下载 HTML”“分享”，已分享时给出链接和“撤销”；继续提要求就用底部那个输入框，不再另开修改输入区。
@@ -678,7 +686,13 @@ form-action 'none';
 
 原因是当前中心登录配置使用主域 Cookie。Cookie 的 Domain 属性会覆盖子域，简单使用 `share.jerrythealpaca.cn` 并不能达到“不接触账号 Cookie”的目标。[MDN Set-Cookie](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Set-Cookie)
 
-分享站点仅提供受控分享路径，不暴露 `/v1`、中心登录中继或通用对象存储。反代删除传入 Cookie／Authorization，不返回 Set-Cookie。即使使用独立域名，也保留 iframe 和 CSP，域名不能替代页面隔离。`/s/{token}` 与 `/preview/{token}` 同样先看 `SHARE_ENABLED`：关掉功能时两条路由都返回不可用页面，不靠“没配域名”顺带兜住（docs/22 C-11）。
+分享站点仅提供受控分享路径，不暴露 `/v1`、中心登录中继或通用对象存储。
+
+同理适用于 `/mcp`：知识库的 MCP 端点挂在主站（`kb.jerrythealpaca.cn/mcp`），**不放分享站点**。
+它靠 agent Token 的 Bearer 做用户隔离，浏览器 Cookie 一概不接受（`_load_device_principal`
+显式 Bearer 无效就拒绝，不回退 Cookie）。把它抄到 `share.jerrythealpaca.com` 上，等于给
+一个持凭据的客户端多开一个与网页同源的攻击面，而那个域名「不接触账号 Cookie」的前提
+在 MCP 这条路径上本来就不成立。反代删除传入 Cookie／Authorization，不返回 Set-Cookie。即使使用独立域名，也保留 iframe 和 CSP，域名不能替代页面隔离。`/s/{token}` 与 `/preview/{token}` 同样先看 `SHARE_ENABLED`：关掉功能时两条路由都返回不可用页面，不靠“没配域名”顺带兜住（docs/22 C-11）。
 
 尚未配置隔离分享站点时，本地开发和私有预览可以继续，下载可以交付；生产“生成分享链接”显示具体配置未完成原因，不偷偷退回主站直接执行生成页面。
 

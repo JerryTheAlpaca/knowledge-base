@@ -1,0 +1,38 @@
+#!/usr/sbin/nft -f
+# agent 容器的宿主侧出向白名单（docs/27 §Phase 3a）
+#
+# **A 机同机部署时不需要这份规则**：compose 里 `agent_internal` 是 internal 网络，
+# 没有网关也没有 NAT，容器到不了公网、到不了 169.254.169.254，只能碰到同一网络里的
+# api。这比防火墙更干净，而且随 compose 一起搬机器，不留一份要手工同步的宿主规则。
+#
+# 这份规则服务于另一种形态：agent 容器搬到了 B 机，必须跨公网访问 A 机。
+# 那时 internal 网络挡不住「出公网到 A 机 443」这条唯一合法的路，
+# 剩下的全 Drop。用 `nft -f` 加载，或并入既有的宿主 nftables 表。
+#
+# 变量按实际部署改：A_IP 是 A 机公网地址，BR 是 agent 容器所在网桥。
+
+define A_IP = 122.51.211.231
+define METADATA = 169.254.169.254
+
+table inet agent_egress {
+  chain output {
+    type filter hook output priority filter; policy accept;
+
+    # 只按容器网桥匹配，不影响宿主上其他站点与运维通道
+    oifname != "br-agent" accept
+
+    # 唯一允许的出向目标：A 机的 HTTPS
+    ip saddr 172.30.0.0/24 ip daddr $A_IP tcp dport 443 accept
+
+    # 云元数据一律挡掉：拿到它就能读到实例凭据与用户数据元信息
+    ip daddr $METADATA drop
+
+    # DNS 只在容器自己解析 internal 服务名时用得到；跨机部署时容器里
+    # 只配 hosts 指向 A 机域名，不需要放行 53
+    udp dport 53 drop
+    tcp dport 53 drop
+
+    # 其余全部拒绝：不是「暂时不放」，是这道边界本来就该是闭合的
+    ip saddr 172.30.0.0/24 drop
+  }
+}

@@ -21,11 +21,23 @@
   <div class="topbar-inner">
     <button class="brand brandbtn" id="brandHome" title="返回主页">金蔷薇</button>
     <div class="spacer"></div>
+    <!-- 三个入口各管一件事，定宽图标钮并排：多一个按钮是一次性的布局变化，
+         之后任何交互都不会再把右边的按钮横向推着走 -->
     <div class="menuwrap">
-      <button class="icon ghost" id="sharesBtn" aria-label="AI 对话" title="以前和 AI 的对话">
+      <!-- 位置、图标、尺寸都不变：老用户的肌肉记忆是「这三条横线 = 和 AI 的对话」，
+           语义靠 title 说清，不靠换图标 -->
+      <button class="icon ghost" id="sharesBtn" aria-label="AI 对话" title="和 AI 自由对话">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
              stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
           <path d="M4 7h16"/><path d="M4 12h16"/><path d="M4 17h10"/>
+        </svg>
+      </button>
+    </div>
+    <div class="menuwrap">
+      <button class="icon ghost" id="worksBtn" aria-label="我的分享作品" title="我的分享作品">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M6 4h12v16.5l-6-4.2-6 4.2z"/>
         </svg>
       </button>
     </div>
@@ -922,6 +934,28 @@
       <p class="help">在 Obsidian 中安装 KB Inbox 插件并用同一账号登录后，整理完成的笔记会自动写入你的知识库。</p>
     </div>
 
+    <div class="card" id="secAgent" hidden>
+      <h2>Agent 接入</h2>
+      <p class="help">让 AI 助手（dsh、Qoder、Claude Code 这类支持 MCP 的客户端）连上你自己的收件箱。
+        它能读你收进来的条目、把整理结果投回你自己的收件箱；<b>不能</b>改原文、不能删条目、
+        也看不到你填的模型 Key。</p>
+      <div id="agentTokenStatus" class="muted">加载中…</div>
+      <div id="agentTokenList" style="margin-top:12px"></div>
+      <div class="row btnrow">
+        <button class="primary" id="agentTokenNew">新建接入凭据</button>
+      </div>
+      <!-- 明文只在这里出现一次：关掉就得重新签发，服务端不存原文 -->
+      <div id="agentTokenReveal" hidden>
+        <p class="help">这串只显示这一次。把它填进你的 MCP 客户端，服务地址是
+          <code id="agentMcpUrl"></code>，请求头 <code>Authorization: Bearer …</code>。</p>
+        <input id="agentTokenValue" type="text" readonly spellcheck="false" autocomplete="off">
+        <div class="row btnrow">
+          <button id="agentTokenCopy">复制</button>
+          <button id="agentTokenDone">我收好了</button>
+        </div>
+      </div>
+    </div>
+
     <div class="card" id="secBili">
       <h2>内容平台</h2>
 
@@ -1010,6 +1044,63 @@
       </div>
       <p class="conv-note">每一次和 AI 的多轮问答都留在这里，点开就能接着说。生成的作品默认只有你自己能看到。</p>
       <div class="stage-scroll"><ul class="conv-list" id="shareWorks"></ul></div>
+    </div>
+  </section>
+
+  <!-- ============ 与 AI 自由对话：同一套遮罩与胶囊输入，会话列表在面板里自带 ============ -->
+  <!-- 结构复用分享舞台已验证过的 class（stage-* / smartbox / t-card / proc-*），
+       内容全部由 js/agent.js 画；只写真发出来的事件，不显示模型隐藏推理（docs/20 §3.5） -->
+  <section id="agentView" hidden>
+    <div class="stage-scrim" aria-hidden="true"></div>
+    <div class="stage-inner">
+      <div class="stage-top">
+        <span class="stage-title">AI 对话</span>
+        <span class="spacer"></span>
+        <!-- 会话切换条：定宽 + 省略号，切到哪一段都不推动旁边的按钮 -->
+        <div class="menuwrap agent-switchwrap">
+          <button class="btn ghost small agent-switchbtn" id="agentSwitch"
+                  aria-haspopup="true" aria-expanded="false" aria-label="切换会话" title="切换会话">
+            <span class="agent-switch-label" id="agentSwitchLabel">选择会话</span>
+            <span class="proc-chev" aria-hidden="true"></span>
+          </button>
+          <div class="menu agent-sessions" id="agentSessions" hidden>
+            <div class="agent-sess-head">
+              <span class="small">我的会话</span>
+              <span class="spacer"></span>
+              <button class="btn ghost small" id="agentNewTop">新建会话</button>
+            </div>
+            <ul class="agent-sess-list" id="agentSessList"></ul>
+          </div>
+        </div>
+        <button class="btn ghost small" id="agentNew" title="新建会话">新建</button>
+        <button class="icon ghost" id="agentClose" aria-label="退出 AI 对话" title="退出">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="2" stroke-linecap="round" aria-hidden="true">
+            <path d="M6 6l12 12M18 6L6 18"/>
+          </svg>
+        </button>
+      </div>
+      <div class="stage-scroll" id="agentThread"></div>
+      <div class="stage-dock">
+        <!-- 服务器忙、容器接不上、这一轮状态传不回来——都说在这一行，不转圈也不当成报错 -->
+        <div class="stage-status" id="agentStatus" hidden></div>
+        <p class="small" id="agentHint"></p>
+        <div class="smartbox" id="agentBox">
+          <div class="capmain">
+            <textarea id="agentInput" rows="1" placeholder="想问点什么……" aria-label="对 AI 说"></textarea>
+          </div>
+          <div class="capbar">
+            <span class="spacer"></span>
+            <button class="capsubmit" id="agentSend" aria-label="发送" title="发送">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                   stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <line x1="12" y1="19" x2="12" y2="5"/>
+                <polyline points="5 12 12 5 19 12"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   </section>
 

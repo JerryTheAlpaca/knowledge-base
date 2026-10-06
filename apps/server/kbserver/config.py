@@ -74,6 +74,29 @@ class Settings:
     pairing_code_ttl_minutes: int = int(os.environ.get("PAIRING_CODE_TTL_MINUTES", "10"))
     web_session_ttl_days: int = int(os.environ.get("WEB_SESSION_TTL_DAYS", "7"))
 
+    # Agent 接入（docs/27）：MCP server、LLM 代理与 agent 容器中继。
+    # 与 SHARE_ENABLED 分开：agent 容器挂了只关对话入口，不影响 HTML 分享。
+    agent_enabled: bool = os.environ.get("AGENT_ENABLED", "false").lower() in ("1", "true", "yes")
+    # dsh 侧 header 是启动时读一次的静态配置，没有刷新钩子，TTL 必须长于会话周期
+    agent_token_ttl_days: int = int(os.environ.get("AGENT_TOKEN_TTL_DAYS", "180"))
+    # 内存准入而不是固定并发上限（照 ASR_IDLE_MIN_AVAILABLE_MIB 先例）
+    agent_admission_min_available_mib: int = int(os.environ.get("AGENT_ADMISSION_MIN_AVAILABLE_MIB", "384"))
+    agent_llm_max_concurrency: int = int(os.environ.get("AGENT_LLM_MAX_CONCURRENCY", "2"))
+    agent_llm_per_user_concurrency: int = int(os.environ.get("AGENT_LLM_PER_USER_CONCURRENCY", "2"))
+    agent_home_quota_mib: int = int(os.environ.get("AGENT_HOME_QUOTA_MIB", "512"))
+    # LLM 代理的每用户每日硬限：token 与请求数三个口径都卡，超限 429 不转发
+    agent_budget_input_tokens_per_day: int = int(os.environ.get("AGENT_BUDGET_INPUT_TOKENS_PER_DAY", "1000000"))
+    agent_budget_output_tokens_per_day: int = int(os.environ.get("AGENT_BUDGET_OUTPUT_TOKENS_PER_DAY", "200000"))
+    agent_budget_requests_per_day: int = int(os.environ.get("AGENT_BUDGET_REQUESTS_PER_DAY", "200"))
+    agent_llm_session_ttl_seconds: int = int(os.environ.get("AGENT_LLM_SESSION_TTL_SECONDS", "900"))
+    # agent 编排容器地址（同机 compose 服务名；搬 B 机改成 https URL，代码不动）
+    agent_base_url: str = os.environ.get("AGENT_BASE_URL", "")
+    # A→agent 中继凭据与 agent→A 回传凭据的有效期
+    agent_relay_ttl_seconds: int = int(os.environ.get("AGENT_RELAY_TTL_SECONDS", "900"))
+    # 会话历史在 A 机的保留天数（docs/27 §对话记录）
+    agent_event_retention_days: int = int(os.environ.get("AGENT_EVENT_RETENTION_DAYS", "730"))
+    agent_http_timeout_seconds: float = float(os.environ.get("AGENT_HTTP_TIMEOUT_SECONDS", "30"))
+
     # 中心认证（docs/05 §4.1）：统一登录由 jerrythealpaca.cn 的 Ledger 提供。
     # 为空表示未接入中心认证：Web Cookie 通道返回 503，插件/设备 Bearer 不受影响。
     auth_session_url: str = os.environ.get("AUTH_SESSION_URL", "")
@@ -245,4 +268,18 @@ def get_settings() -> Settings:
         share_max_source_chunks=int(os.environ.get("SHARE_MAX_SOURCE_CHUNKS", "40")),
         share_max_interactions=int(os.environ.get("SHARE_MAX_INTERACTIONS", "8")),
         share_max_screenshots=int(os.environ.get("SHARE_MAX_SCREENSHOTS", "6")),
+        agent_enabled=os.environ.get("AGENT_ENABLED", "false").lower() in ("1", "true", "yes"),
+        agent_token_ttl_days=int(os.environ.get("AGENT_TOKEN_TTL_DAYS", "180")),
+        agent_admission_min_available_mib=int(os.environ.get("AGENT_ADMISSION_MIN_AVAILABLE_MIB", "384")),
+        agent_llm_max_concurrency=int(os.environ.get("AGENT_LLM_MAX_CONCURRENCY", "2")),
+        agent_llm_per_user_concurrency=int(os.environ.get("AGENT_LLM_PER_USER_CONCURRENCY", "2")),
+        agent_home_quota_mib=int(os.environ.get("AGENT_HOME_QUOTA_MIB", "512")),
+        agent_budget_input_tokens_per_day=int(os.environ.get("AGENT_BUDGET_INPUT_TOKENS_PER_DAY", "1000000")),
+        agent_budget_output_tokens_per_day=int(os.environ.get("AGENT_BUDGET_OUTPUT_TOKENS_PER_DAY", "200000")),
+        agent_budget_requests_per_day=int(os.environ.get("AGENT_BUDGET_REQUESTS_PER_DAY", "200")),
+        agent_llm_session_ttl_seconds=int(os.environ.get("AGENT_LLM_SESSION_TTL_SECONDS", "900")),
+        agent_base_url=os.environ.get("AGENT_BASE_URL", ""),
+        agent_relay_ttl_seconds=int(os.environ.get("AGENT_RELAY_TTL_SECONDS", "900")),
+        agent_event_retention_days=int(os.environ.get("AGENT_EVENT_RETENTION_DAYS", "730")),
+        agent_http_timeout_seconds=float(os.environ.get("AGENT_HTTP_TIMEOUT_SECONDS", "30")),
     )
