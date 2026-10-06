@@ -148,15 +148,26 @@ if [ "$need_server" = 1 ] || [ "$need_renderer" = 1 ] || [ "$need_agent" = 1 ]; 
   SERVICES=()
   [ "$need_server" = 1 ] && SERVICES+=(api worker share_worker)
   [ "$need_renderer" = 1 ] && SERVICES+=(share_runner)
-  [ "$need_agent" = 1 ] && SERVICES+=(agent)
+  # agent 只在部署确实启用了这个 profile 时才构建：compose 对未启用 profile 的服务名
+  # 会直接报错，把它塞进 SERVICES 会让整轮构建以「build failed」收场（= 这一轮不部署）。
+  # 启用方式见 deploy/agent/README.md（deploy/.env 里 COMPOSE_PROFILES=share,agent）
+  if [ "$need_agent" = 1 ] && sudo docker compose -f "$COMPOSE_FILE" config --services 2>/dev/null | grep -qx agent; then
+    SERVICES+=(agent)
+  fi
   USE=$(disk_pct)
   if [ "${USE:-0}" -ge "$DISK_FAIL_PCT" ]; then
     echo "[$(date '+%F %T')] ERROR: disk at ${USE}% (>= ${DISK_FAIL_PCT}%), skipping build; 先人工回收再推"
     exit 1
   fi
-  echo "[$(date '+%F %T')] building: ${SERVICES[*]} (disk ${USE}%)"
-  sudo docker compose -f "$COMPOSE_FILE" build "${SERVICES[@]}" \
-    || { echo "[$(date '+%F %T')] ERROR: build failed"; exit 1; }
+  if [ "${#SERVICES[@]}" -eq 0 ]; then
+    # 只有 agent 的文件变了、而 profile 还没启用：没有要构建的东西。
+    # 不能带着空数组去 build——那等于「构建全部启用的服务」，白白重刷镜像层
+    echo "[$(date '+%F %T')] agent 服务未启用（COMPOSE_PROFILES 里没有 agent），跳过构建"
+  else
+    echo "[$(date '+%F %T')] building: ${SERVICES[*]} (disk ${USE}%)"
+    sudo docker compose -f "$COMPOSE_FILE" build "${SERVICES[@]}" \
+      || { echo "[$(date '+%F %T')] ERROR: build failed"; exit 1; }
+  fi
 else
   echo "[$(date '+%F %T')] no build inputs changed (docs/scripts only), skipping build"
 fi
