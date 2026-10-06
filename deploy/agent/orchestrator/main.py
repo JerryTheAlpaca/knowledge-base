@@ -67,14 +67,18 @@ def create_app(settings: OrchestratorSettings | None = None) -> tuple[FastAPI, S
         claims = read(settings.relay_key(), authorization[7:].strip(), expect_subject=SUB_USER)
         if claims is None:
             return _reject("中继凭据无效或已过期")
-        want_site = request.headers.get("X-Agent-Site")
-        if want_site and claims.get("site") != want_site:
+        # 容器自己的身份就是 settings.site（A 机侧硬编码签同一个值），所以这里直接比对，
+        # 不看请求头：2026-10-06 线上实测，原先只在校验方带了 X-Agent-Site 时才比，
+        # 而没有任何调用方带这个头 —— 别的站点签的凭据照样能进来。
+        if claims.get("site") != settings.site:
             return _reject("凭据站点不符")
         return claims
 
     @app.get("/agent/health")
     def health() -> dict[str, Any]:
-        allowed, reason = may_start(settings.admission_min_available_mib)
+        allowed, reason = may_start(settings.admission_min_available_mib,
+                                    min_free_disk_mib=settings.min_free_disk_mib,
+                                    disk_path=settings.homes_root)
         return {"ok": True, "site": settings.site, "admission_allowed": allowed,
                 "admission_reason": reason}
 

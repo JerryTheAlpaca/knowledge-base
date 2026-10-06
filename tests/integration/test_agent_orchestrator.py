@@ -350,6 +350,37 @@ def test_restart_marks_inflight_turns_interrupted(tmp_path):
         store.close()
 
 
+def test_container_credentials_are_site_scoped(tmp_path):
+    """容器只认**本站点**签的中继凭据：同一把派生密钥签出来的别站凭据也要 401。
+
+    2026-10-06 第一次在生产上实测时这条是漏的——原先只在调用方带了 `X-Agent-Site`
+    请求头时才比对，而没有任何调用方带这个头，用 ledger 站点签一枚打过来就是 200。
+    """
+    from fastapi.testclient import TestClient
+
+    from orchestrator.main import create_app
+    from orchestrator.relaykey import bearer, encode_key, issue
+
+    signing = bytes(range(32))
+    key_file = tmp_path / "relay.key"
+    key_file.write_text(encode_key(signing), encoding="ascii")
+    settings = OrchestratorSettings(site="kb", kb_base_url="http://api.test",
+                                    db_path=tmp_path / "agent.db",
+                                    homes_root=tmp_path / "homes",
+                                    relay_key_file=key_file, drop_privileges=False)
+    app, _mgr = create_app(settings)
+    with TestClient(app) as client:
+        mine, _ = issue(signing, site="kb", user_id="u1", subject="user", ttl_seconds=60)
+        assert client.get("/agent/sessions", headers=bearer(mine)).status_code == 200
+        other, _ = issue(signing, site="ledger", user_id="u1", subject="user", ttl_seconds=60)
+        assert client.get("/agent/sessions", headers=bearer(other)).status_code == 401, \
+            "跨站点凭据必须拒——站点隔离不能只写在文档里"
+        ingest, _ = issue(signing, site="kb", user_id="u1", subject="ingest", ttl_seconds=60)
+        assert client.get("/agent/sessions", headers=bearer(ingest)).status_code == 401, \
+            "回传凭据不能当用户凭据用"
+        assert client.get("/agent/sessions").status_code == 401
+
+
 def test_manager_start_survives_restart(tmp_path, monkeypatch):
     """启动时把上一份进程留下的在途轮次收尾，并补一条用户看得见的事件。"""
     store = Store(tmp_path / "boot.db")
