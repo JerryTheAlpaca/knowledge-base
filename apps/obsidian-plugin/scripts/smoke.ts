@@ -70,7 +70,7 @@ import { CONTENT_FORMAT_VERSION, LAYOUT_VERSION } from "../src/types";
 
 /** 与 settings.ts 的默认值保持一致；此处内联以避免冒烟测试依赖 obsidian 模块。 */
 const DEFAULT_SETTINGS: KbSettings = {
-  serverUrl: "",
+  serverUrl: "https://kb.jerrythealpaca.cn",
   tokenRef: "kb-service-token",
   deviceName: "Obsidian 桌面",
   inboxFolder: "00 Inbox",

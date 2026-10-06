@@ -2,7 +2,8 @@
  * 设置、秘密存储与设置面板
  * （docs/02 §13.3；docs/24 §8）。
  *
- * 本插件只做同步：服务器地址、账号、同步开关、Vault 目录。
+ * 本插件只做同步：账号、同步开关、Vault 目录。服务地址固定为
+ * DEFAULT_SERVER_URL，设置面板不提供修改入口。
  * 服务 Token 允许沿用旧的 data.json 降级（历史行为，会明确提示）。
  */
 
@@ -10,8 +11,17 @@ import { App, Notice, PluginSettingTab, Setting } from "obsidian";
 import type { KbSettings } from "./types";
 import { CONTENT_FORMAT_VERSION, LAYOUT_VERSION } from "./types";
 
+/**
+ * 本系统唯一的服务地址。设置面板不再提供修改入口：地址固定，避免用户改错导致
+ * 同步静默失败或把数据发到别处。
+ *
+ * 仍保留 `data.json` 里的 `serverUrl` 作为内部覆盖（仅本地验收用，如 M3 无头驱动
+ * 指向 127.0.0.1），但界面上不暴露、不写入默认值以外的路径。
+ */
+export const DEFAULT_SERVER_URL = "https://kb.jerrythealpaca.cn";
+
 export const DEFAULT_SETTINGS: KbSettings = {
-  serverUrl: "",
+  serverUrl: DEFAULT_SERVER_URL,
   tokenRef: "kb-service-token",
   deviceName: "Obsidian 桌面",
   inboxFolder: "00 Inbox",
@@ -132,16 +142,9 @@ export class KbSettingTab extends PluginSettingTab {
     containerEl.empty();
     containerEl.createEl("h2", { text: "Golden-Rose-Inbox 设置" });
 
-    // ---- 账号与服务器 ----
-    containerEl.createEl("h3", { text: "账号与服务器" });
-    new Setting(containerEl)
-      .setName("服务器地址")
-      .setDesc("例如 https://kb.example.com")
-      .addText((t) => t.setValue(this.settings.serverUrl).onChange(async (v) => {
-        this.settings.serverUrl = v.trim();
-        await this.hooks.onSave();
-      }));
-
+    // ---- 账号与设备 ----
+    // 服务器地址固定，不提供修改入口（见 DEFAULT_SERVER_URL）
+    containerEl.createEl("h3", { text: "账号与设备" });
     // 登录与断开互斥：同时显示两个按钮会让人搞不清当前状态
     const account = new Setting(containerEl).setName("账号");
     if (this.settings.deviceId) {

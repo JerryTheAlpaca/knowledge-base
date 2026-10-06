@@ -42,7 +42,7 @@ npm install          # 或使用 npmmirror 源
 npm run build        # tsc 类型检查 + esbuild 产出 main.js
 ```
 
-把 `main.js`、`manifest.json`、`styles.css` 复制到 Vault 的 `.obsidian/plugins/golden-rose-inbox/` 目录，在 Obsidian 设置中启用第三方插件后开启「Golden-Rose-Inbox」。首次使用：填服务器地址 → 插件设置中点「登录账号」→ 系统浏览器打开授权页，用统一账号确认「登录此插件」→ 插件自动领取设备 Token（存入 Obsidian SecretStorage，旧版本降级存本机数据并提示）。「断开设备」撤销服务端凭据；已导入的笔记不受影响。
+把 `main.js`、`manifest.json`、`styles.css` 复制到 Vault 的 `.obsidian/plugins/golden-rose-inbox/` 目录，在 Obsidian 设置中启用第三方插件后开启「Golden-Rose-Inbox」。首次使用：插件设置中点「登录账号」→ 系统浏览器打开授权页，用统一账号确认「登录此插件」→ 插件自动领取设备 Token（存入 Obsidian SecretStorage，旧版本降级存本机数据并提示）。「断开设备」撤销服务端凭据；已导入的笔记不受影响。服务地址内置为 `https://kb.jerrythealpaca.cn`，设置面板不提供修改入口。
 
 插件职责为纯同步：拉取云端事件、校验下载、在 Vault 写入 `01 Sources` 与 `02 Digests` 两层笔记、登记文档索引、发回执。内容由服务端组装成 `content.json`，插件不调模型、不再整理主题笔记。原三层方案里的本地整理层已于 2026-10-03 移除，见 [docs/25](docs/25-Obsidian插件精简为纯同步-实施记录.md)。
 
