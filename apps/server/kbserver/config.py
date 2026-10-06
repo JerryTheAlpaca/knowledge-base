@@ -83,7 +83,6 @@ class Settings:
     agent_admission_min_available_mib: int = int(os.environ.get("AGENT_ADMISSION_MIN_AVAILABLE_MIB", "384"))
     agent_llm_max_concurrency: int = int(os.environ.get("AGENT_LLM_MAX_CONCURRENCY", "2"))
     agent_llm_per_user_concurrency: int = int(os.environ.get("AGENT_LLM_PER_USER_CONCURRENCY", "2"))
-    agent_home_quota_mib: int = int(os.environ.get("AGENT_HOME_QUOTA_MIB", "512"))
     # LLM 代理的每用户每日硬限：token 与请求数三个口径都卡，超限 429 不转发
     agent_budget_input_tokens_per_day: int = int(os.environ.get("AGENT_BUDGET_INPUT_TOKENS_PER_DAY", "1000000"))
     agent_budget_output_tokens_per_day: int = int(os.environ.get("AGENT_BUDGET_OUTPUT_TOKENS_PER_DAY", "200000"))
@@ -273,7 +272,6 @@ def get_settings() -> Settings:
         agent_admission_min_available_mib=int(os.environ.get("AGENT_ADMISSION_MIN_AVAILABLE_MIB", "384")),
         agent_llm_max_concurrency=int(os.environ.get("AGENT_LLM_MAX_CONCURRENCY", "2")),
         agent_llm_per_user_concurrency=int(os.environ.get("AGENT_LLM_PER_USER_CONCURRENCY", "2")),
-        agent_home_quota_mib=int(os.environ.get("AGENT_HOME_QUOTA_MIB", "512")),
         agent_budget_input_tokens_per_day=int(os.environ.get("AGENT_BUDGET_INPUT_TOKENS_PER_DAY", "1000000")),
         agent_budget_output_tokens_per_day=int(os.environ.get("AGENT_BUDGET_OUTPUT_TOKENS_PER_DAY", "200000")),
         agent_budget_requests_per_day=int(os.environ.get("AGENT_BUDGET_REQUESTS_PER_DAY", "200")),

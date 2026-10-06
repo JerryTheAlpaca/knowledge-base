@@ -89,7 +89,7 @@ def manager(tmp_path, monkeypatch):
     """不调 mgr.start()：测试里手工推 _schedule_once / mirror_once / _reap_pass，
     后台线程跑起来会让断言变成等时间，而这里要验的是「状态层对不对」。"""
     FakeProcess.instances.clear()
-    monkeypatch.setattr(admission, "may_start", lambda min_mib: (True, ""))
+    monkeypatch.setattr(admission, "may_start", lambda min_mib, **kw: (True, ""))
     settings = OrchestratorSettings(
         site="kb", kb_base_url="http://api.test",
         db_path=tmp_path / "agent.db", homes_root=tmp_path / "homes",
@@ -107,10 +107,23 @@ def manager(tmp_path, monkeypatch):
 
 
 class _StubHomes:
+    """替身家目录：`used_mib` 就是要喂给每人限额闸门的那个读数。"""
+
+    def __init__(self, used_mib: float = 0.0) -> None:
+        self.used_mib = used_mib
+        self.purged: list[str] = []
+
     def ensure(self, user_id: str):
         from pathlib import Path as P
 
         return P(f"/tmp/{user_id}"), P(f"/tmp/{user_id}.work"), 9001
+
+    def disk_usage_mib(self, user_id: str) -> float:
+        return self.used_mib
+
+    def purge_if_absent(self, user_id: str) -> None:
+        # 限额路径只能拒绝起轮次，绝不能顺手删用户的家 —— 这条被调用就该看见
+        self.purged.append(user_id)
 
 
 def wait_until(predicate, timeout: float = 5.0) -> bool:
@@ -162,7 +175,7 @@ def test_turn_runs_and_mirrors_to_a_machine(manager):
 
 def test_admission_denial_queues_instead_of_starting(manager, monkeypatch):
     mgr, store = manager["mgr"], manager["store"]
-    monkeypatch.setattr(admission, "may_start", lambda min_mib: (False, "memory_low"))
+    monkeypatch.setattr(admission, "may_start", lambda min_mib, **kw: (False, "memory_low"))
     session = mgr.create_session(user_id="bob", title="忙时提交")
     sid = session["session_id"]
     mgr.submit(user_id="bob", session_id=sid, text="先排着")
@@ -174,15 +187,56 @@ def test_admission_denial_queues_instead_of_starting(manager, monkeypatch):
     assert not FakeProcess.instances, "准入不通过时不能起运行时进程"
 
     # 内存回来了，同一枚排队轮次照样跑掉，不需要用户重发
-    monkeypatch.setattr(admission, "may_start", lambda min_mib: (True, ""))
+    monkeypatch.setattr(admission, "may_start", lambda min_mib, **kw: (True, ""))
     mgr._schedule_once()
     assert wait_until(lambda: any(e["kind"] == "assistant_message"
                                   for e in store.events_after(session_id=sid, after_seq=0)))
 
 
+def test_over_home_quota_refuses_the_turn_without_deleting_history(manager, monkeypatch):
+    """每人 `$DSH_HOME` 限额在这台机上是软件闸门：超了如实报错、这一轮不开始。
+
+    同时钉住一条正确性要求：超限额**不是**清理时机，服务不能替用户删历史。
+    """
+    mgr, store = manager["mgr"], manager["store"]
+    monkeypatch.setattr(admission, "may_start", lambda min_mib, **kw: (True, ""))
+    homes = _StubHomes(used_mib=mgr.settings.home_quota_mib + 1)
+    mgr.homes = homes
+    session = mgr.create_session(user_id="gina", title="超限额")
+    sid = session["session_id"]
+
+    mgr.submit(user_id="gina", session_id=sid, text="这一轮不该开始")
+    mgr._schedule_once()
+    assert wait_until(lambda: any(e["kind"] == "error"
+                                  for e in store.events_after(session_id=sid, after_seq=0)))
+    assert not FakeProcess.instances, "超限额时不能起运行时"
+    assert homes.purged == [], "超限额不是删用户的家"
+    messages = [e["payload"].get("message", "") for e in
+                store.events_after(session_id=sid, after_seq=0) if e["kind"] == "error"]
+    assert any("限额" in m for m in messages), f"要如实说明为什么没开始：{messages}"
+
+
+def test_disk_floor_queues_by_free_space(monkeypatch, tmp_path):
+    """整机可用空间是这台机上真正防写满盘的那道闸：不够就排队（可重试，不丢消息）。"""
+    monkeypatch.setattr(admission, "host_available_mib", lambda: 1024.0)
+    monkeypatch.setattr(admission, "cgroup_remaining_mib", lambda: None)
+    monkeypatch.setattr(admission, "disk_free_mib", lambda path: 500.0)
+    assert admission.may_start(384, min_free_disk_mib=1024,
+                               disk_path=tmp_path) == (False, "disk_low")
+    monkeypatch.setattr(admission, "disk_free_mib", lambda path: 4096.0)
+    assert admission.may_start(384, min_free_disk_mib=1024, disk_path=tmp_path) == (True, "")
+    # 不设这一项时仍是原来的纯内存准入（别的机器/本地开发不必配磁盘闸门）
+    assert admission.may_start(384) == (True, "")
+
+
+def test_disk_free_mib_falls_back_to_existing_ancestor(tmp_path):
+    """家目录还没建出来时也要量得到：退到最近的已存在祖先，而不是当成零放行。"""
+    assert admission.disk_free_mib(tmp_path / "homes" / "kb" / "u") > 0
+
+
 def test_one_process_per_user_and_no_auto_retry_of_a_turn(manager, monkeypatch):
     mgr, store = manager["mgr"], manager["store"]
-    monkeypatch.setattr(admission, "may_start", lambda min_mib: (True, ""))
+    monkeypatch.setattr(admission, "may_start", lambda min_mib, **kw: (True, ""))
     session = mgr.create_session(user_id="carol", title="两轮")
     sid = session["session_id"]
     mgr.submit(user_id="carol", session_id=sid, text="第一轮")
@@ -202,7 +256,7 @@ def test_token_change_recycles_the_process(manager, monkeypatch):
     """能力凭据换新等于换进程：环境变量是启动时读一次的静态值，
     拿旧凭据撑着的进程下一轮调工具就会失败（dsh 侧实测撤销即启动失败）。"""
     mgr, store = manager["mgr"], manager["store"]
-    monkeypatch.setattr(admission, "may_start", lambda min_mib: (True, ""))
+    monkeypatch.setattr(admission, "may_start", lambda min_mib, **kw: (True, ""))
     session = mgr.create_session(user_id="frank", title="换凭据")
     sid = session["session_id"]
     mgr.submit(user_id="frank", session_id=sid, text="第一轮")
@@ -223,7 +277,7 @@ def test_token_change_recycles_the_process(manager, monkeypatch):
 
 def test_failing_turn_is_reported_and_not_retried(manager, monkeypatch):
     mgr, store = manager["mgr"], manager["store"]
-    monkeypatch.setattr(admission, "may_start", lambda min_mib: (True, ""))
+    monkeypatch.setattr(admission, "may_start", lambda min_mib, **kw: (True, ""))
 
     class Boom(FakeProcess):
         def run_turn(self, text, on_event) -> None:
@@ -247,7 +301,7 @@ def test_failing_turn_is_reported_and_not_retried(manager, monkeypatch):
 
 def test_reaper_only_reaps_when_no_turn_in_flight(manager, monkeypatch):
     mgr, store = manager["mgr"], manager["store"]
-    monkeypatch.setattr(admission, "may_start", lambda min_mib: (True, ""))
+    monkeypatch.setattr(admission, "may_start", lambda min_mib, **kw: (True, ""))
     session = mgr.create_session(user_id="erin", title="回收")
     sid = session["session_id"]
     mgr.submit(user_id="erin", session_id=sid, text="跑一轮")

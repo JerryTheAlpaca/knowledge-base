@@ -13,9 +13,10 @@
 2. 渲染出来的补丁里只有本站点的 MCP 连接（那个进程根本没有别站的通道）；
 3. 会话表与回传都带 `site`，值只从 A 机签发的中继凭据取。
 
-配额 `AGENT_HOME_QUOTA_MIB` 要靠 XFS `prjquota` 或独立挂载点**硬限**：周期 `du`
-发现时盘已经写满了。设配额的动作在部署脚本里（见 deploy/agent/README.md），
-这里只负责如实报告读不到的情况。
+限额是**软件实现**的（`disk_usage_mib` 在起进程前量一次，见 `sessions.py`）：
+这台 A 机只有一块 ext4 系统盘、没有独立挂载点，XFS `prjquota` 那种硬限落不了地。
+所以两道闸门都建在代码里——每人 `AGENT_HOME_QUOTA_MIB`（超了如实报错，不替用户
+删历史）和整机 `AGENT_MIN_FREE_DISK_MIB`（可用空间不足就排队）。
 """
 from __future__ import annotations
 
@@ -91,7 +92,7 @@ class Homes:
     def purge_if_absent(self, user_id: str) -> None:
         """删除整个家目录：只在「A 机确认这个用户不再启用 agent」时由运维调用。
 
-        正常关闭会话**不删**家目录（历史要能续），超配额时前端提示「导出后清理」，
+        正常关闭会话**不删**家目录（历史要能续）；超配额也只是拒绝起新一轮，
         不静默删用户的东西。
         """
         shutil.rmtree(self.home_for(user_id), ignore_errors=True)

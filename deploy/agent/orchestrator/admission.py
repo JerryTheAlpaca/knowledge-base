@@ -7,10 +7,14 @@ share_runner 有没有在渲染、ASR 有没有在跑。写死一个常量要么
 
 容器另外带 `mem_limit`：超了是容器内部 OOM，伤害局限在 agent 容器里，不会打死
 同机的 api / worker / share_runner。这两件事是配套的，不是一个替代另一个。
+
+磁盘同理：这台机没有可分配配额的独立挂载点，所以按 `$DSH_HOME` 所在文件系统的
+**可用空间**准入（`AGENT_MIN_FREE_DISK_MIB`），低于这个点就排队而不是继续写。
 """
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path
 
 
@@ -55,7 +59,27 @@ def cgroup_remaining_mib() -> float | None:
         return None
 
 
-def may_start(min_available_mib: int) -> tuple[bool, str]:
+def disk_free_mib(path: Path) -> float | None:
+    """这个路径所在文件系统的可用空间（MiB）。
+
+    容器里的 `/srv/agent-homes` 落在宿主那块盘上，所以这个数就是「还敢写多少」——
+    没有 XFS 配额可用的机器上，防止写满盘的闸门只能建在这里。路径还没建出来时
+    退到最近的已存在祖先（同一个文件系统），一路到根都不存在才算量不到。
+    """
+    target = path
+    while not target.exists():
+        parent = target.parent
+        if parent == target:
+            return None
+        target = parent
+    try:
+        return shutil.disk_usage(target).free / 1048576.0
+    except OSError:
+        return None
+
+
+def may_start(min_available_mib: int, *, min_free_disk_mib: int = 0,
+              disk_path: Path | None = None) -> tuple[bool, str]:
     """能不能起一个新的 dsh 子进程；返回 (可以, 原因)。"""
     host = host_available_mib()
     if host is None:
@@ -68,4 +92,11 @@ def may_start(min_available_mib: int) -> tuple[bool, str]:
     remaining = cgroup_remaining_mib()
     if remaining is not None and remaining < min_available_mib:
         return False, "container_memory_low"
+    if min_free_disk_mib > 0 and disk_path is not None:
+        free = disk_free_mib(disk_path)
+        # 与内存指标同一立场：量不到就保守不启动（排队会如实显示，不是静默失败）
+        if free is None:
+            return False, "disk_metrics_unavailable"
+        if free < min_free_disk_mib:
+            return False, "disk_low"
     return True, ""

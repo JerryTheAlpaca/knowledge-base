@@ -40,18 +40,21 @@
    解包 267 MiB，其中 262 MiB 是那一个自带 Node 的单文件运行时）。
    **容器里不装 Node、不装 npm**。
 
-4. **`$DSH_HOME` 配额要硬限**（`AGENT_HOME_QUOTA_MIB=512`/人）。周期 `du` 发现时
-   盘已经写满了，所以必须用 project quota：
+4. **每人限额用软件闸门**（这台 A 机只有一块 ext4 系统盘，没有独立挂载点，
+   XFS `prjquota` 落不了地，也不该为此动磁盘）。两道都在代码里：
+
+   - `AGENT_HOME_QUOTA_MIB`（默认 2048）：起新一轮前先量这个用户的 `$DSH_HOME`
+     大小，超了就如实报错、不再让运行时往里写——**不静默删用户历史**。
+   - `AGENT_MIN_FREE_DISK_MIB`（默认 1024）：`$DSH_HOME` 所在盘的可用空间低于这个点
+     就不起新轮次，前端显示「服务器忙，已排队」。这是防止写满宿主盘的那道闸。
+
+   搬到有独立数据盘的机器上，才值得再按 uid 上 project quota：
 
    ```sh
    sudo mkfs.xfs -f -i size=512 -n size=8192 /dev/vdb      # 独立数据盘（示例）
    sudo mount -o uquota,gquota /dev/vdb /srv/agent-homes-mount
-   sudo xfs_quota -x -c 'limit -u bhard=512m <agentd-uid>' /srv/agent-homes-mount
+   sudo xfs_quota -x -c 'limit -u bhard=2g <agentd-uid>' /srv/agent-homes-mount
    ```
-
-   卷 `agent_homes` 挂到 `/srv/agent-homes`。按 uid 设限正好落在「每用户不同 uid」上
-   （`orchestrator/homes.py` 的 `user_slot`），不需要额外记账。
-   超配额时前端提示「导出后清理」，**服务不静默删用户的历史**。
 
 ## 边界（验收时逐条实测，不接受「读文档宣布锁住了」）
 

@@ -32,7 +32,14 @@ class OrchestratorSettings:
     turn_timeout_seconds: int = int(os.environ.get("AGENT_TURN_TIMEOUT_SECONDS", "900"))
     mirror_batch_events: int = int(os.environ.get("AGENT_MIRROR_BATCH_EVENTS", "20"))
     mirror_interval_seconds: float = float(os.environ.get("AGENT_MIRROR_INTERVAL_SECONDS", "2"))
-    home_quota_mib: int = int(os.environ.get("AGENT_HOME_QUOTA_MIB", "512"))
+    # 每用户 $DSH_HOME 的**软件**限额：起新一轮前先量一遍目录大小，超了就如实报错、
+    # 不再让 dsh 往里写。这台 A 机只有一块 ext4 系统盘，没有独立挂载点，
+    # XFS prjquota 那套硬限落不了地，所以限额由这里实现（放宽到够用即可，
+    # 真正兜底的是下面那道整机可用空间闸门）。
+    home_quota_mib: int = int(os.environ.get("AGENT_HOME_QUOTA_MIB", "2048"))
+    # 整机可用空间低于这个数就不起新轮次（排队，不丢消息）：单个共享盘上
+    # 每个用户的目录之和没有硬配额隔离，这一项才是防止写满磁盘的那道闸门。
+    min_free_disk_mib: int = int(os.environ.get("AGENT_MIN_FREE_DISK_MIB", "1024"))
     # 回传凭据的有效期：容器自己签，A 机用同一把派生密钥验
     relay_ttl_seconds: int = int(os.environ.get("AGENT_RELAY_TTL_SECONDS", "900"))
     # 每用户不同 uid 的降权运行（结构性隔离的一层）；本地开发可关

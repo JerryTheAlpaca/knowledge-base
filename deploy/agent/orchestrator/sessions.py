@@ -105,7 +105,10 @@ class SessionManager:
             self._schedule_once()
 
     def _schedule_once(self) -> None:
-        allowed, reason = admission.may_start(self.settings.admission_min_available_mib)
+        allowed, reason = admission.may_start(
+            self.settings.admission_min_available_mib,
+            min_free_disk_mib=self.settings.min_free_disk_mib,
+            disk_path=self.settings.homes_root)
         for turn in self.store.queued_turns():
             session_id = turn["session_id"]
             with self._lock:
@@ -140,6 +143,16 @@ class SessionManager:
             self.store.finish_turn(turn_id=turn["turn_id"], state="cancelled")
             return
         user_id = session["user_id"]
+        # 每人限额在这台机上只有软件实现（没有独立挂载点可设 XFS 配额），所以要
+        # 在起进程**之前**量：量完 just-in-time，一轮一次，不是每事件一次。
+        used = self.homes.disk_usage_mib(user_id)
+        if used > self.settings.home_quota_mib:
+            self._fail_turn(
+                session_id, turn,
+                f"这个账号在服务器上的对话文件已占 {used:.0f} MiB，超过每人 "
+                f"{self.settings.home_quota_mib} MiB 的限额，这一轮没有开始。"
+                f"服务器不会替你删历史。")
+            return
         token = self._token_for(user_id)
         if token is None:
             self._fail_turn(session_id, turn, "还没有可用的模型配置，或 A 机暂时联系不上")

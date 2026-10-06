@@ -185,9 +185,13 @@ input/output_tokens_used, requests_used, exhausted_at)`。入口先查，超限
 /srv/agent-homes/<site>/<user_id>.workspace/   dsh 的 cwd，空的
 ```
 
-配额 `AGENT_HOME_QUOTA_MIB=512`/人必须**硬限**（XFS project quota 按 uid 设限，
-正好落在 `homes.user_slot` 的 uid 映射上）—— 靠周期 `du` 发现时盘已经写满了。
-清理：180 天按 mtime；超配额时前端提示「导出后清理」，**不静默删**用户的历史。
+限额 `AGENT_HOME_QUOTA_MIB=2048`/人**由软件实现**：起新一轮前量一次这个用户的
+`$DSH_HOME`（`homes.disk_usage_mib`），超了就如实报错、不再让运行时往里写。
+计划里原本要上 XFS project quota 按 uid 硬限，实测这台 A 机只有一块 ext4 系统盘、
+没有独立挂载点，为此动磁盘不值当（2026-10-06 决定），所以真正兜住「别写满宿主盘」
+的是整机可用空间闸门 `AGENT_MIN_FREE_DISK_MIB=1024` —— 低于这个点不起新轮次，
+前端显示「服务器忙，已排队」。搬到有独立数据盘的机器上才值得再按 uid 配额。
+清理：A 机侧事件按保留期回收；超限额**不静默删**用户的历史。
 
 ## 7. dsh 制品与锁定实测（2026-10-04，本机 Windows x64）
 

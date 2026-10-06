@@ -240,7 +240,11 @@ services:
       # 不写死并发数：2GB 的 A 机现实是 1，偶尔 2；B 机内存宽裕时自然放开。
       AGENT_ADMISSION_MIN_AVAILABLE_MIB: "384"
       AGENT_IDLE_REAP_SECONDS: "600"
-      AGENT_HOME_QUOTA_MIB: "512"
+      # 每人对话文件的限额，纯软件实现（这台机没有可分配配额的独立挂载点）：
+      # 起新一轮前量一次目录大小，超了就如实报错、不再往里写。
+      AGENT_HOME_QUOTA_MIB: "2048"
+      # 真正兜住「别把宿主盘写满」的是这一项：$DSH_HOME 所在盘可用空间低于它就排队。
+      AGENT_MIN_FREE_DISK_MIB: "1024"
     networks:
       - agent_internal
     # internal：没有网关、没有 NAT、没有 DNS 出网 —— 容器到不了公网、到不了
