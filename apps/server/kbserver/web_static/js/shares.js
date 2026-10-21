@@ -7,7 +7,7 @@
 
 import { $, api, esc, fmtShort, showErr, toast, isModalOpen, dismissToast, sanitizeFilename,
          confirmModal } from "./api.js";
-import { setListPollPaused, refreshItems, onRowsRendered } from "./item-list.js";
+import { setListPollPaused, refreshItems, onRowsRendered, openDrawer } from "./item-list.js";
 import { currentDetailId, closeDetail, openDetail } from "./item-detail.js";
 import { openAgentPanel } from "./agent.js";
 
@@ -954,6 +954,8 @@ function renderDock() {
   on("shareDelegate", () => startGeneration("delegate_preferences"));
   $("stageDelete").hidden = mode !== "work";
   $("stageTitle").textContent = mode === "work" && workCache ? workCache.title : "分享创作";
+  // 草稿还没发出第一句：开场构图居中，不沉在输入框边上；有来往后回到贴底
+  $("stageThread").classList.toggle("centered", mode === "draft");
 
   const input = $("stageInput");
   const send = $("stageSend");
@@ -1064,9 +1066,14 @@ async function renderWorksList() {
   let data;
   try { data = await api("/v1/shares?limit=50"); } catch (e) { showErr(e); host.innerHTML = ""; return; }
   if (!data.items.length) {
-    host.innerHTML = '<li class="muted">还没有对话。在「已收集」里点「多选」，勾几篇材料就能开始。</li>';
+    host.innerHTML = '<li class="muted">还没有对话。在「已收集」里点「多选」，勾几篇材料就能开始。</li>' +
+      '<li><button class="small" id="worksGoSelect">去选择材料</button></li>';
+    const sc = host.closest(".stage-scroll");
+    if (sc) sc.classList.add("centered");
     return;
   }
+  const sc = host.closest(".stage-scroll");
+  if (sc) sc.classList.remove("centered");
   host.innerHTML = data.items.map((w) =>
     '<li class="work" data-share="' + esc(w.share_id) + '" role="button" tabindex="0">' +
     '<span class="wtitle">' + esc(w.title) + "</span>" +
@@ -1407,6 +1414,16 @@ export function initShares(navigator) {
   if (closeStage) closeStage.addEventListener("click", exitOverlay);
   const closeConv = $("sharesClose");
   if (closeConv) closeConv.addEventListener("click", exitOverlay);
+  // 空态给一条直接出路：回收件箱、拉开抽屉、进多选，不用照着文字自己找
+  const worksList = $("shareWorks");
+  if (worksList) worksList.addEventListener("click", (e) => {
+    if (e.target.id !== "worksGoSelect") return;
+    // 这发 click 还会冒泡到抽屉的「点外部收起」：刚拉开的抽屉会被它当场关回去
+    e.stopPropagation();
+    go("/inbox");
+    openDrawer();
+    setSelectMode(true);
+  });
   const del = $("stageDelete");
   if (del) del.addEventListener("click", deleteWork);
   const input = $("stageInput");

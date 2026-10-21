@@ -137,9 +137,25 @@ function renderCapChips() {
     (a.kind === "video" ? "视频 " : "录音 ") + esc(a.file.name) +
     "（" + (a.file.size / (1024 * 1024)).toFixed(1) + " MiB）</span>" +
     '<button class="xbtn" data-ai="' + i + '" aria-label="移除该音视频">✕</button></span>').join("");
+  syncChipMore();
   renderContextOptions(urls);
   renderMultipleNote(urls);
   syncCapShape();
+}
+
+// 窄屏胶囊行横滚，滚出视区的胶囊容易被读成「只收了这一个」：
+// 行右缘钉一个 +N 徽标（sticky 跟着滚动容器走），说明还有几条藏在后面
+function syncChipMore() {
+  const zone = document.querySelector(".chipzone");
+  const badge = $("chipMore");
+  if (!zone || !badge) return;
+  const zr = zone.getBoundingClientRect();
+  let hiddenCount = 0;
+  zone.querySelectorAll(".chip").forEach((c) => {
+    if (c.getBoundingClientRect().right > zr.right + 1) hiddenCount++;
+  });
+  badge.textContent = hiddenCount ? "+" + hiddenCount : "";
+  badge.hidden = !hiddenCount;
 }
 
 // 上下文选项（§4.3）：识别到网页/公众号链接才出现「同时保存正文图片」；
@@ -457,6 +473,9 @@ export function initCapture({ onSubmit }) {
     if (e.propertyName === "padding-right") autosizeCap();
   });
   window.addEventListener("resize", autosizeCap);
+  const chipzone = document.querySelector(".chipzone");
+  if (chipzone) chipzone.addEventListener("scroll", syncChipMore);
+  window.addEventListener("resize", syncChipMore);
   $("uploadPick").addEventListener("click", () => $("capFiles").click());
   $("capFiles").addEventListener("change", (e) => {
     addPickedFiles(Array.from(e.target.files || []));

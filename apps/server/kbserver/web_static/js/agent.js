@@ -611,6 +611,8 @@ function renderDock() {
   // 一段会话都没有时切换条没有可切的东西：收掉，新建走下拉里那一个入口就够
   const wrap = document.querySelector(".agent-switchwrap");
   if (wrap) wrap.hidden = sessions.length === 0;
+  // 零会话的开场居中：开场提示与空态卡不沉在输入框边上
+  $("agentThread").classList.toggle("centered", sessions.length === 0 && !activeId);
   const run = turnRunning();
   const input = $("agentInput");
   const send = $("agentSend");

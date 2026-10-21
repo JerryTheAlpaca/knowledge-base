@@ -371,7 +371,7 @@ function renderBili(bili) {
   // 检测与撤销只在有登录态时有意义：没连接时点了只会确认一个不存在的东西（与小红书区块同口径）
   $("biliCheck").hidden = !state.configured;
   $("biliRevoke").hidden = !state.configured;
-  let ico = "…", cls = "st-info", title = "未连接", desc = "连接后可以读取需要登录才能查看的字幕。";
+  let ico = "", cls = "st-info", title = "未连接", desc = "连接后可以读取需要登录才能查看的字幕。";
   if (state.configured && v === "valid") {
     ico = "✓"; cls = "st-ok"; title = "登录态有效";
     desc = "需要登录的 B 站字幕可以直接取得。";
@@ -439,7 +439,7 @@ const PLAT_SHOWN = PLAT_SESSIONS.filter((p) => p.enabled);
 function platStateView(meta, st) {
   const configured = !!(st && st.configured);
   const ver = st ? st.verification : "unconfigured";
-  let ico = "…", cls = "st-info", title = "未配置", desc = meta.hint;
+  let ico = "", cls = "st-info", title = "未配置", desc = meta.hint;
   if (configured) {
     title = "已配置" + (st.credential_version ? " · v" + st.credential_version : "");
     ico = "✓"; cls = "st-ok";

@@ -291,6 +291,11 @@ label { display: block; font-size: var(--fs-small); color: var(--text-2); margin
 .capmeta .warn { color: var(--warn); }
 /* —— 链接/文件/录音 chips —— */
 .chiprow { display: flex; flex-wrap: wrap; gap: 6px; padding: 4px 14px 8px; }
+/* 胶囊横滚出视区时钉在行右缘的 +N 徽标：sticky 跟着滚动容器走 */
+.chipmore { position: sticky; right: 4px; flex: none; align-self: center;
+            background: var(--surface-2); border: 1px solid var(--border);
+            border-radius: 999px; padding: 2px 8px; font-size: var(--fs-caption);
+            color: var(--text-2); }
 .chip { display: inline-flex; align-items: center; gap: 4px; background: rgba(243, 233, 210, .06);
         border: 1px solid var(--border-strong); border-radius: var(--radius-pill);
         padding: 4px 8px 4px 12px; font-size: var(--fs-caption); max-width: 100%; color: var(--text); }
@@ -558,6 +563,8 @@ details.disclosure.slim .disclosure-body { padding: 0 8px 8px; }
 .defrow { display: flex; align-items: center; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
 .defrow label { margin: 0; white-space: nowrap; flex: none; }
 .defrow select { flex: 1; min-width: 0; width: auto; }
+/* 桌面宽下第一个下拉会被拉到六百多像素，和一个模型名不相称 */
+.defrow select:first-of-type { max-width: 360px; }
 .pcard { display: flex; align-items: center; gap: 12px; border: 1px solid var(--border);
          border-radius: var(--radius-inner); padding: 14px 16px; margin-top: 12px; }
 .pcard-main { flex: 1; min-width: 0; }
@@ -574,6 +581,8 @@ details.disclosure.slim .disclosure-body { padding: 0 8px 8px; }
 .st-bad { background: var(--bad-soft); color: var(--bad); }
 .st-warn { background: var(--warn-soft); color: var(--warn); }
 .st-info { background: var(--info-soft); color: var(--info); }
+/* 未连接/未配置不给「⋯」这种像更多菜单的符号：空圆虚线框，读作「这里还没有东西」 */
+.bili-ico:empty { background: transparent; border: 1px dashed var(--border-strong); }
 .bili-main { flex: 1; min-width: 0; }
 .bili-title { font-weight: 600; }
 .bili-desc { font-size: var(--fs-small); color: var(--text-2); margin-top: 2px; line-height: 1.5;
@@ -726,6 +735,9 @@ body.share-open .dock, body.share-open .drawer { display: none; }
                 display: flex; flex-direction: column; gap: 12px; padding: 2px 6px 2px 0; }
 /* 话还少的时候贴着输入框那头摆，别在中间留一大片空；内容一溢出 auto 自己归零，不挡滚动 */
 .stage-scroll > :first-child { margin-top: auto; }
+/* 还没开说的状态（草稿/空列表/零会话）改成上下留白均分：开场构图居中，
+   不像对话沉在输入框边上；一旦有来回就回到贴底那套 */
+.stage-scroll.centered > :last-child { margin-bottom: auto; }
 .stage-dock { flex: none; display: flex; flex-direction: column; gap: 8px; }
 
 /* —— 对话流：AI 在左、你在右，材料/需求/成品作为卡片夹在中间 —— */
