@@ -224,8 +224,11 @@ textarea { resize: vertical; }
                      50% { opacity: 1; transform: scale(1.2); } }
 
 /* —— Toast（M8：≤520 底部居中 + safe-area） —— */
+/* 容器点穿：窄屏 toast 沉到底部时会盖住多选条与采集框，停留的几秒里底下的按钮
+   全点不到（批量操作后连点「操作」实测踩中）。只让 toast 自己的按钮接点击。 */
 #toasts { position: fixed; top: 16px; right: 16px; z-index: 100; display: flex;
-          flex-direction: column; gap: 8px; max-width: min(380px, calc(100vw - 32px)); }
+          flex-direction: column; gap: 8px; max-width: min(380px, calc(100vw - 32px));
+          pointer-events: none; }
 .toast { display: flex; align-items: flex-start; gap: 10px; background: var(--surface);
          border: 1px solid var(--border); border-left: 3px solid var(--info); border-radius: var(--radius-ctl);
          box-shadow: var(--shadow-pop); padding: 10px 12px; font-size: 14px; line-height: 1.5;
@@ -238,7 +241,8 @@ textarea { resize: vertical; }
 .toast .ttext { flex: 1; min-width: 0; word-break: break-word; }
 /* U-01：toast 内小按钮（28px 高）同样把命中区扩到 44px */
 .toast button { min-height: 28px; padding: 2px 8px; font-size: var(--fs-small); border: none;
-                background: transparent; color: var(--accent); flex: none; position: relative; }
+                background: transparent; color: var(--accent); flex: none; position: relative;
+                pointer-events: auto; }
 .toast button::after { content: ""; position: absolute; inset: -8px -6px; }
 .toast button.tx { color: var(--text-2); }
 .toast button:hover { background: var(--surface-2); }

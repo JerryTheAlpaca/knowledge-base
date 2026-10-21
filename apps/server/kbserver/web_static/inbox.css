@@ -679,7 +679,7 @@ body.share-selecting .drawer-scroll { padding-bottom: 78px; }
 .share-selbar .selcount .num { color: var(--accent); }
 /* 一篇没选时两个动作还没得点：默认的 .5 半透明压在金底上仍像可按，再压一档 */
 .share-selbar .btn:disabled { opacity: .38; }
-/* 「完成」先问一句要做什么：下载还是做 HTML，就地一个小菜单，不另开一层弹窗。
+/* 「操作」先问一句要对这批做什么：下载、重跑还是删除，就地一个小菜单，不另开一层弹窗。
    浮层在 main 下、z-index 高于抽屉那层（.drawer 是 z-index 30 的上下文），才点得到 */
 .share-menu { position: fixed; left: 50%; transform: translateX(-50%); bottom: 88px; z-index: 41;
               display: flex; flex-direction: column; gap: 2px; min-width: 196px; padding: 6px;
@@ -697,7 +697,7 @@ body.share-selecting ul.items li.item.picked { background: var(--accent-soft);
                                                            inset 0 0 22px rgba(226, 176, 74, .1); }
 ul.items li.item { position: relative; }
 body.share-selecting ul.items li.item { cursor: copy; }
-/* 「分享」是个开关，按下必须亮：文案不动（多一个字就把同排的搜索钮横向推走），
+/* 「多选」是个开关，按下必须亮：文案不动（多一个字就把同排的搜索钮横向推走），
    只把幽灵态换成描边 + 底色 + 一圈光，一次到位 */
 #selectToggle.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent);
                    box-shadow: 0 0 0 1px var(--accent), 0 0 16px rgba(226, 176, 74, .22);

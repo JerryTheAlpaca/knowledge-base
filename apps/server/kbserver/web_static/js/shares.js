@@ -5,7 +5,8 @@
 // 开工要求 / 回答提问 / 调整方向 / 继续改成品。顶栏三横线那侧是以前所有的对话。
 // 预览走「主站鉴权取数据 → 可信容器设置 srcdoc」，iframe 只开 allow-scripts。
 
-import { $, api, esc, fmtShort, showErr, toast, isModalOpen, dismissToast, sanitizeFilename } from "./api.js";
+import { $, api, esc, fmtShort, showErr, toast, isModalOpen, dismissToast, sanitizeFilename,
+         confirmModal } from "./api.js";
 import { setListPollPaused, refreshItems, onRowsRendered } from "./item-list.js";
 import { currentDetailId, closeDetail, openDetail } from "./item-detail.js";
 import { openAgentPanel } from "./agent.js";
@@ -94,7 +95,7 @@ function syncRowMarks() {
 function renderSelectionBar() {
   const bar = $("shareSelBar");
   if (!bar) return;
-  // 一进选择态就亮条子，0 篇也在：否则点「分享」页面毫无变化
+  // 一进选择态就亮条子，0 篇也在：否则点「多选」页面毫无变化
   bar.hidden = !selectMode;
   bar.classList.toggle("has-sel", selected.size > 0);
   const num = $("shareSelCount");
@@ -148,6 +149,9 @@ function installSelection() {
   pick("shareDlSource", () => downloadChosen("source"));
   pick("shareDlDigest", () => downloadChosen("digest"));
   pick("shareMakeHtml", () => openWorkbench());
+  pick("batchRefetch", batchRefetch);
+  pick("batchDigest", batchDigest);
+  pick("batchDelete", batchDelete);
   // 点菜单外任何一处就收起；勾选项本身由上面的捕获监听负责
   document.addEventListener("click", (e) => {
     const menu = $("shareSelMenu");
@@ -166,18 +170,24 @@ function showSelMenu(on) {
   menu.style.bottom = Math.round(window.innerHeight - bar.top + 10) + "px";
 }
 
-// ---------- 批量下载：原文取 readable/normalized.md，整理稿取 preview.md ----------
+// ---------- 批量：下载与动作都逐条走单篇详情用的同一批接口 ----------
 
 const DL_PATHS = { source: ["readable.md", "normalized.md"], digest: ["preview.md"] };
 const DL_LABEL = { source: "原文", digest: "整理稿" };
-let downloading = false;
+let batchBusy = false;   // 一批还在跑就别让第二批（尤其是删除）插进来
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// 上一批没跑完时把话说出来：默默吞掉这次点击会被当成菜单坏了
+function batchFree() {
+  if (!batchBusy) return true;
+  toast("上一批还在跑，稍等一下", { type: "warn" });
+  return false;
+}
+
 async function downloadChosen(kind) {
-  if (downloading) return;
   const ids = selectedIds();
-  if (!ids.length) return;
-  downloading = true;
+  if (!ids.length || !batchFree()) return;
+  batchBusy = true;
   const busy = toast("正在准备 " + ids.length + " 篇" + DL_LABEL[kind] + "…", { sticky: true });
   let ok = 0;
   let missed = 0;
@@ -191,7 +201,7 @@ async function downloadChosen(kind) {
   const tail = missed ? "，" + missed + " 篇还没有可下载的" + DL_LABEL[kind] : "";
   if (ok) toast("已下载 " + ok + " 篇" + DL_LABEL[kind] + tail, { type: missed ? "warn" : "ok" });
   else toast(missed + " 篇都还没有可下载的" + DL_LABEL[kind], { type: "warn" });
-  downloading = false;
+  batchBusy = false;
   if (kind === "source" && ok) refreshItems();   // 下载原文会把条目推到「已下载」
 }
 
@@ -252,6 +262,78 @@ function saveAsMd(text, name) {
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// ---------- 批量动作：前端不猜哪条做得了，逐条问服务端，只汇总报数 ----------
+// 串行不并发：单进程 SQLite 上并发写同一批条目只会把失败率做高，个人收件箱一次几十条够用。
+// 单条失败不断整批，也不一条条弹提示：只报第一条没做成的原因。
+
+async function runBatch(ids, { busy, done, call }) {
+  if (!ids.length || !batchFree()) return [];
+  batchBusy = true;
+  const running = toast(busy + "这 " + ids.length + " 条…", { sticky: true });
+  const okIds = [];
+  let firstErr = "";
+  for (const id of ids) {
+    try { await call(id); okIds.push(id); }
+    catch (e) { if (!firstErr) firstErr = (e && e.userMessage) || ""; }
+  }
+  dismissToast(running);
+  const missed = ids.length - okIds.length;
+  if (okIds.length && missed) {
+    toast(done + " " + okIds.length + " 条，" + missed + " 条没做成：" + firstErr, { type: "warn" });
+  } else if (okIds.length) {
+    toast(done + " " + okIds.length + " 条", { type: "ok" });
+  } else {
+    toast(firstErr || (ids.length + " 条都没做成"), { type: "error" });
+  }
+  batchBusy = false;
+  return okIds;
+}
+
+async function batchRefetch() {
+  const ids = selectedIds();
+  if (!ids.length) return;
+  const okIds = await runBatch(ids, {
+    busy: "重新提取", done: "已开始重新提取",
+    call: (id) => api("/v1/items/" + encodeURIComponent(id) + "/refetch", { method: "POST" }),
+  });
+  if (okIds.length) refreshItems();
+}
+
+// 「重新提炼」就是详情页那个「重新整理」：reprocess 只对已有材料重跑加工，
+// 不重新抓站点；条目本来就停在没做成形的状态时服务端会自己回到提取那一步
+async function batchDigest() {
+  const ids = selectedIds();
+  if (!ids.length) return;
+  const okIds = await runBatch(ids, {
+    busy: "重新提炼", done: "已开始重新提炼",
+    call: (id) => api("/v1/items/" + encodeURIComponent(id) + "/reprocess", {
+      method: "POST", body: { reason: "从 Web 收件箱批量请求重新提炼" },
+    }),
+  });
+  if (okIds.length) refreshItems();
+}
+
+async function batchDelete() {
+  const ids = selectedIds();
+  if (!ids.length || !batchFree()) return;
+  const ok = await confirmModal({
+    title: "删除服务器材料",
+    body: "将删除选中的 " + ids.length + " 条内容在服务器上的全部材料与整理结果，" +
+      "<b>删除后不可恢复</b>。已写入你 Obsidian 知识库的笔记不受影响。",
+    confirmLabel: "删除", danger: true,
+  });
+  if (!ok) return;
+  const gone = await runBatch(ids, {
+    busy: "删除", done: "已删除",
+    call: (id) => api("/v1/items/" + encodeURIComponent(id), { method: "DELETE" }),
+  });
+  gone.forEach((id) => selected.delete(id));
+  saveSelected();
+  syncRowMarks();
+  renderSelectionBar();
+  refreshItems();
 }
 
 // ---------- 视图切换：对话舞台 / 以前的对话 ----------
@@ -387,7 +469,7 @@ function renderThread() {
 
 function draftHTML() {
   if (!draftIds.length) {
-    return '<div class="t-card"><p class="muted" style="margin:0">还没有选材料。回「已收集」点「分享」，勾几篇再过来。</p></div>';
+    return '<div class="t-card"><p class="muted" style="margin:0">还没有选材料。回「已收集」点「多选」，勾几篇再过来。</p></div>';
   }
   const rows = draftIds.map((id) => {
     const m = matsState.get(id);
@@ -982,7 +1064,7 @@ async function renderWorksList() {
   let data;
   try { data = await api("/v1/shares?limit=50"); } catch (e) { showErr(e); host.innerHTML = ""; return; }
   if (!data.items.length) {
-    host.innerHTML = '<li class="muted">还没有对话。在「已收集」里点「分享」，勾几篇材料就能开始。</li>';
+    host.innerHTML = '<li class="muted">还没有对话。在「已收集」里点「多选」，勾几篇材料就能开始。</li>';
     return;
   }
   host.innerHTML = data.items.map((w) =>

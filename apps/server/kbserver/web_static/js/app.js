@@ -43,8 +43,10 @@ function showApp(me) {
   const sharesOn = !!me.shares_enabled;
   const worksBtn = $("worksBtn");
   if (worksBtn) worksBtn.hidden = !sharesOn;
-  const selectBtn = $("selectToggle");
-  if (selectBtn) selectBtn.hidden = !sharesOn;
+  // 「多选」如今是收件箱的批量入口（下载、重跑、删除），不只做 HTML：分享没开也要留着它，
+  // 只把菜单里「制作 HTML」这一项收掉，否则点进去只会得到一句「还没有启用」
+  const makeHtml = $("shareMakeHtml");
+  if (makeHtml) makeHtml.hidden = !sharesOn;
 }
 
 // ---------- 视图路由：/inbox、/inbox?view=settings、/inbox?item=xx ----------

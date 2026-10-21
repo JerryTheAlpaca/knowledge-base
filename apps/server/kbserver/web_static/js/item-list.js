@@ -364,12 +364,14 @@ export function initItemList() {
   $("drawerClose").addEventListener("click", () => closeDrawer());
   document.addEventListener("click", (e) => {
     if (swallowClick) { swallowClick = false; return; }  // 拖拽余波落在面板外时由这里吞
-    // 「完成」那个菜单挂在 main 底下（要盖在面板之上），点它不该把抽屉一起收掉
+    // 「操作」菜单和确认弹窗都挂在 main 底下（要盖在面板之上），点它们不该把抽屉一起收掉。
+    // 弹窗里「确认」的 onclick 先跑 closeModal，等这发冒泡到 document 时 isModalOpen 已经
+    // 是 false，判不住——批量删除的确认框就是这么把列表收走的
     if (isDrawerOpen() && !isModalOpen() && !e.target.closest("#listWrap") &&
-        !e.target.closest("#shareSelMenu")) closeDrawer();
+        !e.target.closest("#shareSelMenu") && !e.target.closest("#overlay")) closeDrawer();
   });
   document.addEventListener("keydown", (e) => {
-    // 分享那层（完成菜单 / 舞台 / 多选）在捕获阶段收掉这发 Escape 时，抽屉不跟着一起收
+    // 分享那层（操作菜单 / 舞台 / 多选）在捕获阶段收掉这发 Escape 时，抽屉不跟着一起收
     if (e.key === "Escape" && !isModalOpen() && !e.kbEscTaken && isDrawerOpen()) {
       if (searchOpen) { setSearchOpen(false); return; }  // 先收搜索，再收抽屉
       closeDrawer();

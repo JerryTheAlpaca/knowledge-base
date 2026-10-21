@@ -438,12 +438,11 @@
           <!-- 搜索框与放大镜同排：插槽紧邻图标左侧，展开时右缘钉住、从图标处向左生长 -->
           <div class="listtoolbar" id="listToolbar">
             <button class="btn ghost small" id="selectToggle" aria-pressed="false"
-                    title="勾选几篇材料，交给 AI 做成一个作品">
+                    title="勾选多篇材料，一起下载、重新提取、提炼或删除">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                    stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <circle cx="18" cy="5.5" r="2.5"/><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="18.5" r="2.5"/>
-                <path d="M8.2 10.8 15.8 6.7M8.2 13.2l7.6 4.1"/>
-              </svg>分享</button>
+                <rect x="3.5" y="3.5" width="17" height="17" rx="4.5"/><path d="m7.5 12.2 2.9 2.9 6.1-6.6"/>
+              </svg>多选</button>
             <span class="spacer"></span>
             <div class="searchslot" id="searchRow"><input class="search" id="searchBox" placeholder="搜索标题、链接或来源…" aria-label="搜索条目"></div>
             <button class="icon ghost" id="searchToggle" aria-label="搜索" title="搜索" aria-expanded="false">
@@ -478,7 +477,7 @@
               <p class="muted" style="margin:0">粘贴一条你刚看到的文章或视频链接。</p>
             </div>
           </div>
-          <!-- 选择模式底部条：一进选择态就出现（0 篇也在），「完成」再问一句要下载还是做 HTML。
+          <!-- 选择模式底部条：一进选择态就出现（0 篇也在），「操作」再问一句要对这批做什么。
                浮在列表之上不占位，跟着抽屉面板收放 -->
           <div class="share-selbar" id="shareSelBar" hidden>
             <!-- aria-live 挂在 seltext 这层：0 篇时 .selcount 本身是 display:none，
@@ -489,7 +488,7 @@
             </span>
             <span class="spacer"></span>
             <button class="btn ghost small" id="shareSelClear" disabled>清空</button>
-            <button class="btn primary small" id="shareSelDone" disabled>完成</button>
+            <button class="btn primary small" id="shareSelDone" disabled>操作</button>
           </div>
           </div>
         </div>
@@ -1104,11 +1103,17 @@
     </div>
   </section>
 
-  <!-- 选择模式的「完成」菜单：就地一个小弹层，不另开一层弹窗 -->
+  <!-- 选择模式的「操作」菜单：就地一个小弹层，不另开一层弹窗。
+       每一项都对选中的每一条逐条调用详情页用的同一个接口，服务端按条目自己决定做不做得了 -->
   <div class="share-menu" id="shareSelMenu" hidden>
     <button class="menu-item" id="shareDlSource">下载原文</button>
     <button class="menu-item" id="shareDlDigest">下载整理稿</button>
     <button class="menu-item" id="shareMakeHtml">制作 HTML</button>
+    <div class="soft-hr"></div>
+    <button class="menu-item" id="batchRefetch">重新提取</button>
+    <button class="menu-item" id="batchDigest">重新提炼</button>
+    <div class="soft-hr"></div>
+    <button class="menu-item danger" id="batchDelete">删除服务器材料</button>
   </div>
 </main>
 
