@@ -419,14 +419,17 @@
           </svg>
         </button>
         <div class="drawer-panel" id="drawerPanel">
-          <button class="drawer-close" id="drawerClose" aria-label="收起条目列表" title="收起">
-            <span class="handle-label">收起</span>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="m18 15-6-6-6 6"/>
-            </svg>
-          </button>
           <div class="drawer-body">
+          <div class="page-head" id="drawerHead">
+            <span class="page-title">已收集</span>
+            <span class="spacer"></span>
+            <button class="icon ghost" id="drawerClose" aria-label="关闭已收集" title="关闭">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                   stroke-width="2" stroke-linecap="round" aria-hidden="true">
+                <path d="M6 6l12 12M18 6L6 18"/>
+              </svg>
+            </button>
+          </div>
           <!-- 搜索框与放大镜同排：插槽紧邻图标左侧，展开时右缘钉住、从图标处向左生长 -->
           <div class="listtoolbar" id="listToolbar">
             <button class="btn ghost small" id="selectToggle" aria-pressed="false"
@@ -849,8 +852,8 @@
 
   <!-- ============ 设置（齿轮进入，docs/17 §8.3） ============ -->
   <section id="settingsView" hidden>
-    <div class="settings-top">
-      <span class="settings-title">设置</span>
+    <div class="page-head">
+      <span class="page-title">设置</span>
       <span class="spacer"></span>
       <button class="icon ghost" id="settingsClose" aria-label="关闭设置" title="关闭">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -981,8 +984,8 @@
   <section id="shareStage" hidden>
     <div class="stage-scrim" aria-hidden="true"></div>
     <div class="stage-inner">
-      <div class="stage-top">
-        <span class="stage-title" id="stageTitle">分享创作</span>
+      <div class="page-head">
+        <span class="page-title" id="stageTitle">分享创作</span>
         <span class="spacer"></span>
         <button class="btn ghost small" id="stageDelete" hidden>删除这次对话</button>
         <button class="icon ghost" id="stageClose" aria-label="退出分享创作" title="退出">
@@ -1025,8 +1028,8 @@
   <section id="sharesView" hidden>
     <div class="stage-scrim" aria-hidden="true"></div>
     <div class="stage-inner conv-panel">
-      <div class="stage-top">
-        <span class="stage-title">我的作品</span>
+      <div class="page-head">
+        <span class="page-title">我的作品</span>
         <span class="spacer"></span>
         <button class="icon ghost" id="sharesClose" aria-label="关闭我的作品" title="关闭">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -1046,8 +1049,8 @@
   <section id="agentView" hidden>
     <div class="stage-scrim" aria-hidden="true"></div>
     <div class="stage-inner">
-      <div class="stage-top">
-        <span class="stage-title">AI 对话</span>
+      <div class="page-head">
+        <span class="page-title">AI 对话</span>
         <span class="spacer"></span>
         <!-- 会话切换条：定宽 + 省略号，切到哪一段都不推动旁边的按钮 -->
         <div class="menuwrap agent-switchwrap">

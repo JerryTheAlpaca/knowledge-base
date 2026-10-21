@@ -13,10 +13,10 @@ let refreshing = false;
 let searchTimer = null;
 let searchOpen = false;
 
-// —— 顶部抽屉（金蔷薇布局）：圆弧拉手拖着整页下拉，点外部或 Esc 收起 ——
+// —— 顶部抽屉（金蔷薇布局）：圆弧拉手拖着整页下拉，点外部、Esc 或右上角叉叉收起 ——
 // 动画模型：面板钉在终位，clip-path 可视区恒为 [顶栏下沿, 拉手上沿]；拉手用
-// transform 下移、充当页面前缘的拉环，顶端同时露出面板自带的收起钮（新圆弧）。
-// 拖拽必须 1:1 跟手且拉手与页面边缘同帧同位，CSS transition 做不到，统一 rAF 驱动。
+// transform 下移、充当页面前缘的拉环。拖拽必须 1:1 跟手且拉手与页面边缘同帧同位，
+// CSS transition 做不到，统一 rAF 驱动。
 const drawerHeader = document.querySelector("header");
 function drawerRestTop() {
   return drawerHeader ? drawerHeader.getBoundingClientRect().bottom : 56;
@@ -33,18 +33,12 @@ const reduceMotion = window.matchMedia
 function applyPull(px) {
   pull = px;
   const top = drawerRestTop();
-  const max = Math.max(0, window.innerHeight - top);
   const handle = $("drawerHandle");
   const panel = $("drawerPanel");
-  const close = $("drawerClose");
   handle.style.transform = px > 0.5 ? "translateY(" + px + "px)" : "";
   const bottom = Math.max(0, window.innerHeight - top - px);
   panel.style.clipPath = "inset(" + top + "px 0 " + bottom + "px 0)";
   panel.style.visibility = px > 0.5 ? "visible" : "";
-  // 收起钮不全程占位：拉到最后 10% 才渐显，收起时随之隐去；未显现时不可点
-  const show = max > 0 && px / max > 0.9 ? Math.min(1, (px / max - 0.9) / 0.1) : 0;
-  close.style.opacity = show;
-  close.style.pointerEvents = show > 0.5 ? "auto" : "none";
 }
 
 function animatePull(target) {
@@ -315,7 +309,7 @@ export function initItemList() {
     });
   });
   // —— 抽屉：拉手拖着整页跟手下拉，松手按位移/速度决定展开或弹回；纯点击仍可开关 ——
-  //    点面板外/Esc/收起钮收起。拖拽结束后的那次 click 是手势余波，吞掉不回切
+  //    点面板外/Esc/右上角叉叉收起。拖拽结束后的那次 click 是手势余波，吞掉不回切
   const drawerHandle = $("drawerHandle");
   let drag = null;           // { id, startY, basePull, moved, samples:[{y,t}] }
   let swallowClick = false;

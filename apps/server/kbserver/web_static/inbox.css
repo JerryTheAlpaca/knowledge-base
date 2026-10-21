@@ -11,12 +11,13 @@
    - 组件类名与 DOM 钩子不变，纯视觉层重构
    ============================================================ */
 
-/* —— 收件箱尺度令牌（U-06）：顶栏高与拉手高在一页里被算三次
-   （面板留白、clip 区、收起钮定位），改一处要同步改三处，故显式命名 —— */
+/* —— 收件箱尺度令牌（U-06）：顶栏高与拉手高在多处参与计算
+   （面板留白、clip 区），改一处要同步改其余几处，故显式命名 —— */
 :root {
   --topbar-h: 56px;       /* 顶栏内容高（不含 safe-area） */
-  --handle-h: 46px;       /* 抽屉拉手/收起钮的可视高 */
-  --panel-top: 110px;     /* 抽屉面板顶部留白 = 顶栏 + 收起钮位 + 呼吸 */
+  --handle-h: 46px;       /* 抽屉拉手的可视高 */
+  /* 收件箱的内容栏宽：设置、AI 对话、我的作品的标题与叉叉据此落在同一条竖线上 */
+  --content-max: 760px;
 }
 
 /* ============ 金蔷薇（inline SVG）：静态为主，提交后亮一下 ============ */
@@ -74,7 +75,7 @@ header { position: sticky; top: 0; z-index: 50;
          background: rgba(14, 10, 5, .78);
          border-bottom: 1px solid rgba(226, 176, 74, .14);
          backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
-.topbar-inner { max-width: 960px; margin: 0 auto; padding: 0 24px;
+.topbar-inner { max-width: var(--content-max); margin: 0 auto; padding: 0 24px;
                 display: flex; align-items: center; gap: 8px; height: var(--topbar-h); }
 .brand { font-family: var(--font-display); font-size: var(--fs-display); font-weight: 600;
          color: var(--rose-brand); letter-spacing: 1px; }
@@ -104,7 +105,7 @@ header { position: sticky; top: 0; z-index: 50;
 .menu-item:hover { background: var(--surface-2); }
 .menu-item.danger { color: var(--bad); }
 
-main { max-width: 960px; margin: 0 auto; padding: 24px 24px calc(16px + env(safe-area-inset-bottom)); }
+main { max-width: var(--content-max); margin: 0 auto; padding: 24px 24px calc(16px + env(safe-area-inset-bottom)); }
 .spacer { flex: 1; }
 .muted { color: var(--text-2); }
 .small { font-size: var(--fs-small); line-height: 1.5; color: var(--text-2); }
@@ -112,9 +113,16 @@ main { max-width: 960px; margin: 0 auto; padding: 24px 24px calc(16px + env(safe
 .num { font-variant-numeric: tabular-nums; }
 .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 h2, .card-title { font-size: var(--fs-h2); font-weight: 600; margin: 0 0 12px; }
-.card h2, .card .list-head h2, .settings-title, .onboard-title, .empty-title {
+.card h2, .card .list-head h2, .onboard-title, .empty-title {
   font-family: var(--font-display); letter-spacing: .3px; }
 label { display: block; font-size: var(--fs-small); color: var(--text-2); margin: 14px 0 6px; }
+
+/* —— 各页面共用的页头：标题在左、叉叉在右。
+   同一套字号/行高/按钮，页面之间只换标题文字与中间的动作 —— */
+.page-head { flex: none; display: flex; align-items: center; gap: 10px; min-height: 44px; }
+.page-title { font-family: var(--font-display); font-size: var(--fs-h1); font-weight: 600;
+              letter-spacing: .5px; line-height: 1.3; min-width: 0;
+              overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* —— 未登录时的产品说明页在 landing.css（#loginView），本文件只管登录后的收件箱 —— */
 
@@ -141,42 +149,26 @@ label { display: block; font-size: var(--fs-small); color: var(--text-2); margin
 .drawer-handle:hover { color: var(--accent);
                        box-shadow: 0 6px 22px rgba(226, 176, 74, .18), inset 0 1px 0 rgba(226, 176, 74, .25); }
 .drawer-handle svg { flex: none; }
-/* 拉手文字（已收集/收起）：替代数字徽标 */
+/* 拉手文字（已收集）：替代数字徽标 */
 .handle-label { font-size: 12px; line-height: 1; letter-spacing: 3px; text-indent: 3px; }
 .drawer-panel { position: fixed; inset: 0; z-index: 45; display: flex; flex-direction: column;
                 background: linear-gradient(170deg, rgba(26, 18, 9, .985) 0%, rgba(14, 9, 4, .995) 100%);
-                /* 顶部让出 sticky 顶栏 + 收起拉手的高度：顶栏（品牌/设置/账号）在条目列表页也一直可见 */
-                padding: calc(var(--panel-top) + env(safe-area-inset-top)) 0 calc(16px + env(safe-area-inset-bottom));
+                /* 顶部让出 sticky 顶栏（含发丝线 1px）+ 与设置/舞台同样的呼吸位：
+                   各页页头从同一高度开始 */
+                padding: calc(var(--topbar-h) + 1px + 24px + env(safe-area-inset-top)) 0
+                         calc(16px + env(safe-area-inset-bottom));
                 backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
                 /* 「圆弧拉手拖着整页下拉」：面板钉在终位、不整块位移，clip 可视区恒为
                    [顶栏下沿, 拉手上沿]，由 item-list.js 的 rAF 逐帧驱动——拉手
-                   （transform 下移）就是页面前缘的拉环，顶栏下同时露出面板自带的
-                   收起钮（拉动时顶端新生成的圆弧）；收起时拉手带着前缘反向卷回。
+                   （transform 下移）就是页面前缘的拉环；收起时拉手带着前缘反向卷回。
                    clip 不走 CSS transition：拖拽要 1:1 跟手，且必须与拉手同帧同位 */
                 visibility: hidden; }
-.drawer-body { width: 100%; max-width: 960px; margin: 0 auto; padding: 0 24px;
+.drawer-body { width: 100%; max-width: var(--content-max); margin: 0 auto; padding: 0 24px;
                display: flex; flex-direction: column; flex: 1; min-height: 0; }
+#drawerHead { margin-bottom: 8px; }
 .drawer-scroll { overflow-y: auto; overflow-x: hidden; min-height: 0; overscroll-behavior: contain; flex: 1;
                  /* 顶部/右侧留边：卡片右上角红点（12px）有一半溢出卡片，不能被滚动容器裁掉 */
                  padding: 8px 8px 8px 0; }
-/* 全屏面板顶部中央的收起拉手：与主页拉手同宽同位（顶栏正下方）、
-   同为「文字+箭头」两行布局，开合切换时按钮位置尺寸完全不变（走查反馈：按钮左右跳）。
-   注意：必须用 left/right + auto margin 居中——若用 translateX(-50%)，
-   全局 button:active 的 transform 会覆盖它，按下瞬间按钮右跳 66px、
-   pointerup 落到面板上，click 派发不到按钮，抽屉就收不起来 */
-.drawer-close { position: absolute; top: calc(var(--topbar-h) + env(safe-area-inset-top));
-                left: 0; right: 0; margin-inline: auto;
-                width: 150px; min-height: var(--handle-h); padding: 6px 0 8px;
-                border: 1px solid var(--border-strong); border-top: none;
-                border-radius: 0 0 75px 75px;
-                background: linear-gradient(180deg, rgba(56, 39, 17, .92) 0%, rgba(24, 16, 8, .96) 100%);
-                color: var(--text-2);
-                display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
-                box-shadow: 0 6px 18px rgba(0, 0, 0, .5), inset 0 1px 0 rgba(226, 176, 74, .12);
-                transition: color var(--t-fast), box-shadow var(--t-fast); }
-.drawer-close::after { content: ""; position: absolute; inset: -8px 0; }
-.drawer-close:hover { color: var(--accent);
-                      box-shadow: 0 4px 18px rgba(226, 176, 74, .18); }
 
 /* —— 中间：金蔷薇（视觉中心，平时完全静止，提交时播一次回馈动画） —— */
 .rose-stage { flex: 1; min-height: 200px; display: flex; flex-direction: column;
@@ -548,8 +540,7 @@ details.disclosure.slim .disclosure-body { padding: 0 8px 8px; }
   from { clip-path: inset(0 0 0 0); transform: none; opacity: 1; }
   to   { clip-path: inset(0 0 100% 0); transform: translateY(-10px); opacity: .4; }
 }
-.settings-top { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
-.settings-title { flex: 1; font-size: var(--fs-h1); font-weight: 600; }
+#settingsView > .page-head { margin-bottom: 16px; }
 #settingsView h2 { font-size: var(--fs-h2); font-weight: 600; margin: 0 0 12px; }
 #settingsView h3 { font-size: var(--fs-body); font-weight: 600; margin: 0; }
 #settingsView .list-head h3 { flex: 1; }
@@ -636,7 +627,7 @@ details.disclosure.slim .disclosure-body { padding: 0 8px 8px; }
 
 /* ============ 响应式（390/768/1440 走查） ============ */
 @media (min-width: 1440px) {
-  main, .topbar-inner, .drawer-body { max-width: 720px; }
+  :root { --content-max: 720px; }
 }
 @media (max-width: 720px) {
   main, .topbar-inner { padding-left: 16px; padding-right: 16px; }
@@ -717,7 +708,7 @@ body.share-selecting ul.items li.item { cursor: copy; }
 /* 整页盖一层强遮罩：底下还是首页那朵蔷薇，只是退成背景；输入框沿用首页胶囊那一副。
    只做压暗、不加模糊——模糊会让花在字后面糊成一片，走查反馈是「太模糊」 */
 #shareStage, #sharesView { position: fixed; inset: 0; z-index: 36; display: flex; flex-direction: column;
-                           padding: calc(var(--topbar-h) + env(safe-area-inset-top)) 20px
+                           padding: calc(var(--topbar-h) + 1px + 24px + env(safe-area-inset-top)) 0
                                     calc(16px + env(safe-area-inset-bottom));
                            animation: stage-in .16s var(--ease) backwards; }
 #shareStage[hidden], #sharesView[hidden] { display: none; }
@@ -726,11 +717,11 @@ body.share-selecting ul.items li.item { cursor: copy; }
                background: linear-gradient(180deg, rgba(6, 4, 2, .84) 0%, rgba(6, 4, 2, .92) 100%); }
 /* 对话舞台上不再摆采集框和抽屉拉手：两个输入框叠着会打架 */
 body.share-open .dock, body.share-open .drawer { display: none; }
-.stage-inner { position: relative; width: 100%; max-width: 760px; margin: 0 auto; flex: 1; min-height: 0;
+/* 栏宽收在自己的内边距里，与 main / drawer-body 同一套盒模型：
+   标题左缘和叉叉右缘在各页面之间逐像素对齐 */
+.stage-inner { position: relative; width: 100%; max-width: var(--content-max); margin: 0 auto;
+               padding: 0 24px; flex: 1; min-height: 0;
                display: flex; flex-direction: column; gap: 10px; }
-.stage-top { flex: none; display: flex; align-items: center; gap: 10px; min-height: 44px; }
-.stage-title { font-family: var(--font-display); font-size: var(--fs-h1); font-weight: 600; letter-spacing: .5px;
-               min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .stage-scroll { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
                 display: flex; flex-direction: column; gap: 12px; padding: 2px 6px 2px 0; }
 /* 话还少的时候贴着输入框那头摆，别在中间留一大片空；内容一溢出 auto 自己归零，不挡滚动 */
@@ -896,7 +887,7 @@ details[open] > summary .proc-chev { transform: rotate(-135deg); margin: 2px 2px
 .conv-list .wmeta { font-size: var(--fs-caption); color: var(--text-2); margin-left: auto; white-space: nowrap; }
 
 @media (max-width: 720px) {
-  #shareStage, #sharesView { padding-left: 16px; padding-right: 16px; }
+  .stage-inner { padding: 0 16px; }
   .share-frame { height: 48vh; }
   .t-msg { max-width: none; }
   .stage-ask { max-height: 42vh; }
@@ -913,7 +904,7 @@ details[open] > summary .proc-chev { transform: rotate(-135deg); margin: 2px 2px
    这里只补三件面板特有的：遮罩层本身、定宽的会话切换条与它的下拉列表、过程行里的工具文本。
    颜色一律取 tokens.css 的 rose 令牌，不新增任何变量。 */
 #agentView { position: fixed; inset: 0; z-index: 36; display: flex; flex-direction: column;
-             padding: calc(var(--topbar-h) + env(safe-area-inset-top)) 20px
+             padding: calc(var(--topbar-h) + 1px + 24px + env(safe-area-inset-top)) 0
                       calc(16px + env(safe-area-inset-bottom));
              animation: stage-in .1s var(--ease) backwards; }
 #agentView[hidden] { display: none; }
@@ -964,7 +955,6 @@ button.agent-sess-act { width: 32px; min-width: 32px; height: 32px; min-height: 
 .agent-first-p:last-of-type { margin-bottom: 0; }
 
 @media (max-width: 720px) {
-  #agentView { padding-left: 16px; padding-right: 16px; }
   .agent-switchbtn { width: 132px; }
   /* 窄屏上切换条靠近屏幕中间，下拉按 right:0 绝对定位会往左溢出屏幕：
      改成贴着可视区两侧，标题就不再被切掉一半 */
