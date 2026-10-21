@@ -26,7 +26,7 @@
     <div class="menuwrap">
       <!-- 位置、图标、尺寸都不变：老用户的肌肉记忆是「这三条横线 = 和 AI 的对话」，
            语义靠 title 说清，不靠换图标 -->
-      <button class="icon ghost" id="sharesBtn" aria-label="AI 对话" title="和 AI 自由对话">
+      <button class="icon ghost" id="sharesBtn" aria-label="AI 对话" title="AI 对话">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
              stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
           <path d="M4 7h16"/><path d="M4 12h16"/><path d="M4 17h10"/>
@@ -34,7 +34,7 @@
       </button>
     </div>
     <div class="menuwrap">
-      <button class="icon ghost" id="worksBtn" aria-label="我的分享作品" title="我的分享作品">
+      <button class="icon ghost" id="worksBtn" aria-label="我的作品" title="我的作品">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
              stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M6 4h12v16.5l-6-4.2-6 4.2z"/>
@@ -1034,9 +1034,9 @@
     <div class="stage-scrim" aria-hidden="true"></div>
     <div class="stage-inner conv-panel">
       <div class="stage-top">
-        <span class="stage-title">AI 对话</span>
+        <span class="stage-title">我的作品</span>
         <span class="spacer"></span>
-        <button class="icon ghost" id="sharesClose" aria-label="关闭对话记录" title="关闭">
+        <button class="icon ghost" id="sharesClose" aria-label="关闭我的作品" title="关闭">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                stroke-width="2" stroke-linecap="round" aria-hidden="true">
             <path d="M6 6l12 12M18 6L6 18"/>
@@ -1073,7 +1073,6 @@
             <ul class="agent-sess-list" id="agentSessList"></ul>
           </div>
         </div>
-        <button class="btn ghost small" id="agentNew" title="新建会话">新建</button>
         <button class="icon ghost" id="agentClose" aria-label="退出 AI 对话" title="退出">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                stroke-width="2" stroke-linecap="round" aria-hidden="true">

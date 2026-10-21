@@ -176,7 +176,10 @@ function wireTopbar() {
   });
   $("userChip").addEventListener("click", (e) => {
     e.stopPropagation();
-    $("userMenu").hidden = !$("userMenu").hidden;
+    const menu = $("userMenu");
+    menu.hidden = !menu.hidden;
+    // 开菜单时现算初始化状态：建过模型配置后「重新运行初始化」不该还挂在菜单里当死按钮
+    if (!menu.hidden) maybeShowOnboarding();
   });
   $("menuAdmin").addEventListener("click", () => { closeMenus(); window.location.href = "/admin"; });
   $("menuOnboarding").addEventListener("click", () => {

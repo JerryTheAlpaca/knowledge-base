@@ -20,6 +20,7 @@ export async function maybeShowOnboarding() {
 }
 
 function render(ob) {
+  lastSig = stateSig(ob);
   const host = $("onboardingHost");
   host.hidden = false;
   const model = ob.model || {};
@@ -73,6 +74,16 @@ function render(ob) {
   if (!obsidian.completed || !model.completed) startPolling();
 }
 
+// 轮询只在状态真的变了才重绘：整卡重绘会抹掉卡内临时选择，还白拉一次模型配置列表
+let lastSig = "";
+function stateSig(ob) {
+  const dev = (ob.obsidian || {}).active_device || {};
+  return JSON.stringify([ob.completed, ob.dismissed,
+    (ob.model || {}).completed, (ob.model || {}).label,
+    (ob.obsidian || {}).completed, dev.name,
+    (ob.platforms || {}).completed]);
+}
+
 function stepHTML(n, title, done, body) {
   return '<div class="obstep' + (done ? " done" : "") + '">' +
     '<div class="row"><span class="obstate' + (done ? " done" : "") + '"></span>' +
@@ -108,9 +119,7 @@ function startPolling() {
     try {
       const ob = await api("/v1/onboarding");
       if (ob.completed) { stopPolling(); render(ob); return; }
-      // 模型步骤完成而 Obsidian 未完成时刷新本卡
-      const card = $("onboardCard");
-      if (card) render(ob);
+      if (stateSig(ob) !== lastSig) render(ob);
     } catch (e) { /* 静默重试 */ }
   }, 5000);
 }

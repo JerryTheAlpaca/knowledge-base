@@ -403,6 +403,13 @@ async function openShareWithThisItem() {
   openWorkbench([detailId]);
 }
 
+// 单篇下载：与多选菜单逐条调用同一个实现，能不能下由服务端那篇的材料决定
+async function downloadThis(kind) {
+  if (!detailId) return;
+  const { downloadItem } = await import("./shares.js");
+  downloadItem(detailId, kind);
+}
+
 // ---------- 更多操作菜单（§7.5）：按能力动态展示，危险操作在底部 ----------
 function renderMoreMenu(it) {
   const wf = it.workflow || {};
@@ -424,6 +431,8 @@ function renderMoreMenu(it) {
                  label: it.media_kind === "video"
                    ? "视频原件已在转写完成后清理" : "录音原件已在转写完成后清理" });
   }
+  items.push({ code: "download-source", label: "下载原文" });
+  items.push({ code: "download-digest", label: "下载整理稿" });
   items.push({ code: "share-page", label: "用这篇生成分享页" });
   items.push({ code: "view-records", label: "查看处理记录" });
   const menu = $("moreMenu");
@@ -746,6 +755,8 @@ export function initDetail() {
     const code = b.dataset.more;
     if (code === "view-records") openRecords();
     else if (code === "share-page") openShareWithThisItem();
+    else if (code === "download-source") downloadThis("source");
+    else if (code === "download-digest") downloadThis("digest");
     else if (code === "delete") doDelete();
     else if (code === "download-audio") window.location.href = detailData.item.audio_original_download;
     else if (code === "refetch") doRefetch();

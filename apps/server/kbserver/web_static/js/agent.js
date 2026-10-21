@@ -607,8 +607,10 @@ function closeMenu() {
 function renderDock() {
   const cur = activeId ? findSession(activeId) : null;
   const label = $("agentSwitchLabel");
-  if (label) label.textContent = cur ? (cur.title || "未命名会话")
-    : (sessions.length ? "选择会话" : "新会话");
+  if (label) label.textContent = cur ? (cur.title || "未命名会话") : "选择会话";
+  // 一段会话都没有时切换条没有可切的东西：收掉，新建走下拉里那一个入口就够
+  const wrap = document.querySelector(".agent-switchwrap");
+  if (wrap) wrap.hidden = sessions.length === 0;
   const run = turnRunning();
   const input = $("agentInput");
   const send = $("agentSend");
@@ -685,7 +687,6 @@ export function initAgent(navigator) {
   if (navigator) go = navigator;
   if (!$("agentView")) return;
   $("agentClose").addEventListener("click", exitAgent);
-  $("agentNew").addEventListener("click", createAndOpen);
   $("agentNewTop").addEventListener("click", () => { closeMenu(); createAndOpen(); });
   $("agentSwitch").addEventListener("click", (e) => { e.stopPropagation(); toggleMenu(); });
   // 点面板别处就收起会话列表（同多选「完成」菜单的做法）

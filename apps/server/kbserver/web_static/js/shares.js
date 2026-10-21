@@ -222,6 +222,22 @@ async function downloadOne(id, kind) {
   return { ok: true };
 }
 
+// 单篇下载：详情页「更多操作」与多选菜单共用同一套接口与文件名规则
+export async function downloadItem(id, kind) {
+  if (!batchFree()) return;
+  batchBusy = true;
+  const busy = toast("正在准备" + DL_LABEL[kind] + "…", { sticky: true });
+  const one = await downloadOne(id, kind);
+  dismissToast(busy);
+  if (one.ok) {
+    toast("已下载" + DL_LABEL[kind], { type: "ok" });
+    if (kind === "source") refreshItems();   // 下载原文会把条目推到「已下载」
+  } else {
+    toast("这篇还没有可下载的" + DL_LABEL[kind], { type: "warn" });
+  }
+  batchBusy = false;
+}
+
 // 证据角标（^s0001）是给网页定位用的，落到文件里就是噪声
 function cleanReadableMd(raw) {
   return raw.split("\n").map((l) => l.replace(/\s+\^[sp]\d{4,}\s*$/, ""))
@@ -870,7 +886,10 @@ function renderDock() {
       ? "正在读你选的材料…"
       : (blocked ? "上面这几篇还没有可读正文：先移除它们，或去把材料补充完整。"
         : (draftIds.length ? "共 " + draftIds.length + " 篇材料 · 不填也可以，AI 会先读材料再问你" : ""));
-    input.placeholder = "例：整理出它们的差异和相互启发，适合初学者阅读；有必要再配图。";
+    // 阻塞态输入框是禁用的：占位符就别再举例子引人打字，直接说出口在哪
+    input.placeholder = blocked
+      ? "先移除没有可读正文的材料，或把它们补充完整"
+      : "例：整理出它们的差异和相互启发，适合初学者阅读；有必要再配图。";
   } else if (answering()) {
     hint.textContent = "";
     input.placeholder = "可以逐题回答，也可以一次说整组；也可以直接说「你决定，直接做」。";

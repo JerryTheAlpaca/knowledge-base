@@ -6,6 +6,7 @@
 
 import { $, api, esc, toast, showErr, confirmModal, promptModal, openModalHTML, closeModal, fmtTime, dismissToast } from "./api.js";
 import { pluginInstallHTML } from "./plugin-download.js";
+import { maybeShowOnboarding } from "./onboarding.js";
 
 async function loadDevices() {
   const host = $("deviceStatus");
@@ -271,6 +272,7 @@ async function deleteProfile(id) {
     await api("/v1/provider-profiles/" + encodeURIComponent(id), { method: "DELETE" });
     toast("已删除配置" + (p ? "：" + p.model : ""), { type: "ok" });
     loadSettingsData();
+    maybeShowOnboarding();
   } catch (e) { showErr(e); }
 }
 
@@ -316,12 +318,23 @@ export function openProfileForm({ profile = null } = {}) {
         if (!secret) {
           toast("服务地址、模型名与密钥均必填", { type: "error" }); return;
         }
-        await api("/v1/provider-profiles", { method: "POST", body: {
+        const created = await api("/v1/provider-profiles", { method: "POST", body: {
           kind: "llm", adapter: "openai-compatible", endpoint, model, secret } });
+        // 第一份配置直接进两个用途档：服务端把「存在 digest 配置」就算模型步骤完成，
+        // 下拉若还停在（未设置），就和向导里的「已选择」各说各话
+        const patch = {};
+        if (created && created.id) {
+          if (currentSettings && !currentSettings.default_profile_id) patch.default_profile_id = created.id;
+          if (currentSettings && !currentSettings.optimize_profile_id) patch.optimize_profile_id = created.id;
+        }
+        if (Object.keys(patch).length) {
+          currentSettings = await api("/v1/settings", { method: "PATCH", body: patch });
+        }
         toast("配置已创建", { type: "ok" });
       }
       closeModal(null);
       loadSettingsData();
+      maybeShowOnboarding();
     } catch (e) { showErr(e); }
   };
 }
@@ -355,6 +368,9 @@ async function selectProfile(field, value) {
 function renderBili(bili) {
   const state = bili || {};   // 接口失败时按「未连接」呈现，不整页崩
   const v = state.verification || "unverified";
+  // 检测与撤销只在有登录态时有意义：没连接时点了只会确认一个不存在的东西（与小红书区块同口径）
+  $("biliCheck").hidden = !state.configured;
+  $("biliRevoke").hidden = !state.configured;
   let ico = "…", cls = "st-info", title = "未连接", desc = "连接后可以读取需要登录才能查看的字幕。";
   if (state.configured && v === "valid") {
     ico = "✓"; cls = "st-ok"; title = "登录态有效";
