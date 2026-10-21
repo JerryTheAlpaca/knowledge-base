@@ -288,9 +288,10 @@ dsh 的 SDK 调用面全部收在 `orchestrator/dsh_runtime.py` 一个类里。�
 
 - `#sharesBtn` **位置、图标、尺寸完全不变**，只把 click 从 `shares.js:openConvList`
   改成打开新的对话面板（`?view=agent`），`aria-label` / `title` 改成对话语义。
-- HTML 分享作品列表迁到顶栏紧挨着的新按钮，沿用现有 `openConvList` / `showConvList`
-  与 `?view=shares` 路由；`#sharesView`、`#shareStage`、`js/shares.js` 其余部分
-  一行不改。
+- 「我的作品」入口收进对话面板的顶栏（`#agentWorksBtn`），沿用现有
+  `showConvList` 与 `?view=shares` 路由；`#sharesView`、`#shareStage`、
+  `js/shares.js` 其余部分一行不改。面板已打开时再点顶栏入口不再压历史；
+  面板内切换会话只替换当前历史条目，叉叉一次即可退回进入前的位置。
 - **feature flag 分开**：`AGENT_ENABLED` + `/v1/auth/me` 返回 `agent_enabled`，
   不复用 `SHARE_ENABLED`。agent 容器挂了只关对话入口。
 - 对话面板沿用 `#shareStage` 验证过的视觉语言（同一套 scrim / dock / smartbox /

@@ -45,9 +45,12 @@ let procTimer = 0;         // 过程块自己的一秒计时，不牵动整条�
 let procRun = "";          // 下面三个量在给哪一次运行计时
 let procFrom = 0;          // 这一段「真在跑」从什么时候开始看到
 let procMs = 0;            // 已经累计到的处理时长
-let go = (url, state) => {
+let go = (url, state, opts) => {
   // state 里带 view：退出时靠它判断这条历史是我们压进去的，可以直接 back 回去
-  try { history.pushState(state || {}, "", url); } catch (e) { /* 忽略 */ }
+  try {
+    if (opts && opts.replace) history.replaceState(state || {}, "", url);
+    else history.pushState(state || {}, "", url);
+  } catch (e) { /* 忽略 */ }
 };
 
 function loadSelected() {
@@ -395,11 +398,6 @@ export async function openSharesView(shareId, isNew) {
   }
   showConvList();
   await renderWorksList();
-}
-
-// 顶栏三横线：以前的对话
-function openConvList() {
-  go("/inbox?view=shares", { view: "shares" });
 }
 
 // 从多选/详情进入：带着选中材料到舞台上
@@ -1398,18 +1396,15 @@ function stopPolling() {
 function exitOverlay() {
   // 进入舞台/记录时压了一条历史：back 回到进入前的位置（同设置页）
   if (history.state && history.state.view === "shares") { history.back(); return; }
-  go("/inbox");
+  go("/inbox", {}, { replace: true });
 }
 
 export function initShares(navigator) {
   if (navigator) go = navigator;
   installSelection();
-  // 顶栏两个按钮换了归属：三条横线那侧现在开的是自由对话面板（js/agent.js），
-  // 以前的 HTML 分享作品列表挪到紧挨着的「我的分享作品」上，状态机一行不改
+  // 三条横线开的是自由对话面板（js/agent.js）；「我的作品」收进了那个面板里面
   const nav = $("sharesBtn");
   if (nav) nav.addEventListener("click", openAgentPanel);
-  const works = $("worksBtn");
-  if (works) works.addEventListener("click", openConvList);
   const closeStage = $("stageClose");
   if (closeStage) closeStage.addEventListener("click", exitOverlay);
   const closeConv = $("sharesClose");

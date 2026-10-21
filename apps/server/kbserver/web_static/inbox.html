@@ -21,23 +21,15 @@
   <div class="topbar-inner">
     <button class="brand brandbtn" id="brandHome" title="返回主页">金蔷薇</button>
     <div class="spacer"></div>
-    <!-- 三个入口各管一件事，定宽图标钮并排：多一个按钮是一次性的布局变化，
+    <!-- 入口各管一件事，定宽图标钮并排：多一个按钮是一次性的布局变化，
          之后任何交互都不会再把右边的按钮横向推着走 -->
     <div class="menuwrap">
       <!-- 位置、图标、尺寸都不变：老用户的肌肉记忆是「这三条横线 = 和 AI 的对话」，
-           语义靠 title 说清，不靠换图标 -->
+           语义靠 title 说清，不靠换图标。「我的作品」收进了这个面板里面 -->
       <button class="icon ghost" id="sharesBtn" aria-label="AI 对话" title="AI 对话">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
              stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
           <path d="M4 7h16"/><path d="M4 12h16"/><path d="M4 17h10"/>
-        </svg>
-      </button>
-    </div>
-    <div class="menuwrap">
-      <button class="icon ghost" id="worksBtn" aria-label="我的作品" title="我的作品">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-             stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M6 4h12v16.5l-6-4.2-6 4.2z"/>
         </svg>
       </button>
     </div>
@@ -1073,6 +1065,13 @@
             <ul class="agent-sess-list" id="agentSessList"></ul>
           </div>
         </div>
+        <!-- 「我的作品」从顶栏收进面板：这里才是它该待的那一层 -->
+        <button class="icon ghost" id="agentWorksBtn" aria-label="我的作品" title="我的作品">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M6 4h12v16.5l-6-4.2-6 4.2z"/>
+          </svg>
+        </button>
         <button class="icon ghost" id="agentClose" aria-label="退出 AI 对话" title="退出">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                stroke-width="2" stroke-linecap="round" aria-hidden="true">

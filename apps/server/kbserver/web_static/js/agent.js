@@ -22,9 +22,12 @@ const KIND_OPEN = new Set(["user_message", "status", "tool_call", "tool_result"]
 const BUSY_TEXT = /(排队|等待资源|内存不足|服务器忙)/;
 const BUSY_STATE = /(queued|waiting_resources|admission)/;
 
-let go = (url, state) => {
+let go = (url, state, opts) => {
   // 和 shares.js 同一套：state 里带 view，退出时靠它判断这条历史是我们压进去的
-  try { history.pushState(state || {}, "", url); } catch (e) { /* 忽略 */ }
+  try {
+    if (opts && opts.replace) history.replaceState(state || {}, "", url);
+    else history.pushState(state || {}, "", url);
+  } catch (e) { /* 忽略 */ }
 };
 
 let sessions = [];
@@ -100,13 +103,23 @@ function showAgent() {
 
 // 顶栏按钮走的这条路：只换 URL，渲染统一交给 app.js 的 route()
 export function openAgentPanel() {
+  if (agentIsOpen()) return;   // 面板就在眼前：再点不再压一层历史，不然叉叉要按好几次
+  // 「我的作品」是从面板里点进去的：直接退回原来那条历史，不叠新层
+  if (history.state && history.state.view === "shares" && history.state.from === "agent") {
+    history.back();
+    return;
+  }
+  // 别的路进了作品层（多选开工、深链接）：把当前这一层换成对话，同样不叠
+  if (history.state && history.state.view === "shares") {
+    go("/inbox?view=agent", { view: "agent" }, { replace: true });
+    return;
+  }
   go("/inbox?view=agent", { view: "agent" });
 }
 
 function exitAgent() {
-  // 进来时压了一条历史：back 回到进入前的位置（同分享舞台、同设置页）
-  if (history.state && history.state.view === "agent") { history.back(); return; }
-  go("/inbox");
+  // 一次叉叉就回收件箱：面板里切过多少会话、换过多少层都不影响
+  go("/inbox", {}, { replace: true });
 }
 
 // ---------- 会话列表 ----------
@@ -165,7 +178,7 @@ async function createSession(title) {
 async function createAndOpen() {
   const id = await createSession("");
   if (!id) return;
-  await openSession(id, "push");
+  await openSession(id, "replace");
   loadSessions();   // 标题/时间由服务端定，回来对一次
 }
 
@@ -241,10 +254,9 @@ async function openSession(id, urlMode) {
   events = []; lastSeq = 0; awaiting = false; stalled = false; notice = "";
   fold = new Map();
   loading = true;
-  if (urlMode === "push") go("/inbox?view=agent&session=" + encodeURIComponent(id), { view: "agent" });
-  // "replace"：路由进来时 URL 还没有 session 参数，补上但不多压一条历史；
+  // 切换会话只换 URL、不压历史：否则退出面板要先按好几次叉叉，才退得回进来之前的位置
+  if (urlMode === "replace") replaceUrl(id);
   // "keep"：调用方（route）已经把 URL 摆好了，这里不再动历史
-  else if (urlMode === "replace") replaceUrl(id);
   showAgent();
   render();
   await loadHistory(id);
@@ -577,7 +589,7 @@ function renderMenu() {
 
 function onMenuClick(e) {
   const open = e.target.closest("[data-open]");
-  if (open) { closeMenu(); openSession(open.dataset.open, "push"); loadSessions(); return; }
+  if (open) { closeMenu(); openSession(open.dataset.open, "replace"); loadSessions(); return; }
   const ren = e.target.closest("[data-rename]");
   if (ren) { renameSession(ren.dataset.rename); return; }
   const del = e.target.closest("[data-drop]");
@@ -689,6 +701,10 @@ export function initAgent(navigator) {
   if (navigator) go = navigator;
   if (!$("agentView")) return;
   $("agentClose").addEventListener("click", exitAgent);
+  // 我的作品：从这里压一层进去，叉叉自然退回这段对话
+  $("agentWorksBtn").addEventListener("click", () => {
+    go("/inbox?view=shares", { view: "shares", from: "agent" });
+  });
   $("agentNewTop").addEventListener("click", () => { closeMenu(); createAndOpen(); });
   $("agentSwitch").addEventListener("click", (e) => { e.stopPropagation(); toggleMenu(); });
   // 点面板别处就收起会话列表（同多选「完成」菜单的做法）

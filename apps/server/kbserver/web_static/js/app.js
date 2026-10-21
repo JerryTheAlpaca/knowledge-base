@@ -41,8 +41,9 @@ function showApp(me) {
   const agentCard = $("secAgent");
   if (agentCard) agentCard.hidden = !me.agent_enabled;
   const sharesOn = !!me.shares_enabled;
-  const worksBtn = $("worksBtn");
-  if (worksBtn) worksBtn.hidden = !sharesOn;
+  // 「我的作品」现在挂在 AI 对话面板里，跟着分享开关走
+  const agentWorksBtn = $("agentWorksBtn");
+  if (agentWorksBtn) agentWorksBtn.hidden = !sharesOn;
   // 「多选」如今是收件箱的批量入口（下载、重跑、删除），不只做 HTML：分享没开也要留着它，
   // 只把菜单里「制作 HTML」这一项收掉，否则点进去只会得到一句「还没有启用」
   const makeHtml = $("shareMakeHtml");
@@ -143,9 +144,13 @@ function goHome() {
   navigate("/inbox");
 }
 
-// 视图切换的唯一入口：分享舞台与对话记录都靠它换 URL，再交给 route() 渲染
-export function navigate(url, state) {
-  try { history.pushState(state || {}, "", url); } catch (e) { /* 忽略 */ }
+// 视图切换的唯一入口：分享舞台与对话记录都靠它换 URL，再交给 route() 渲染。
+// replace 用于在原层内换内容（切会话、从作品退回对话），不再往历史里压新条目
+export function navigate(url, state, opts) {
+  try {
+    if (opts && opts.replace) history.replaceState(state || {}, "", url);
+    else history.pushState(state || {}, "", url);
+  } catch (e) { /* 忽略 */ }
   route();
 }
 
