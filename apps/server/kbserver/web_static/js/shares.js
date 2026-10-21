@@ -11,8 +11,7 @@ import { setListPollPaused, refreshItems, onRowsRendered, openDrawer } from "./i
 import { currentDetailId, closeDetail, openDetail } from "./item-detail.js";
 import { openAgentPanel } from "./agent.js";
 
-const SELECTED_KEY = "kb.share.selected.v1";
-let selected = new Set(loadSelected());
+let selected = new Set();
 let selectMode = false;
 let mode = null;           // null | draft | work
 let draftIds = [];         // 还没开工时选中的材料
@@ -53,14 +52,6 @@ let go = (url, state, opts) => {
   } catch (e) { /* 忽略 */ }
 };
 
-function loadSelected() {
-  try { return JSON.parse(localStorage.getItem(SELECTED_KEY) || "[]"); } catch (e) { return []; }
-}
-
-function saveSelected() {
-  try { localStorage.setItem(SELECTED_KEY, JSON.stringify([...selected])); } catch (e) { /* 忽略 */ }
-}
-
 function selectedIds() { return [...selected]; }
 
 // ---------- 列表选择模式 ----------
@@ -73,16 +64,18 @@ function setSelectMode(on) {
     toggle.classList.toggle("on", on);
   }
   document.body.classList.toggle("share-selecting", on);
-  if (!on) showSelMenu(false);
+  if (!on) {
+    // 退出就丢掉勾选：下次进多选从头选，不带着上次的记录
+    selected.clear();
+    showSelMenu(false);
+  }
   // 点亮标记每次都按 selected 重画：进多选时列表早就画好了，不补一次就只剩计数对得上。
-  // 退出多选不清类——发光写在 body.share-selecting 作用域里，作用域一撤就整层灭掉
   syncRowMarks();
   renderSelectionBar();
 }
 
 function toggleItem(itemId) {
   if (selected.has(itemId)) selected.delete(itemId); else selected.add(itemId);
-  saveSelected();
   syncRowMarks();
   renderSelectionBar();
 }
@@ -138,7 +131,7 @@ function installSelection() {
   if (toggle) toggle.addEventListener("click", () => setSelectMode(!selectMode));
   const clear = $("shareSelClear");
   if (clear) clear.addEventListener("click", () => {
-    selected.clear(); saveSelected(); syncRowMarks(); renderSelectionBar();
+    selected.clear(); syncRowMarks(); renderSelectionBar();
   });
   const done = $("shareSelDone");
   if (done) done.addEventListener("click", () => {
@@ -333,7 +326,6 @@ async function batchDelete() {
     call: (id) => api("/v1/items/" + encodeURIComponent(id), { method: "DELETE" }),
   });
   gone.forEach((id) => selected.delete(id));
-  saveSelected();
   syncRowMarks();
   renderSelectionBar();
   refreshItems();
@@ -405,8 +397,7 @@ export function openWorkbench(itemIds) {
   const ids = itemIds && itemIds.length ? itemIds : selectedIds();
   if (!ids.length) { toast("先在「已收集」里勾几篇材料", { type: "warn" }); return; }
   draftIds = ids.slice(0, 30);
-  // setSelectMode 里会把标记和条子一起重画，这里只改集合
-  selected.clear(); saveSelected();
+  // 材料已经复制进 draftIds，退出多选会顺手清掉勾选并重画标记
   setSelectMode(false);
   go("/inbox?view=shares&new=1", { view: "shares" });
 }
